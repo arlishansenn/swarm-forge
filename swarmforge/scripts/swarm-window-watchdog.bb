@@ -7,6 +7,10 @@
 
 (def missing-threshold 3)
 
+(defn log! [& parts]
+  (println (str (java.time.Instant/now) " " (str/join " " (map str parts))))
+  (flush))
+
 (defn sq [value]
   (str "'" (str/replace (str value) #"'" "'\"'\"'") "'"))
 
@@ -45,8 +49,16 @@
     ["zsh" "-c" script]))
 
 (defn terminal-ok? [script-dir working-dir tmux-socket backend command & args]
-  (zero? (:exit (apply process/sh (concat [{:continue true}]
-                                          (apply adapter-script script-dir working-dir tmux-socket backend command args))))))
+  (let [result (apply process/sh (concat [{:continue true}]
+                                         (apply adapter-script script-dir working-dir tmux-socket backend command args)))]
+    ;; A nonzero exit means either the window is really gone or the query itself
+    ;; failed (Automation permission denied, stale window id). The caller only
+    ;; sees a boolean, so record stderr here to tell those two cases apart.
+    (when-not (zero? (:exit result))
+      (log! "terminal-call-failed" command (vec args)
+            "exit=" (:exit result)
+            "err=" (pr-str (str/trim (str (:err result))))))
+    (zero? (:exit result))))
 
 (defn terminal-out [script-dir working-dir tmux-socket backend command & args]
   (str/trim (:out (apply process/sh (apply adapter-script script-dir working-dir tmux-socket backend command args)))))
@@ -63,6 +75,7 @@
               (str working-dir)))
 
 (defn kill-all-sessions! [script-dir window-state-file working-dir tmux-socket backend]
+  (log! "KILL-ALL-SESSIONS" "tearing down the entire swarm")
   (stop-handoff-daemon! script-dir working-dir)
   (doseq [{:keys [session]} (rows window-state-file)]
     (when-not (str/blank? session)
@@ -81,11 +94,20 @@
       (let [[_ state ids target replacement] args]
         (rewrite-window-id! (fs/path state) (fs/path ids) target replacement)
         (System/exit 0)))
+    (log! "watchdog-start"
+          "backend=" backend
+          "cleanup-owner-index=" (pr-str cleanup-owner-index)
+          "socket=" tmux-socket
+          "state=" (str window-state-file))
     (loop [missing-counts {}]
-      (when (fs/exists? window-state-file)
+      (if-not (fs/exists? window-state-file)
+        (log! "watchdog-exit" "window state file is gone:" (str window-state-file))
         (let [current-rows (rows window-state-file)
               cleanup-row (some #(when (= cleanup-owner-index (:index %)) %) current-rows)]
-          (when (and cleanup-row (tmux-session? tmux-socket (:session cleanup-row)))
+          (if-not (and cleanup-row (tmux-session? tmux-socket (:session cleanup-row)))
+            (log! "watchdog-exit"
+                  "cleanup owner row or its tmux session is missing;"
+                  "row=" (pr-str cleanup-row))
             (let [cleanup-window-id (:window-id cleanup-row)]
               (if (terminal-ok? script-dir working-dir tmux-socket backend "terminal_window_exists" cleanup-window-id)
                 (let [missing-counts (assoc missing-counts cleanup-owner-index 0)
@@ -99,9 +121,14 @@
                              (assoc counts index 0)
                              (let [count (inc (get counts index 0))]
                                (if (< count missing-threshold)
-                                 (assoc counts index count)
+                                 (do
+                                   (log! "window-missing" "role-index=" index "id=" window-id
+                                         "strike=" (str count "/" missing-threshold))
+                                   (assoc counts index count))
                                  (let [new-window-id (terminal-out script-dir working-dir tmux-socket backend
                                                                    "terminal_open_session" session title cleanup-window-id)]
+                                   (log! "window-reopened" "role-index=" index "session=" session
+                                         "old-id=" window-id "new-id=" (pr-str new-window-id))
                                    (when-not (str/blank? new-window-id)
                                      (rewrite-window-id! window-state-file window-ids-file index new-window-id))
                                    (assoc counts index 0)))))))
@@ -110,6 +137,8 @@
                   (Thread/sleep 2000)
                   (recur missing-counts))
                 (let [count (inc (get missing-counts cleanup-owner-index 0))]
+                  (log! "cleanup-owner-window-missing" "id=" cleanup-window-id
+                        "strike=" (str count "/" missing-threshold))
                   (if (>= count missing-threshold)
                     (kill-all-sessions! script-dir window-state-file working-dir tmux-socket backend)
                     (do

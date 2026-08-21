@@ -9,6 +9,11 @@
 (def poll-ms 1000)
 (def wake-message
   "You have new handoff mail. If idle, run ready_for_next.sh.")
+;; A short slice of wake-message. The input box wraps long text, so matching the
+;; whole line against the pane is unreliable.
+(def wake-probe "new handoff mail")
+(def wake-echo-timeout-ms 5000)
+(def wake-echo-interval-ms 100)
 
 (defn usage []
   (binding [*out* *err*]
@@ -93,18 +98,49 @@
   (fs/path (:worktree-path role-info)
            ".swarmforge" "handoffs" "inbox" "new" filename))
 
-(defn notify! [socket session]
-  (let [send-text (sh "tmux" "-S" socket "send-keys" "-t" session "-l" wake-message)
-        _ (Thread/sleep 150)
-        send-carriage-return (sh "tmux" "-S" socket "send-keys" "-t" session "C-m")
-        _ (Thread/sleep 50)
-        send-line-feed (sh "tmux" "-S" socket "send-keys" "-t" session "C-j")]
+(defn pane-text [socket session]
+  (let [result (sh "tmux" "-S" socket "capture-pane" "-p" "-t" session)]
+    (if (zero? (:exit result)) (:out result) "")))
+
+(defn await-wake-echo!
+  "Block until the wake text shows up in the pane, or the timeout expires.
+
+  An agent TUI batches an incoming paste, and a submit key that races that paste
+  gets swallowed: the wake-up then sits typed but unsent and the role looks idle
+  while work waits in its inbox. A fixed delay cannot cover this because the wait
+  depends on TUI startup, load, and paste size, so poll for the echo instead.
+  Returns false on timeout; the caller still submits, because a missed echo is
+  less bad than no submit at all."
+  [socket session]
+  (let [deadline (+ (System/currentTimeMillis) wake-echo-timeout-ms)]
+    (loop []
+      (cond
+        (str/includes? (pane-text socket session) wake-probe) true
+        (>= (System/currentTimeMillis) deadline) false
+        :else (do (Thread/sleep wake-echo-interval-ms) (recur))))))
+
+(defn submit-keys
+  "tmux send-keys arguments that make this agent's TUI submit its input line.
+
+  Claude Code negotiates the kitty keyboard protocol and then ignores a bare CR,
+  so it only submits on the CSI u encoding of Enter (ESC [ 13 u). Sending CSI u
+  to a TUI that did not negotiate the protocol would insert those bytes as
+  literal text, so this picks by agent instead of sending both."
+  [agent]
+  (if (= agent "claude")
+    [["-H" "1b" "5b" "31" "33" "75"]]
+    [["C-m"] ["C-j"]]))
+
+(defn notify! [socket session agent]
+  (let [send-text (sh "tmux" "-S" socket "send-keys" "-t" session "-l" wake-message)]
     (when-not (zero? (:exit send-text))
       (throw (ex-info "tmux send text failed" send-text)))
-    (when-not (zero? (:exit send-carriage-return))
-      (throw (ex-info "tmux send carriage return failed" send-carriage-return)))
-    (when-not (zero? (:exit send-line-feed))
-      (throw (ex-info "tmux send line feed failed" send-line-feed)))))
+    (await-wake-echo! socket session)
+    (doseq [keys (submit-keys agent)]
+      (let [result (apply sh (concat ["tmux" "-S" socket "send-keys" "-t" session] keys))]
+        (when-not (zero? (:exit result))
+          (throw (ex-info "tmux send submit key failed" result)))
+        (Thread/sleep 50)))))
 
 (defn move-with-collision [source target-dir]
   (fs/create-dirs target-dir)
@@ -203,7 +239,7 @@
               (fs/create-dirs (fs/parent target))
               (when-not (fs/exists? target)
                 (spit (str target) (render-message (:headers delivered) (:body delivered))))
-              (notify! socket (:session role-info)))))
+              (notify! socket (:session role-info) (:agent role-info)))))
         (move-with-collision path
                              (fs/path (get-in roles [sender-role :worktree-path])
                                       ".swarmforge" "handoffs" "sent"))
