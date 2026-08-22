@@ -357,6 +357,8 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 退出码：`0` OPENED/REUSED 成功；`3` STOPPED（swarm 未运行，拒绝启动）；`4` DRIFT（workspace 与 runtime 不符，零变更，需用户授权后重建）；`5` ERROR。
 
+看板本身是 `pack_web`：`./swarm` 启动时随 swarm 一起起的本地 HTTP 服务，页面展示并可操作 swarm 状态（agent 状态、任务/交接、approvals、chat、teardown），只监听远端 `127.0.0.1`，所以远程访问必须走隧道。
+
 `dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上）：读 `.swarmforge/dashboard-url`，确保 `-N -L` 本地转发（已有可用隧道则复用；端口被占则换空闲端口），在当前 window 开/复用 `Dashboard · <basename>` workspace（browser surface 指向隧道 URL）。退出码语义同上；`3` 表示 dashboard-url 缺失，绝不自己起 `pack_web.sh --serve`。
 
 三条硬性禁令，agent 不越过：
