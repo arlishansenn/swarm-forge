@@ -9,16 +9,28 @@ Operate a **running** SwarmForge swarm from the local machine. The swarm itself
 lives on the remote host (macmini, `admin@100.64.0.4`, key `~/.ssh/tailscale_key`);
 this skill is the local remote-control surface: attach, read, wake, watch.
 
-Two sockets exist per host. The **swarm tmux socket** (`.swarmforge/tmux-socket`
-in the project, also symlinked under `/tmp/swarmforge-admin/`) carries the six
-role sessions. The cmux socket is local only and never crosses SSH.
+Two sockets exist per host, one per swarm. The path in the project's
+`.swarmforge/tmux-socket` is **a plain text file holding the socket path**, not
+a socket itself; the real socket lives under `/tmp/swarmforge-admin/` with a
+random numeric name that **changes on every `./swarm` restart**. Resolve it
+dynamically, never hardcode it. The cmux socket is local only and never
+crosses SSH.
 
 ## Constants
 
 - Host: `admin@100.64.0.4`, SSH key `~/.ssh/tailscale_key`.
-- pi-governance swarm socket: `/tmp/swarmforge-admin/3137290556.sock`.
-- podsum swarm socket: `/tmp/swarmforge-admin/2720709063.sock`. Do not touch
-  unless asked; it is a different project's swarm.
+- Resolve each swarm's socket at use time (it changes every restart):
+  ```sh
+  SSH="ssh -i ~/.ssh/tailscale_key admin@100.64.0.4"
+  PGSOCK=$($SSH 'cat ~/project/pi-governance/.swarmforge/tmux-socket')
+  # e.g. /tmp/swarmforge-admin/<pid>.sock — the number is the launcher PID
+  # and changes every restart. The tmux-socket file stores the path as text;
+  # it is not the socket itself. podsum's socket lives in the same directory —
+  # do not touch it unless asked.
+  ```
+- podsum swarm socket: resolve the same way from
+  `~/project/podsum/.swarmforge/tmux-socket`. Do not touch unless asked; it is
+  a different project's swarm.
 - Roles: `specifier coder cleaner architect hardender QA`; sessions are
   `swarmforge-<role>`.
 - Two swarms share the host; pi-governance worktrees live under
@@ -30,7 +42,7 @@ The attach line is `ssh -tt` + a quoted `tmux -S <socket> attach`:
 
 ```sh
 ssh -tt -i ~/.ssh/tailscale_key admin@100.64.0.4 \
-  'tmux -S /tmp/swarmforge-admin/3137290556.sock attach -t swarmforge-coder'
+  'tmux -S '$PGSOCK' attach -t swarmforge-coder'   # $PGSOCK resolved as above
 ```
 
 Detach with `Ctrl-b d`. Do not exit the inner agent TUI: `exit` in a pane kills
@@ -51,7 +63,7 @@ Two traps, both observed live:
 Three workspaces of two panes each in one new window, every pane an attach:
 
 ```sh
-SOCK=/tmp/swarmforge-admin/3137290556.sock
+SOCK=$($SSH 'cat ~/project/pi-governance/.swarmforge/tmux-socket')
 P="ssh -tt -i ~/.ssh/tailscale_key admin@100.64.0.4"
 LAYOUT='{"direction":"horizontal","split":0.5,
  "children":[{"pane":{"surfaces":[{"type":"terminal"}]}},
@@ -116,7 +128,9 @@ ssh -i ~/.ssh/tailscale_key admin@100.64.0.4 'nohup zsh -s' < /tmp/pigov-chain-w
 ```
 
 It appends one line per role per round (180 s interval, 60 rounds) to
-`/tmp/pigov-chain-watch.log` on the remote host. Read the tail on demand:
+`/tmp/pigov-chain-watch.log` on the remote host. `/tmp` is wiped on reboot:
+if the script is gone, recreate it from this section's snippet and relaunch.
+Read the tail on demand:
 
 ```sh
 ssh -i ~/.ssh/tailscale_key admin@100.64.0.4 'tail -40 /tmp/pigov-chain-watch.log'
@@ -140,6 +154,6 @@ ssh -i ~/.ssh/tailscale_key admin@100.64.0.4 \
   '/Users/admin/project/swarm-forge/close-swarm /Users/admin/project/pi-governance'
 ```
 
-If any stragglers remain: `tmux -S $SOCK kill-server`, then `pkill -f
+If any stragglers remain: `tmux -S $PGSOCK kill-server`, then `pkill -f
 "handoffd.bb /Users/admin/project/pi-governance"`. Verify with `pgrep -fl
 handoffd` that the podsum daemon is untouched.
