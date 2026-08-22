@@ -100,26 +100,29 @@ if [ "$EXISTING_N" = 1 ]; then
   line=$(our_workspaces | head -1)
   WS_REF=${line%%$'\t'*}; WS_UUID=${line#*$'\t'}
 else
+  # layout carries the browser surface: one atomic mutation, and unlike a
+  # plain new-workspace there is no default terminal pane left behind
+  # (verified live against cmux 0.64.22)
+  layout=$(python3 -c 'import json,sys; print(json.dumps({"pane":{"surfaces":[{"type":"browser","url":sys.argv[1]}]}}))' "$URL")
   before=$EXISTING_N
   out=$(cmux new-workspace --name "Dashboard · $BASE" --description "$DESC" \
-        --window "$WIN_UUID" --focus false 2>/dev/null) || true
+        --window "$WIN_UUID" --focus false --layout "$layout" 2>/dev/null) || true
   WS_REF=$(printf '%s\n' "$out" | grep -o 'workspace:[0-9]*' | head -1 || true)
   for _ in $(seq 1 100); do  # settle: never re-run the mutation
     n=$(our_workspaces | grep -c . || true)
     [ "$n" -gt "$before" ] && break
     sleep 0.05
   done
-  [ -z "$WS_REF" ] && WS_REF=$(our_workspaces | awk -F'\t' -v b="$before" 'NR > b {print $1; exit}')
+  [ -z "$WS_REF" ] && WS_REF=$(our_workspaces | awk -F '\t' -v b="$before" 'NR > b {print $1; exit}')
   [ -n "$WS_REF" ] || die ERROR "workspace created but ref unresolvable; state: $(our_workspaces | tr '\n' ' ')" 5
-  WS_UUID=$(our_workspaces | awk -F'\t' -v r="$WS_REF" '$1 == r {print $2; exit}')
+  WS_UUID=$(our_workspaces | awk -F '\t' -v r="$WS_REF" '$1 == r {print $2; exit}')
 fi
 
-# browser surface: reuse the existing one, create only if absent
+# browser surface: reuse the existing one, repair only if absent (workspace
+# may predate the layout-based creation, e.g. from an earlier buggy run)
 SURF=$(browser_surface "$WS_UUID")
 if [ -z "$SURF" ]; then
-  before=$(cmux rpc surface.list "{\"workspace_id\":\"$WS_UUID\"}" | j 'print(len(d["surfaces"]))')
   out=$(cmux new-surface --type browser --url "$URL" --workspace "$WS_REF" --focus false 2>/dev/null) || true
-  SURF=$(printf '%s\n' "$out" | grep -o 'surface:[0-9]*' | head -1 || true)
   for _ in $(seq 1 100); do  # settle by type, then resolve ref by listing
     SURF=$(browser_surface "$WS_UUID")
     [ -n "$SURF" ] && break

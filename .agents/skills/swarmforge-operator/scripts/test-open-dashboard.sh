@@ -48,17 +48,33 @@ PY
   *) echo "Error: method_not_found" >&2; exit 1;;
   esac;;
 new-workspace)
-  NAME= DESC= WINDOW=
+  # real cmux: plain creation ships one default terminal surface; --layout
+  # creates exactly the layout surfaces (browser w/ url, terminal w/ command)
+  NAME= DESC= WINDOW= LAYOUT=
   while [ $# -gt 0 ]; do case $1 in
     --name) NAME=$2; shift 2;; --description) DESC=$2; shift 2;;
-    --window) WINDOW=$2; shift 2;; --focus) shift 2;; *) shift;; esac; done
+    --window) WINDOW=$2; shift 2;; --layout) LAYOUT=$2; shift 2;;
+    --focus) shift 2;; *) shift;; esac; done
   W=$(( $(cat "$STUB/winnum") + 1 )); echo $W > "$STUB/winnum"
-  python3 - "$STUB/state.json" "WSUUID-$W" "workspace:$W" "$WINDOW" "$NAME" "$DESC" <<'PY'
+  python3 - "$STUB/state.json" "WSUUID-$W" "workspace:$W" "$WINDOW" "$NAME" "$DESC" "$LAYOUT" "$STUB" <<'PY'
 import json,sys
-sf,wsid,wsref,win,name,desc=sys.argv[1:7]
+sf,wsid,wsref,win,name,desc,layout,stub=sys.argv[1:9]
 state=json.load(open(sf))
 state["workspaces"].append({"id":wsid,"ref":wsref,"window_id":win,
  "title":name,"description":desc})
+n=100
+def add_surface(typ,url=""):
+    global n
+    n+=1
+    state["surfaces"].append({"id":f"SUUID-{n}","ref":f"surface:{n}",
+      "workspace_id":wsid,"type":typ,"title":url or f"default-{typ}","url":url})
+if layout:
+    lay=json.loads(layout)
+    surfaces=lay["pane"]["surfaces"] if "pane" in lay else              [s for c in lay.get("children",[]) for s in c["pane"]["surfaces"]]
+    for s in surfaces:
+        add_surface(s["type"], s.get("url",""))
+else:
+    add_surface("terminal")
 json.dump(state,open(sf,"w"))
 PY
   echo "OK workspace:$W $NAME";;
@@ -162,6 +178,8 @@ check "happy tunnel" created "$(val TUNNEL)"
 check "happy url" "http://127.0.0.1:54870/" "$(val URL)"
 check "happy one ws" 1 "$(mutcount)"
 check "happy browser surface" "1" "$(python3 -c 'import json;s=json.load(open("'$STUB'/state.json"));print(sum(1 for x in s["surfaces"] if x["type"]=="browser"))')"
+check "happy no terminal surface" "0" "$(python3 -c 'import json;s=json.load(open("'$STUB'/state.json"));print(sum(1 for x in s["surfaces"] if x["type"]=="terminal"))')"
+check "happy ws exactly 1 surface" "1" "$(python3 -c 'import json;s=json.load(open("'$STUB'/state.json"));print(sum(1 for x in s["surfaces"] if x["workspace_id"]=="WSUUID-11"))')"
 check "happy surface url" "http://127.0.0.1:54870/" "$(python3 -c 'import json;s=json.load(open("'$STUB'/state.json"));print(next(x["url"] for x in s["surfaces"] if x["type"]=="browser"))')"
 grep -q -- '-L 54870:127.0.0.1:54870' "$STUB/tunnels.log" \
   && ok "happy tunnel cmd" || bad "happy tunnel cmd" "$(cat "$STUB/tunnels.log")"
@@ -205,6 +223,20 @@ PY
 run gov
 check "drift exit" 4 "$RC"
 check "drift status" DRIFT "$(val STATUS)"
+
+# 7 reuse without browser surface (pre-fix legacy workspace) → repaired
+reset_stub
+run gov >/dev/null
+python3 - "$STUB/state.json" <<'PY'
+import json,sys
+s=json.load(open(sys.argv[1]))
+s["surfaces"]=[x for x in s["surfaces"] if x["type"]!="browser"]
+json.dump(s,open(sys.argv[1],"w"))
+PY
+run gov
+check "legacy exit" 0 "$RC"
+check "legacy status" REUSED "$(val STATUS)"
+check "legacy browser repaired" "1" "$(python3 -c 'import json;s=json.load(open("'$STUB'/state.json"));print(sum(1 for x in s["surfaces"] if x["type"]=="browser"))')"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
