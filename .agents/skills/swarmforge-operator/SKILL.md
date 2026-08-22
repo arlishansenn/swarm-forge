@@ -1,6 +1,6 @@
 ---
 name: swarmforge-operator
-description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions in cmux, reading role state, waking or messaging a role, or stopping the swarm."
+description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, or stopping the swarm."
 ---
 
 # SwarmForge Operator
@@ -81,6 +81,26 @@ Hard rules for this verb:
 - **No destructive cleanup without explicit user approval** — the script
   closes nothing, and neither should you.
 
+## Verb: `dashboard`
+
+Run the bundled script; it tunnels and opens the pack_web dashboard page:
+
+```sh
+scripts/open-dashboard.sh --root "$ROOT" [--window <ref>] \
+  [--target admin@host] [--key ~/.ssh/key] [--local]
+```
+
+It reads `$ROOT/.swarmforge/dashboard-url`, ensures an SSH local-forward
+tunnel to that port (reuses a working one; preferred port first, any free
+port on bind conflict), then opens or reuses one workspace named
+`Dashboard · <basename>` with a browser surface on the tunneled URL.
+
+Same hard rules and exit codes as `open swarm`: exit 3 STOPPED means
+dashboard-url is missing — never start `pack_web.sh --serve` yourself; exit
+4 DRIFT means multiple matching workspaces — cleanup needs user approval;
+exit 5 ERROR. `--local` expects the dashboard to already listen on this
+machine; no tunnel is created.
+
 ## Verb: `attach role`
 
 Find the role in `sessions.tsv` and use its recorded session; do not construct
@@ -142,3 +162,11 @@ Use the project root with the official control checkout on the target host:
 If cleanup is incomplete, resolve this project's socket again, kill only that
 tmux server, and match `handoffd.bb` with the exact project root. Verify other
 project daemons remain running.
+
+## Testing
+
+`scripts/test-open-swarm.sh` and `scripts/test-open-dashboard.sh` run the
+two flows against a stubbed cmux/ssh/curl, covering topology pairing, reuse,
+repair, stopped, drift, unparseable mutation output, tunnel reuse, and
+port-conflict fallback. Run them after any change to the scripts or the stub
+contracts.

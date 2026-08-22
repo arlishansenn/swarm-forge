@@ -332,11 +332,12 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 使用前提：skill 的使用者工作目录是本仓库。放在被操作 project 里时，本仓库会话调不到它。
 
-### 六个 verb
+### 七个 verb
 
 | 动词 | 作用 |
 |---|---|
 | `open swarm <root>` | 把运行中的 swarm 以 cmux workspace 打开（下文脚本契约） |
+| `dashboard <root>` | 建 SSH 隧道，开一个 browser workspace 连 pack_web 看板 |
 | `attach <role>` | 临时附加到某个角色的 tmux session |
 | `read swarm` | 逐角色截屏，看 idle/Working/handoff 邮件通知 |
 | `wake <role>` | 唤醒：注入 `ready_for_next.sh` 并按 backend 编码提交 |
@@ -356,6 +357,8 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 退出码：`0` OPENED/REUSED 成功；`3` STOPPED（swarm 未运行，拒绝启动）；`4` DRIFT（workspace 与 runtime 不符，零变更，需用户授权后重建）；`5` ERROR。
 
+`dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上）：读 `.swarmforge/dashboard-url`，确保 `-N -L` 本地转发（已有可用隧道则复用；端口被占则换空闲端口），在当前 window 开/复用 `Dashboard · <basename>` workspace（browser surface 指向隧道 URL）。退出码语义同上；`3` 表示 dashboard-url 缺失，绝不自己起 `pack_web.sh --serve`。
+
 三条硬性禁令，agent 不越过：
 
 1. 绝不执行 `./swarm` 或任何启动已停机 swarm 的命令；`open` 只连接运行中的 swarm。
@@ -372,7 +375,7 @@ If the backend cannot open sessions at all, set both capability functions to `re
 bash .agents/skills/swarmforge-operator/scripts/test-open-swarm.sh
 ```
 
-stub cmux 全链路覆盖：two/four/six-pack、自定义 5 角色、复用、stale attach 修复、停机拒启、socket 失活、drift、mutation 输出不可解析不重复创建。
+stub cmux 全链路覆盖：two/four/six-pack、自定义 5 角色、复用、stale attach 修复、停机拒启、socket 失活、drift、mutation 输出不可解析不重复创建；dashboard 套件另覆盖隧道复用与端口冲突回退。
 
 ## Window Behavior
 
