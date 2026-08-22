@@ -180,6 +180,12 @@ Report to the human, per task:
 
 Rules:
 
+- **Exclude already-shipped tasks.** A completed handoff whose `commit:` is
+  already on `origin/main` (or an ancestor of `HEAD`) has been accepted and
+  merged; it must not be reported again. Check with
+  `git merge-base --is-ancestor <commit> origin/main`. Also skip intermediate
+  chain records (a task appears once per hop); keep only the terminal handoff
+  — the newest completed file for a given `task:` per worktree.
 - Files under `inbox/completed/` are audit records; never modify, move, or
   delete them.
 - The handoff points at the commit only. The code itself is in git; verify
