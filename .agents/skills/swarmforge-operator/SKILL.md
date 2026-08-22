@@ -151,6 +151,46 @@ Look up the role exactly as for `wake role`, send one behavior slice with
 through the `master` row from `roles.tsv`; no role name such as `specifier` or
 `coder` is universally the intake role.
 
+## Verb: `accept work`
+
+Human acceptance after the swarm finishes a task. The chain ends when the
+last recipient completes its inbound handoff; that completed file is the
+delivery record.
+
+For each completed task, list the terminal handoff per sender worktree and
+read its headers:
+
+```sh
+# find the newest completed handoff in each role worktree
+"${SSH[@]}" "find '$ROOT/.swarmforge/handoffs/inbox/completed' \
+  '$ROOT'/.worktrees/*/.swarmforge/handoffs/inbox/completed \
+  -name '*.handoff' 2>/dev/null | sort | tail"
+
+# read task + commit from a completed file
+"${SSH[@]}" "sed -n '1,15p' <file>"
+```
+
+Report to the human, per task:
+
+- `task:` — the stable task name the chain carried (maps to the issue when the
+  intake named it, e.g. `issue-50-brief-quality` → `Closes #50`).
+- `commit:` — the final committed state; this is what the human PR should
+  carry.
+- `completed_at:` — when the chain finished.
+
+Rules:
+
+- Files under `inbox/completed/` are audit records; never modify, move, or
+  delete them.
+- The handoff points at the commit only. The code itself is in git; verify
+  with `git show --stat <commit>` or tests before opening the PR.
+- When opening the PR, carry the `task:` → issue mapping into the PR body
+  (`Closes #N`) so GitHub links them. The swarm never touches GitHub; linking
+  is the accepting human's job.
+- The board directory (`$ROOT/.swarmforge/board/`, when present) carries the
+  same task name in `tasks.tsv` and the intake text in `<task>.txt`; use it to
+  cross-check which issue the task came from.
+
 ## Verb: `stop swarm`
 
 Use the project root with the official control checkout on the target host:
