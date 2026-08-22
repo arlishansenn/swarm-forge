@@ -326,6 +326,54 @@ If the terminal can open sessions but cannot return stable ids for open/check/cl
 
 If the backend cannot open sessions at all, set both capability functions to `return 1`; SwarmForge will attach the cleanup tmux session in the current shell. Only edit `swarmforge/scripts/swarm-terminal-adapter.sh` when adding aliases or changing default auto-detection.
 
+## 从本地操作运行中的 Swarm（swarmforge-operator）
+
+本仓库自带 `.agents/skills/swarmforge-operator/`：一个供本地 agent 会话（工作目录在本仓库，cmux/macBook 侧）操作运行中 SwarmForge project 的操作面 skill。它面向任意 topology：两包、四包、六包或自定义角色数，一切以目标 project 的 runtime state（`.swarmforge/` 下的 `tmux-socket`、`sessions.tsv`、`roles.tsv`）为准，不按 pack 名或固定角色列表分支。
+
+使用前提：skill 的使用者工作目录是本仓库。放在被操作 project 里时，本仓库会话调不到它。
+
+### 六个 verb
+
+| 动词 | 作用 |
+|---|---|
+| `open swarm <root>` | 把运行中的 swarm 以 cmux workspace 打开（下文脚本契约） |
+| `attach <role>` | 临时附加到某个角色的 tmux session |
+| `read swarm` | 逐角色截屏，看 idle/Working/handoff 邮件通知 |
+| `wake <role>` | 唤醒：注入 `ready_for_next.sh` 并按 backend 编码提交 |
+| `talk <role>` | 给指定角色发送一条行为切片 |
+| `stop swarm` | 走 `close-swarm` 正常停机，必要时补杀本项目 daemon |
+
+默认远端是 `admin@100.64.0.4`，可用 `--target`/`--key` 覆盖；`--local` 改走本地文件系统。
+
+### `open swarm` 契约
+
+```sh
+.agents/skills/swarmforge-operator/scripts/open-swarm.sh \
+  --root <远端 project 根> [--window <ref>] [--target host] [--key path] [--local]
+```
+
+脚本负责全部 cmux 机制：runtime gate、相邻角色配对成双 pane workspace（奇数尾部单 pane）、以 description `swarmforge:<basename>@<host>` 认领与复用、逐 surface 验证 attach、失效 surface 最多重发一次 attach。Agent 只跑脚本、读退出码、汇报。
+
+退出码：`0` OPENED/REUSED 成功；`3` STOPPED（swarm 未运行，拒绝启动）；`4` DRIFT（workspace 与 runtime 不符，零变更，需用户授权后重建）；`5` ERROR。
+
+三条硬性禁令，agent 不越过：
+
+1. 绝不执行 `./swarm` 或任何启动已停机 swarm 的命令；`open` 只连接运行中的 swarm。
+2. 默认在 caller 当前 cmux window 建 workspace，不新建 macOS window；用户明说 new window 时才建，并传 `--window`。
+3. 绝不自动 close 任何 workspace/surface/window 作为清理；残留对象由用户逐项授权处置。
+
+直接操作 cmux 前需先加载 `cmux` skill（REQUIRED SUB-SKILL），handle、settle、ownership、destructive guardrail 是 cmux skill 的契约，本 skill 不重复。
+
+### 测试
+
+改脚本或 stub 契约后运行：
+
+```sh
+bash .agents/skills/swarmforge-operator/scripts/test-open-swarm.sh
+```
+
+stub cmux 全链路覆盖：two/four/six-pack、自定义 5 角色、复用、stale attach 修复、停机拒启、socket 失活、drift、mutation 输出不可解析不重复创建。
+
 ## Window Behavior
 
 Each visible agent window is attached to a tmux session. That means terminal selection, copy, and paste may follow tmux and terminal-emulator rules rather than ordinary text-field behavior. If copy or paste feels unusual, check whether tmux copy mode is active before assuming the agent is stuck.
