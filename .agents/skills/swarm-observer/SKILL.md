@@ -1,6 +1,6 @@
 ---
 name: swarm-observer
-description: Use when operating a running SwarmForge swarm from the local machine: attaching to role panes over SSH, watching chain progress, waking an idle role, or setting up the macmini six-pack observation workspaces.
+description: "Use when operating a running SwarmForge swarm from the local machine: attaching to role panes over SSH, watching chain progress, waking an idle role, or setting up the macmini six-pack observation workspaces."
 ---
 
 # Swarm Observer
