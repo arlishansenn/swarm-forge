@@ -613,6 +613,47 @@
              (first argv))
           "the wake text send must be recorded, not executed"))))
 
+(deftest handoffd-submits-a-codex-wake-with-a-raw-carriage-return
+  ;; Given a codex role receiving a handoff
+  ;; When the daemon delivers it
+  ;; Then Enter goes out as the raw byte 0d, not as the symbolic C-m/C-j that
+  ;; tmux re-encodes for a TUI that negotiated extended keys
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"sender" "task" "receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (write-file (fs/path root ".swarmforge/handoffs/outbox/50_20260101T000000Z_000002_from_sender_to_receiver.handoff")
+                (handoff {:id "20260101T000000Z_000002_from_sender"
+                          :from "sender" :to "receiver"
+                          :priority "50" :type "message" :task "codex-enter"}))
+    (run-handoffd-once! root argv-file)
+    (let [argv (read-argv argv-file)]
+      (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-H" "0d"]
+             (second argv)))
+      (is (= 2 (count argv)) "raw CR replaces the C-m + C-j pair, so one submit call"))))
+
+(deftest handoffd-submits-a-claude-wake-with-csi-u-enter
+  ;; Given a claude role receiving a handoff
+  ;; When the daemon delivers it
+  ;; Then Enter stays CSI-u: claude negotiates the kitty keyboard protocol and
+  ;; ignores a bare CR
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"sender" "task" "receiver" "task"})
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (str "sender\tmaster\t" root "\tsession\tSender\tclaude\ttask\n"
+                     "receiver\tmaster\t" root "\tsession\tReceiver\tclaude\ttask\n"))
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (write-file (fs/path root ".swarmforge/handoffs/outbox/50_20260101T000000Z_000003_from_sender_to_receiver.handoff")
+                (handoff {:id "20260101T000000Z_000003_from_sender"
+                          :from "sender" :to "receiver"
+                          :priority "50" :type "message" :task "claude-enter"}))
+    (run-handoffd-once! root argv-file)
+    (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-H" "1b" "5b" "31" "33" "75"]
+           (second (read-argv argv-file))))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.handoff-test)]
     (System/exit (+ fail error))))

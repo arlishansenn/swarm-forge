@@ -139,14 +139,17 @@
 (defn submit-keys
   "tmux send-keys arguments that make this agent's TUI submit its input line.
 
-  Claude Code negotiates the kitty keyboard protocol and then ignores a bare CR,
-  so it only submits on the CSI u encoding of Enter (ESC [ 13 u). Sending CSI u
-  to a TUI that did not negotiate the protocol would insert those bytes as
-  literal text, so this picks by agent instead of sending both."
+  Both branches send raw bytes on purpose. A symbolic key name goes through
+  tmux's key-encoding layer, which re-encodes it for a TUI that negotiated
+  extended keys, so `C-m` does not reliably arrive as a literal Enter. Claude
+  Code negotiates the kitty keyboard protocol and only submits on CSI u
+  (ESC [ 13 u); every other backend wants the plain carriage return 0x0d, and
+  sending CSI u to a TUI that did not negotiate would insert those bytes as
+  literal text."
   [agent]
   (if (= agent "claude")
     [["-H" "1b" "5b" "31" "33" "75"]]
-    [["C-m"] ["C-j"]]))
+    [["-H" "0d"]]))
 
 (defn notify! [socket session agent]
   (let [send-text (tmux! "-S" socket "send-keys" "-t" session "-l" wake-message)]
