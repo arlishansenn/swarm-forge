@@ -332,7 +332,7 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 使用前提：skill 的使用者工作目录是本仓库。放在被操作 project 里时，本仓库会话调不到它。
 
-### 八个 verb
+### 九个 verb
 
 | 动词 | 作用 |
 |---|---|
@@ -342,6 +342,7 @@ If the backend cannot open sessions at all, set both capability functions to `re
 | `read swarm` | 逐角色截屏，看 idle/Working/handoff 邮件通知 |
 | `wake <role>` | 唤醒：注入 `ready_for_next.sh` 并按 backend 编码提交 |
 | `talk <role>` | 给指定角色发送一条行为切片 |
+| `onboard project` | 把 upstream 的 two-pack/four-pack/six-pack 装进一个项目目录；拒绝 `main`，目标非空时零写入拒绝；装完不启动 |
 | `accept work` | 人工验收：读最后收件人 `inbox/completed/` 的 handoff，报 `task`/`commit`，据此开 PR 并关联 issue；completed 目录只读不改 |
 | `stop swarm` | 走 `close-swarm` 正常停机，必要时补杀本项目 daemon |
 
