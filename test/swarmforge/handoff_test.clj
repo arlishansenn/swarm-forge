@@ -104,6 +104,21 @@
 (defn head-sha [root]
   (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD"))))
 
+(defn read-argv
+  "Read a SWARMFORGE_TMUX_STUB file back into a vector of argv vectors."
+  [path]
+  (if (fs/exists? path)
+    (->> (str/split-lines (read-file path))
+         (remove str/blank?)
+         (mapv read-string))
+    []))
+
+(defn run-handoffd-once!
+  "One daemon pass with tmux replaced by an argv recorder."
+  [root argv-file]
+  (run {:dir root :env {"SWARMFORGE_TMUX_STUB" (str argv-file)}}
+       "bb" (script "handoffd.bb") "--once" (str root)))
+
 (defn make-queued-handoff!
   ([root filename attrs]
    (let [sha (or (:commit attrs) (head-sha root))]
@@ -577,6 +592,26 @@
         (is (str/includes? (:err ready) "TASK_IN_PROCESS_IS_BATCH"))
         (is (= 2 (:exit done)))
         (is (str/includes? (:err done) "CURRENT_WORK_IS_BATCH"))))))
+
+(deftest handoffd-routes-every-tmux-call-through-the-argv-stub
+  ;; Given a queued outbox handoff and SWARMFORGE_TMUX_STUB set
+  ;; When the daemon runs one pass
+  ;; Then no real tmux runs: the wake text lands in the stub file instead
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"sender" "task" "receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (write-file (fs/path root ".swarmforge/handoffs/outbox/50_20260101T000000Z_000001_from_sender_to_receiver.handoff")
+                (handoff {:id "20260101T000000Z_000001_from_sender"
+                          :from "sender" :to "receiver"
+                          :priority "50" :type "message" :task "stub-seam"}))
+    (run-handoffd-once! root argv-file)
+    (let [argv (read-argv argv-file)]
+      (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-l"
+              "You have new handoff mail. If idle, run ready_for_next.sh."]
+             (first argv))
+          "the wake text send must be recorded, not executed"))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.handoff-test)]

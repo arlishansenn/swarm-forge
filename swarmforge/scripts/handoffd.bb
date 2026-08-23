@@ -98,8 +98,25 @@
   (fs/path (:worktree-path role-info)
            ".swarmforge" "handoffs" "inbox" "new" filename))
 
+(defn tmux-stub []
+  (System/getenv "SWARMFORGE_TMUX_STUB"))
+
+(defn record-argv! [file argv]
+  (when-let [dir (fs/parent file)]
+    (fs/create-dirs dir))
+  (spit (str file) (str (pr-str (vec argv)) "\n") :append true))
+
+(defn tmux!
+  "Every tmux call goes through here so tests can record argv instead of driving
+  a real TUI. The stub answers exit 0: a recorder has nothing to fail at."
+  [& argv]
+  (let [full (into ["tmux"] argv)]
+    (if-let [stub (tmux-stub)]
+      (do (record-argv! stub full) {:exit 0 :out "" :err ""})
+      (apply sh full))))
+
 (defn pane-text [socket session]
-  (let [result (sh "tmux" "-S" socket "capture-pane" "-p" "-t" session)]
+  (let [result (tmux! "-S" socket "capture-pane" "-p" "-t" session)]
     (if (zero? (:exit result)) (:out result) "")))
 
 (defn await-wake-echo!
@@ -132,15 +149,19 @@
     [["C-m"] ["C-j"]]))
 
 (defn notify! [socket session agent]
-  (let [send-text (sh "tmux" "-S" socket "send-keys" "-t" session "-l" wake-message)]
+  (let [send-text (tmux! "-S" socket "send-keys" "-t" session "-l" wake-message)]
     (when-not (zero? (:exit send-text))
       (throw (ex-info "tmux send text failed" send-text)))
-    (await-wake-echo! socket session)
+    ;; Under the stub there is no pane to echo into, so waiting would just burn
+    ;; the timeout on every recorded call.
+    (when-not (tmux-stub)
+      (await-wake-echo! socket session))
     (doseq [keys (submit-keys agent)]
-      (let [result (apply sh (concat ["tmux" "-S" socket "send-keys" "-t" session] keys))]
+      (let [result (apply tmux! (concat ["-S" socket "send-keys" "-t" session] keys))]
         (when-not (zero? (:exit result))
           (throw (ex-info "tmux send submit key failed" result)))
-        (Thread/sleep 50)))))
+        (when-not (tmux-stub)
+          (Thread/sleep 50))))))
 
 (defn move-with-collision [source target-dir]
   (fs/create-dirs target-dir)
