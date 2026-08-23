@@ -21,6 +21,9 @@
 (def retry-delays-ms [5000 15000 60000])
 (def retry-interval-ms 300000)
 (def retry-attempt-cap 12)
+;; Wake retries per poll pass. poll-once! is single threaded, so an unbounded
+;; retry backlog would push outbox->inbox delivery behind it.
+(def retry-notify-budget 2)
 
 ;; handoff id -> {:attempts n :last-ms t}. In memory only: a daemon restart costs
 ;; at most one extra idempotent wake, which is cheaper than a persistence surface
@@ -164,20 +167,23 @@
     [["-H" "1b" "5b" "31" "33" "75"]]
     [["-H" "0d"]]))
 
-(defn notify! [socket session agent]
-  (let [send-text (tmux! "-S" socket "send-keys" "-t" session "-l" wake-message)]
-    (when-not (zero? (:exit send-text))
-      (throw (ex-info "tmux send text failed" send-text)))
-    ;; Under the stub there is no pane to echo into, so waiting would just burn
-    ;; the timeout on every recorded call.
-    (when-not (tmux-stub)
-      (await-wake-echo! socket session))
-    (doseq [keys (submit-keys agent)]
-      (let [result (apply tmux! (concat ["-S" socket "send-keys" "-t" session] keys))]
-        (when-not (zero? (:exit result))
-          (throw (ex-info "tmux send submit key failed" result)))
-        (when-not (tmux-stub)
-          (Thread/sleep 50))))))
+(defn notify!
+  ([socket session agent] (notify! socket session agent true))
+  ([socket session agent await?]
+   (let [send-text (tmux! "-S" socket "send-keys" "-t" session "-l" wake-message)]
+     (when-not (zero? (:exit send-text))
+       (throw (ex-info "tmux send text failed" send-text)))
+     ;; The echo wait covers the first-delivery race where a submit key lands
+     ;; mid-paste. A retry must not wait: it can block up to
+     ;; wake-echo-timeout-ms, and poll-once! is single threaded.
+     (when (and await? (not (tmux-stub)))
+       (await-wake-echo! socket session))
+     (doseq [keys (submit-keys agent)]
+       (let [result (apply tmux! (concat ["-S" socket "send-keys" "-t" session] keys))]
+         (when-not (zero? (:exit result))
+           (throw (ex-info "tmux send submit key failed" result)))
+         (when-not (tmux-stub)
+           (Thread/sleep 50)))))))
 
 (defn move-with-collision [source target-dir]
   (fs/create-dirs target-dir)
@@ -284,6 +290,15 @@
         (archive-sender! headers)
         (log! "delivered" (str path))))))
 
+(defn distinct-by [f coll]
+  (:out (reduce (fn [{:keys [seen out]} x]
+                  (let [k (f x)]
+                    (if (contains? seen k)
+                      {:seen seen :out out}
+                      {:seen (conj seen k) :out (conj out x)})))
+                {:seen #{} :out []}
+                coll)))
+
 (defn parse-instant-ms [s]
   (try
     (.toEpochMilli (java.time.Instant/parse s))
@@ -329,10 +344,18 @@
          (sort-by #(fs/file-name %)))
     []))
 
+(defn busy?
+  "True when this role is already working something. Its inbox/in_process holds
+  both single handoffs and batch directories, so any entry counts."
+  [role-info]
+  (let [dir (inbox-dir role-info "in_process")]
+    (and (fs/exists? dir) (boolean (seq (fs/list-dir dir))))))
+
 (defn wake-candidates
   "Unclaimed handoffs due for a wake retry, oldest filename first."
   [roles now-ms]
   (->> (vals roles)
+       (remove busy?)
        (mapcat (fn [role-info]
                  (for [path (handoff-files (inbox-dir role-info "new"))
                        :let [headers (:headers (parse-message path))
@@ -355,8 +378,11 @@
   deletes anything: a lost notification must never be mistaken for invalid work."
   [roles socket]
   (let [now-ms (System/currentTimeMillis)]
-    (doseq [{:keys [role-info id attempt]} (wake-candidates roles now-ms)]
-      (notify! socket (:session role-info) (:agent role-info))
+    (doseq [{:keys [role-info id attempt]}
+            (->> (wake-candidates roles now-ms)
+                 (distinct-by :id)
+                 (take retry-notify-budget))]
+      (notify! socket (:session role-info) (:agent role-info) false)
       (swap! retry-state assoc id {:attempts (inc attempt) :last-ms now-ms})
       (log! "wake-retry" id (str "attempt=" attempt)))))
 

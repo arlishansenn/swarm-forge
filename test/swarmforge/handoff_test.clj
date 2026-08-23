@@ -724,6 +724,47 @@
     (is (= 1 (count (fs/glob new-dir "*.handoff"))))
     (is (= 0 (entry-count (fs/path root ".swarmforge/handoffs/inbox/failed"))))))
 
+(deftest handoffd-skips-wake-retries-for-a-busy-role
+  ;; Given a role already working one handoff and queuing a second
+  ;; When the daemon runs one pass
+  ;; Then no wake is sent: the queued file waits by design, and wake text
+  ;; injected into a working agent corrupts its input line
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (put-handoff! root "in_process" "50_20260101T000000Z_000020_from_sender_to_receiver.handoff"
+                  {:id "20260101T000000Z_000020_from_sender"
+                   :from "sender" :to "receiver" :recipient "receiver"
+                   :priority "50" :type "message" :task "working"
+                   :enqueued-at "2026-01-01T00:00:00Z"})
+    (stalled-handoff! root "50_20260101T000000Z_000021_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000021_from_sender")
+    (run-handoffd-once! root argv-file)
+    (is (= [] (read-argv argv-file)))))
+
+(deftest handoffd-caps-wake-notifications-per-pass
+  ;; Given three idle roles each holding one stalled handoff
+  ;; When the daemon runs one pass
+  ;; Then at most two are woken: poll-once! is single threaded, so an unbounded
+  ;; retry backlog would push outbox->inbox delivery behind it
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"alpha" "task" "beta" "task" "gamma" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (doseq [[n role] [["30" "alpha"] ["31" "beta"] ["32" "gamma"]]]
+      (put-handoff! root "new"
+                    (str "50_20260101T000000Z_0000" n "_from_sender_to_" role ".handoff")
+                    {:id (str "20260101T000000Z_0000" n "_from_sender")
+                     :from "sender" :to role :recipient role
+                     :priority "50" :type "message" :task "stalled"
+                     :enqueued-at "2026-01-01T00:00:00Z"}))
+    (run-handoffd-once! root argv-file)
+    ;; two wakes, each recorded as one text send plus one submit key
+    (is (= 4 (count (read-argv argv-file))))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.handoff-test)]
     (System/exit (+ fail error))))
