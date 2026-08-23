@@ -903,6 +903,36 @@
       (is (= 0 (entry-count (fs/path root ".swarmforge/handoffs/inbox/failed")))
           "a failed alert never quarantines work"))))
 
+(deftest ready-for-next-finds-the-role-inbox-from-any-directory
+  ;; Given a receiver whose worktree is not the project root
+  ;; When ready_for_next runs from the project root instead of that worktree
+  ;; Then it still claims that role's work: the inbox belongs to the role, not to
+  ;; whatever directory the agent happens to be standing in. A live swarm lost a
+  ;; day to this - handoffd delivers by the worktree in roles.tsv while the agent
+  ;; side resolved the inbox from its own cwd, so neither side reported anything
+  ;; wrong and the chain simply stopped.
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        wt (add-worktree! root "receiver")
+        _ (setup-project! root {"receiver" "task"})
+        _ (write-file (fs/path root ".swarmforge" "roles.tsv")
+                      (format "sender\tsender\t%s\tsession\tSender\tcodex\ttask\nreceiver\treceiver\t%s\tsession\tReceiver\tcodex\ttask\n"
+                              root wt))]
+    (doseq [dir [".swarmforge/handoffs/inbox/new"
+                 ".swarmforge/handoffs/inbox/in_process"
+                 ".swarmforge/handoffs/inbox/completed"]]
+      (fs/create-dirs (fs/path wt dir)))
+    (make-queued-handoff! wt "50_20260615T000009Z_000009_from_sender_to_receiver.handoff"
+                          {:id "20260615T000009Z_000009_from_sender"
+                           :task "task-from-elsewhere"})
+    (let [ready (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"} :ok? false}
+                     (script "ready_for_next.sh"))]
+      (is (zero? (:exit ready)))
+      (is (str/includes? (:out ready) "TASK_NAME: task-from-elsewhere"))
+      (is (= 0 (count (fs/glob (fs/path wt ".swarmforge/handoffs/inbox/new") "*.handoff")))
+          "the role's queued file is claimed, not left sitting where the daemon put it")
+      (is (= 1 (count (fs/glob (fs/path wt ".swarmforge/handoffs/inbox/in_process") "*.handoff")))))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.handoff-test)]
     (System/exit (+ fail error))))

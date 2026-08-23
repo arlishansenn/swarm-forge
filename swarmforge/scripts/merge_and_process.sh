@@ -2,4 +2,4 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec bb "$SCRIPT_DIR/merge_and_process.bb" "$@"
+exec bb --classpath "$SCRIPT_DIR" "$SCRIPT_DIR/merge_and_process.bb" "$@"
