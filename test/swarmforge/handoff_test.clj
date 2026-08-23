@@ -654,6 +654,76 @@
     (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-H" "1b" "5b" "31" "33" "75"]
            (second (read-argv argv-file))))))
 
+(defn entry-count
+  "Entries in dir, or 0 when the dir was never created. fs/glob on a missing
+  directory is not portable across babashka.fs versions."
+  [dir]
+  (if (fs/exists? dir) (count (fs/list-dir dir)) 0))
+
+(defn stalled-handoff!
+  "A handoff that has sat unclaimed in a recipient's inbox/new since 2026-01-01,
+  i.e. far past every retry delay."
+  [root filename id]
+  (put-handoff! root "new" filename
+                {:id id :from "sender" :to "receiver" :recipient "receiver"
+                 :priority "50" :type "message" :task "stalled"
+                 :enqueued-at "2026-01-01T00:00:00Z"}))
+
+(deftest handoffd-rewakes-a-handoff-left-unclaimed-in-inbox-new
+  ;; Given a handoff that has sat in inbox/new past the first retry delay
+  ;; When the daemon runs one pass
+  ;; Then it re-sends the same wake hint, because the file is the level: a
+  ;; keystroke the TUI swallowed leaves no other trace
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (stalled-handoff! root "50_20260101T000000Z_000010_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000010_from_sender")
+    (run-handoffd-once! root argv-file)
+    (let [argv (read-argv argv-file)]
+      (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-l"
+              "You have new handoff mail. If idle, run ready_for_next.sh."]
+             (first argv)))
+      (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-H" "0d"]
+             (second argv))))))
+
+(deftest handoffd-does-not-rewake-a-handoff-already-claimed
+  ;; Given the same old handoff, but already moved to in_process by ready_for_next
+  ;; When the daemon runs one pass
+  ;; Then no wake is sent: the move is the authoritative claim acknowledgement
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (put-handoff! root "in_process" "50_20260101T000000Z_000011_from_sender_to_receiver.handoff"
+                  {:id "20260101T000000Z_000011_from_sender"
+                   :from "sender" :to "receiver" :recipient "receiver"
+                   :priority "50" :type "message" :task "claimed"
+                   :enqueued-at "2026-01-01T00:00:00Z"})
+    (run-handoffd-once! root argv-file)
+    (is (= [] (read-argv argv-file)))))
+
+(deftest handoffd-leaves-the-original-file-as-the-only-payload
+  ;; Given an unclaimed handoff woken twice
+  ;; When two daemon passes run
+  ;; Then inbox/new still holds exactly that one file: a retry re-notifies, it
+  ;; never re-queues, and notification failure must never look like new work
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")
+        new-dir (fs/path root ".swarmforge/handoffs/inbox/new")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (stalled-handoff! root "50_20260101T000000Z_000012_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000012_from_sender")
+    (run-handoffd-once! root argv-file)
+    (run-handoffd-once! root argv-file)
+    (is (= 1 (count (fs/glob new-dir "*.handoff"))))
+    (is (= 0 (entry-count (fs/path root ".swarmforge/handoffs/inbox/failed"))))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.handoff-test)]
     (System/exit (+ fail error))))

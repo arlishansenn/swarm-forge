@@ -15,6 +15,19 @@
 (def wake-echo-timeout-ms 5000)
 (def wake-echo-interval-ms 100)
 
+;; Retry ladder for handoffs still sitting unclaimed in a recipient's inbox/new.
+;; Overridable constants, not standards: a swallowed keystroke must be re-sent,
+;; but an agent that is simply slow must not be spammed every second.
+(def retry-delays-ms [5000 15000 60000])
+(def retry-interval-ms 300000)
+(def retry-attempt-cap 12)
+
+;; handoff id -> {:attempts n :last-ms t}. In memory only: a daemon restart costs
+;; at most one extra idempotent wake, which is cheaper than a persistence surface
+;; to maintain. Keyed by the id header, not the filename, because
+;; move-with-collision renames files on delivery collisions.
+(def retry-state (atom {}))
+
 (defn usage []
   (binding [*out* *err*]
     (println "Usage: handoffd.bb [--once] <project-root>"))
@@ -271,6 +284,82 @@
         (archive-sender! headers)
         (log! "delivered" (str path))))))
 
+(defn parse-instant-ms [s]
+  (try
+    (.toEpochMilli (java.time.Instant/parse s))
+    (catch Exception _ nil)))
+
+(defn retry-delay-ms [attempts]
+  (get retry-delays-ms attempts retry-interval-ms))
+
+(defn attempts-from-age
+  "Ladder position implied by how long a file has waited. Used when the daemon has
+  no in-memory record, so a restart resumes the ladder instead of replaying
+  5s/15s/60s from the top."
+  [age-ms]
+  (loop [n 0 spent 0]
+    (let [d (retry-delay-ms n)]
+      (if (or (>= n retry-attempt-cap) (< age-ms (+ spent d)))
+        n
+        (recur (inc n) (+ spent d))))))
+
+(defn due-attempt
+  "Attempt number to make now for an unclaimed handoff, or nil if it is not due
+  yet or the cap is spent.
+
+  With no in-memory record the clock starts at the file's own enqueued_at rather
+  than at daemon start: after a restart the ladder resumes where it was."
+  [now-ms id enqueued-ms]
+  (if-let [{:keys [attempts last-ms]} (get @retry-state id)]
+    (when (and (< attempts retry-attempt-cap)
+               (>= (- now-ms last-ms) (retry-delay-ms attempts)))
+      attempts)
+    (let [age (- now-ms enqueued-ms)]
+      (when (>= age (retry-delay-ms 0))
+        (min (attempts-from-age age) (dec retry-attempt-cap))))))
+
+(defn inbox-dir [role-info state]
+  (fs/path (:worktree-path role-info) ".swarmforge" "handoffs" "inbox" state))
+
+(defn handoff-files [dir]
+  (if (fs/exists? dir)
+    (->> (fs/list-dir dir)
+         (filter #(and (fs/regular-file? %)
+                       (str/ends-with? (fs/file-name %) ".handoff")))
+         (sort-by #(fs/file-name %)))
+    []))
+
+(defn wake-candidates
+  "Unclaimed handoffs due for a wake retry, oldest filename first."
+  [roles now-ms]
+  (->> (vals roles)
+       (mapcat (fn [role-info]
+                 (for [path (handoff-files (inbox-dir role-info "new"))
+                       :let [headers (:headers (parse-message path))
+                             id (get headers "id")
+                             enqueued (parse-instant-ms (get headers "enqueued_at"))
+                             attempt (when (and id enqueued)
+                                       (due-attempt now-ms id enqueued))]
+                       :when attempt]
+                   {:role-info role-info :path path :id id :attempt attempt})))
+       (sort-by #(fs/file-name (:path %)))))
+
+(defn reconcile-once!
+  "Re-send the wake hint for handoffs still sitting in a recipient's inbox/new.
+
+  The wake hint is lossy: every agent TUI encodes Enter differently and a
+  keystroke that lands mid-paste gets swallowed, which strands the chain with no
+  log anomaly. The file in inbox/new is the level - it stays until
+  ready_for_next moves it to in_process - so re-sending until it moves makes
+  wake-up at-least-once instead of fire-and-forget. Never moves, copies, or
+  deletes anything: a lost notification must never be mistaken for invalid work."
+  [roles socket]
+  (let [now-ms (System/currentTimeMillis)]
+    (doseq [{:keys [role-info id attempt]} (wake-candidates roles now-ms)]
+      (notify! socket (:session role-info) (:agent role-info))
+      (swap! retry-state assoc id {:attempts (inc attempt) :last-ms now-ms})
+      (log! "wake-retry" id (str "attempt=" attempt)))))
+
 (defn outbox-files [role-info]
   (let [outbox (fs/path (:worktree-path role-info) ".swarmforge" "handoffs" "outbox")]
     (when (fs/exists? outbox)
@@ -313,7 +402,12 @@
             (try
               (fail! (fs/path path) (.getMessage e))
               (catch Exception nested
-                (log! "failed-to-archive" path (.getMessage nested))))))))))
+                (log! "failed-to-archive" path (.getMessage nested)))))))
+      ;; Guarded separately: a reconcile bug must never take delivery down with it.
+      (try
+        (reconcile-once! roles socket)
+        (catch Exception e
+          (log! "reconcile-error" (.getMessage e)))))))
 
 (defn shutdown! []
   (reset! stopping-flag true)
