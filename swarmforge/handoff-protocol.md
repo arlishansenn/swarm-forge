@@ -328,6 +328,8 @@ Responsibilities:
 - Move the original outbox file to `sent/` after successful delivery.
 - Move malformed or undeliverable files to `failed/` with useful diagnostics.
 - Avoid duplicate delivery when retrying after interruption.
+- Reconcile handoffs still unclaimed in a recipient `inbox/new/` by re-sending
+  the wake on a capped backoff ladder until the recipient claims the file.
 
 The tmux message should not name the delivered file. It should avoid biasing the
 recipient toward one file and should force queue-order processing.
@@ -492,9 +494,14 @@ Prompts should instruct agents to follow this loop:
 
 On restart, an agent should run `ready_for_next.sh` and follow its output.
 
-Tmux wake-ups are intentionally lossy. They only prompt an idle agent to check
-its durable inbox. A busy agent can ignore them because task completion also
-checks the queue and accepts the next task in priority order.
+The initial tmux wake-up is best-effort: a swallowed keystroke can leave it
+typed but never submitted. It only prompts an idle agent to check its durable
+inbox, so a missed wake alone does not lose the handoff. A busy agent can
+ignore a wake-up because task completion also checks the queue and accepts
+the next task in priority order. Delivery itself is reconciled: the daemon
+re-sends the wake for any file still sitting unclaimed in `inbox/new` until
+it is moved to `inbox/in_process`; see the daemon Responsibilities and the
+retry paragraph after the transaction-like delivery steps below.
 
 ## Audit Trail
 
@@ -559,6 +566,28 @@ Delivery should be transaction-like:
 4. Move the original outbox file to `sent/`.
 5. If interrupted before completion, retry without duplicating already delivered
    recipient copies.
+
+A file's presence in `inbox/new` is itself the unclaimed level; its move to
+`inbox/in_process` by `ready_for_next.sh` is the claim acknowledgement. While a
+file sits unclaimed, the daemon re-sends the wake on a capped backoff ladder.
+A role whose `inbox/in_process` already holds work is skipped, and each poll
+pass budgets how many wake retries it sends so retries never crowd out
+outbox->inbox delivery. Unclaimed work is never quarantined or deleted: after
+the attempt cap is spent, the file stays in `inbox/new` and the daemon logs
+`wake-exhausted` instead of moving or removing it.
+
+The retry ladder is tuned by four environment variables:
+
+- `SWARMFORGE_WAKE_RETRY_MS` — collapses the backoff ladder to one flat
+  interval, in milliseconds, between retries.
+- `SWARMFORGE_WAKE_ATTEMPT_CAP` — number of wake attempts before a handoff is
+  logged `wake-exhausted` and left unclaimed in `inbox/new`.
+- `SWARMFORGE_WAKE_BUDGET` — maximum wake retries sent in one poll pass.
+- `SWARMFORGE_WAKE_RESUME_FLOOR` — ladder position a file resumes at when the
+  daemon has no in-memory record of it, such as after a daemon restart or once
+  a busy role frees up. Without this floor, a file old enough to have aged
+  past the whole ladder would resume at the attempt cap and be exhausted by
+  its very first wake.
 
 ## Implemented Helpers
 

@@ -15,6 +15,37 @@
 (def wake-echo-timeout-ms 5000)
 (def wake-echo-interval-ms 100)
 
+(defn env-long [name default]
+  (or (some-> (System/getenv name) parse-long) default))
+
+;; Retry ladder for handoffs still sitting unclaimed in a recipient's inbox/new.
+;; Overridable constants, not standards: a swallowed keystroke must be re-sent,
+;; but an agent that is simply slow must not be spammed every second.
+;; SWARMFORGE_WAKE_RETRY_MS collapses the ladder to one interval; tests use it to
+;; observe several passes without waiting out the real schedule.
+(def retry-delays-ms
+  (if-let [flat (env-long "SWARMFORGE_WAKE_RETRY_MS" nil)]
+    [flat]
+    [5000 15000 60000]))
+(def retry-interval-ms (env-long "SWARMFORGE_WAKE_RETRY_MS" 300000))
+(def retry-attempt-cap (env-long "SWARMFORGE_WAKE_ATTEMPT_CAP" 12))
+;; Ladder position a file resumes at when the daemon has no memory of it - after a
+;; restart, or after a busy role finally frees up. Without this floor, elapsed
+;; wall-clock time alone is charged as attempts: a file older than the whole ladder
+;; resumes at the cap and is exhausted by its very first wake, which is precisely
+;; the 8-hour-idle case this reconciliation exists to fix. The floor keeps the
+;; restart from replaying the fast 5s/15s rungs while leaving most of the cap unspent.
+(def retry-resume-floor (env-long "SWARMFORGE_WAKE_RESUME_FLOOR" 3))
+;; Wake retries per poll pass. poll-once! is single threaded, so an unbounded
+;; retry backlog would push outbox->inbox delivery behind it.
+(def retry-notify-budget (env-long "SWARMFORGE_WAKE_BUDGET" 2))
+
+;; handoff id -> {:attempts n :last-ms t}. In memory only: a daemon restart costs
+;; at most one extra idempotent wake, which is cheaper than a persistence surface
+;; to maintain. Keyed by the id header, not the filename, because
+;; move-with-collision renames files on delivery collisions.
+(def retry-state (atom {}))
+
 (defn usage []
   (binding [*out* *err*]
     (println "Usage: handoffd.bb [--once] <project-root>"))
@@ -98,8 +129,25 @@
   (fs/path (:worktree-path role-info)
            ".swarmforge" "handoffs" "inbox" "new" filename))
 
+(defn tmux-stub []
+  (System/getenv "SWARMFORGE_TMUX_STUB"))
+
+(defn record-argv! [file argv]
+  (when-let [dir (fs/parent file)]
+    (fs/create-dirs dir))
+  (spit (str file) (str (pr-str (vec argv)) "\n") :append true))
+
+(defn tmux!
+  "Every tmux call goes through here so tests can record argv instead of driving
+  a real TUI. The stub answers exit 0: a recorder has nothing to fail at."
+  [& argv]
+  (let [full (into ["tmux"] argv)]
+    (if-let [stub (tmux-stub)]
+      (do (record-argv! stub full) {:exit 0 :out "" :err ""})
+      (apply sh full))))
+
 (defn pane-text [socket session]
-  (let [result (sh "tmux" "-S" socket "capture-pane" "-p" "-t" session)]
+  (let [result (tmux! "-S" socket "capture-pane" "-p" "-t" session)]
     (if (zero? (:exit result)) (:out result) "")))
 
 (defn await-wake-echo!
@@ -122,25 +170,35 @@
 (defn submit-keys
   "tmux send-keys arguments that make this agent's TUI submit its input line.
 
-  Claude Code negotiates the kitty keyboard protocol and then ignores a bare CR,
-  so it only submits on the CSI u encoding of Enter (ESC [ 13 u). Sending CSI u
-  to a TUI that did not negotiate the protocol would insert those bytes as
-  literal text, so this picks by agent instead of sending both."
+  Both branches send raw bytes on purpose. A symbolic key name goes through
+  tmux's key-encoding layer, which re-encodes it for a TUI that negotiated
+  extended keys, so `C-m` does not reliably arrive as a literal Enter. Claude
+  Code negotiates the kitty keyboard protocol and only submits on CSI u
+  (ESC [ 13 u); every other backend wants the plain carriage return 0x0d, and
+  sending CSI u to a TUI that did not negotiate would insert those bytes as
+  literal text."
   [agent]
   (if (= agent "claude")
     [["-H" "1b" "5b" "31" "33" "75"]]
-    [["C-m"] ["C-j"]]))
+    [["-H" "0d"]]))
 
-(defn notify! [socket session agent]
-  (let [send-text (sh "tmux" "-S" socket "send-keys" "-t" session "-l" wake-message)]
-    (when-not (zero? (:exit send-text))
-      (throw (ex-info "tmux send text failed" send-text)))
-    (await-wake-echo! socket session)
-    (doseq [keys (submit-keys agent)]
-      (let [result (apply sh (concat ["tmux" "-S" socket "send-keys" "-t" session] keys))]
-        (when-not (zero? (:exit result))
-          (throw (ex-info "tmux send submit key failed" result)))
-        (Thread/sleep 50)))))
+(defn notify!
+  ([socket session agent] (notify! socket session agent true))
+  ([socket session agent await?]
+   (let [send-text (tmux! "-S" socket "send-keys" "-t" session "-l" wake-message)]
+     (when-not (zero? (:exit send-text))
+       (throw (ex-info "tmux send text failed" send-text)))
+     ;; The echo wait covers the first-delivery race where a submit key lands
+     ;; mid-paste. A retry must not wait: it can block up to
+     ;; wake-echo-timeout-ms, and poll-once! is single threaded.
+     (when (and await? (not (tmux-stub)))
+       (await-wake-echo! socket session))
+     (doseq [keys (submit-keys agent)]
+       (let [result (apply tmux! (concat ["-S" socket "send-keys" "-t" session] keys))]
+         (when-not (zero? (:exit result))
+           (throw (ex-info "tmux send submit key failed" result)))
+         (when-not (tmux-stub)
+           (Thread/sleep 50)))))))
 
 (defn move-with-collision [source target-dir]
   (fs/create-dirs target-dir)
@@ -247,6 +305,126 @@
         (archive-sender! headers)
         (log! "delivered" (str path))))))
 
+(defn distinct-by [f coll]
+  (:out (reduce (fn [{:keys [seen out]} x]
+                  (let [k (f x)]
+                    (if (contains? seen k)
+                      {:seen seen :out out}
+                      {:seen (conj seen k) :out (conj out x)})))
+                {:seen #{} :out []}
+                coll)))
+
+(defn parse-instant-ms [s]
+  (try
+    (.toEpochMilli (java.time.Instant/parse s))
+    (catch Exception _ nil)))
+
+(defn retry-delay-ms [attempts]
+  (get retry-delays-ms attempts retry-interval-ms))
+
+(defn attempts-from-age
+  "Ladder position implied by how long a file has waited. Used when the daemon has
+  no in-memory record, so a restart resumes the ladder instead of replaying
+  5s/15s/60s from the top."
+  [age-ms]
+  (loop [n 0 spent 0]
+    (let [d (retry-delay-ms n)]
+      (if (or (>= n retry-attempt-cap) (< age-ms (+ spent d)))
+        n
+        (recur (inc n) (+ spent d))))))
+
+(defn due-attempt
+  "Attempt number to make now for an unclaimed handoff, or nil if it is not due
+  yet or the cap is spent.
+
+  With no in-memory record the clock starts at the file's own enqueued_at rather
+  than at daemon start: after a restart the ladder resumes where it was. That
+  resume position is clamped to retry-resume-floor, not just to (dec cap): age
+  alone would otherwise charge a long-idle file the full ladder as attempts and
+  exhaust it on its very first wake, which is exactly the silent-strand case
+  this reconciliation exists to fix."
+  [now-ms id enqueued-ms]
+  (if-let [{:keys [attempts last-ms]} (get @retry-state id)]
+    (when (and (< attempts retry-attempt-cap)
+               (>= (- now-ms last-ms) (retry-delay-ms attempts)))
+      attempts)
+    (let [age (- now-ms enqueued-ms)]
+      (when (>= age (retry-delay-ms 0))
+        (min (attempts-from-age age) (dec retry-attempt-cap) retry-resume-floor)))))
+
+(defn inbox-dir [role-info state]
+  (fs/path (:worktree-path role-info) ".swarmforge" "handoffs" "inbox" state))
+
+(defn handoff-files [dir]
+  (if (fs/exists? dir)
+    (->> (fs/list-dir dir)
+         (filter #(and (fs/regular-file? %)
+                       (str/ends-with? (fs/file-name %) ".handoff")))
+         (sort-by #(fs/file-name %)))
+    []))
+
+(defn busy?
+  "True when this role is already working something. Its inbox/in_process holds
+  both single handoffs and batch directories, so any entry counts."
+  [role-info]
+  (let [dir (inbox-dir role-info "in_process")]
+    (and (fs/exists? dir) (boolean (seq (fs/list-dir dir))))))
+
+(defn wake-candidates
+  "Unclaimed handoffs due for a wake retry, oldest filename first."
+  [roles now-ms]
+  (->> (vals roles)
+       (remove busy?)
+       (mapcat (fn [role-info]
+                 (for [path (handoff-files (inbox-dir role-info "new"))
+                       :let [headers (:headers (parse-message path))
+                             id (get headers "id")
+                             enqueued (parse-instant-ms (get headers "enqueued_at"))
+                             attempt (when (and id enqueued)
+                                       (due-attempt now-ms id enqueued))]
+                       :when attempt]
+                   {:role-info role-info :path path :id id :attempt attempt})))
+       (sort-by #(fs/file-name (:path %)))))
+
+(def alerted (atom #{}))
+
+(defn wake-exhausted!
+  "Record that nobody claimed this handoff after the cap. The work stays in
+  inbox/new forever on purpose: quarantine is for malformed outbound handoffs,
+  never for work whose notification failed. Delivering this to a human is a
+  separate concern - see the SWARMFORGE_ALERT_CMD ticket."
+  [id attempts]
+  (when-not (contains? @alerted id)
+    (swap! alerted conj id)
+    (log! "wake-exhausted" id (str "attempts=" attempts))))
+
+(defn reconcile-once!
+  "Re-send the wake hint for handoffs still sitting in a recipient's inbox/new.
+
+  The wake hint is lossy: every agent TUI encodes Enter differently and a
+  keystroke that lands mid-paste gets swallowed, which strands the chain with no
+  log anomaly. The file in inbox/new is the level - it stays until
+  ready_for_next moves it to in_process - so re-sending until it moves makes
+  wake-up at-least-once instead of fire-and-forget. Never moves, copies, or
+  deletes anything: a lost notification must never be mistaken for invalid work."
+  [roles socket]
+  (let [now-ms (System/currentTimeMillis)]
+    (doseq [{:keys [role-info id attempt]}
+            (->> (wake-candidates roles now-ms)
+                 (distinct-by :id)
+                 (take retry-notify-budget))]
+      (try
+        (notify! socket (:session role-info) (:agent role-info) false)
+        (log! "wake-retry" id (str "attempt=" attempt))
+        (catch Exception e
+          ;; Log and count, then come back next tick. Routing this through fail!
+          ;; would quarantine legitimate unclaimed work.
+          (log! "wake-retry-failed" id (.getMessage e))))
+      (let [attempts (inc attempt)]
+        (swap! retry-state assoc id {:attempts attempts :last-ms now-ms})
+        (when (>= attempts retry-attempt-cap)
+          (wake-exhausted! id attempts))))))
+
 (defn outbox-files [role-info]
   (let [outbox (fs/path (:worktree-path role-info) ".swarmforge" "handoffs" "outbox")]
     (when (fs/exists? outbox)
@@ -289,7 +467,12 @@
             (try
               (fail! (fs/path path) (.getMessage e))
               (catch Exception nested
-                (log! "failed-to-archive" path (.getMessage nested))))))))))
+                (log! "failed-to-archive" path (.getMessage nested)))))))
+      ;; Guarded separately: a reconcile bug must never take delivery down with it.
+      (try
+        (reconcile-once! roles socket)
+        (catch Exception e
+          (log! "reconcile-error" (.getMessage e)))))))
 
 (defn shutdown! []
   (reset! stopping-flag true)

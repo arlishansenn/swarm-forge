@@ -1,6 +1,6 @@
 ---
 name: swarmforge-operator
-description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, or stopping the swarm."
+description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, stopping the swarm, or installing an upstream pack (two-pack, four-pack, six-pack) into a new or existing project directory before the swarm has ever run."
 ---
 
 # SwarmForge Operator
@@ -42,6 +42,29 @@ mode. The row whose worktree name is `master` is the intake role.
 Stop if a runtime file is missing, the socket has no sessions, or there is not
 exactly one master row. A host can run several projects; only touch state under
 `ROOT` and the socket read from that project.
+
+## Verb: `onboard project`
+
+Install one upstream pack into a managed project directory. This is the
+skill's only creative verb: it lands files and stops.
+
+```sh
+scripts/onboard-project.sh --root <project-dir> --pack <two-pack|four-pack|six-pack> [--local]
+```
+
+Exit codes / STATUS line:
+
+- `0` `ONBOARDED`
+- `2` `USAGE` — missing arguments, or pack not in the whitelist (`main` is
+  upstream's documentary branch and never a pack)
+- `4` `OCCUPIED` — target already has `swarm` or `swarmforge/`; zero writes
+- `5` `ERROR` — download or extract failed; target unchanged
+
+**Boundary:** do not run `./swarm` for the user after onboarding. The three
+hard prohibitions stand unchanged: never start, never clean up, never decide
+the start time for the user. The script also never touches the target
+project's git state — `git init` is the swarm launcher's own first-run
+behavior.
 
 ## Verb: `open swarm`
 
@@ -133,12 +156,13 @@ key encoding:
 
 ```sh
 tmux -S "$SOCK" send-keys -t "$SESSION" -l "ready_for_next.sh"
-sleep 1
-# claude
+# The submit key branches by backend: both send raw bytes. A symbolic key name
+# (C-m/C-j) passes through tmux's key-encoding layer, and a TUI that negotiated
+# extended keys does not receive a literal Enter.
+# claude: CSI-u Enter
 tmux -S "$SOCK" send-keys -t "$SESSION" -H 1b 5b 31 33 75
-# codex, copilot, or grok
-tmux -S "$SOCK" send-keys -t "$SESSION" C-m
-tmux -S "$SOCK" send-keys -t "$SESSION" C-j
+# other backends (codex, grok...): raw carriage return
+tmux -S "$SOCK" send-keys -t "$SESSION" -H 0d
 ```
 
 Run those tmux commands on the target host. Use only the branch matching the

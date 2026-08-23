@@ -97,19 +97,27 @@
     (when (fs/exists? file)
       (not-empty (str/trim (slurp (str file)))))))
 
+(defn submit-keys
+  "tmux send-keys arguments that make this agent's TUI submit its input line.
+  Kept byte-identical to handoffd's copy: a symbolic key name is re-encoded by
+  tmux for a TUI that negotiated extended keys and then never submits."
+  [agent]
+  (if (= agent "claude")
+    [["-H" "1b" "5b" "31" "33" "75"]]
+    [["-H" "0d"]]))
+
 (defn inject-master! [root text]
   (try
     (let [socket (tmux-socket root)
-          target (when-let [row (master-row root)]
-                   (pane-target row))]
+          row (master-row root)
+          target (when row (pane-target row))
+          agent (nth row 5 "codex")]
       (when (and socket target (not (str/blank? text)))
         (send-keys! socket target "-l" text)
         (when-not (tmux-stub)
           (Thread/sleep 150))
-        (send-keys! socket target "C-m")
-        (when-not (tmux-stub)
-          (Thread/sleep 50))
-        (send-keys! socket target "C-j")))
+        (doseq [keys (submit-keys agent)]
+          (apply send-keys! socket target keys))))
     (catch Exception _)))
 
 (defn pack-board [root & args]

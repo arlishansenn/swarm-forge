@@ -104,6 +104,21 @@
 (defn head-sha [root]
   (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD"))))
 
+(defn read-argv
+  "Read a SWARMFORGE_TMUX_STUB file back into a vector of argv vectors."
+  [path]
+  (if (fs/exists? path)
+    (->> (str/split-lines (read-file path))
+         (remove str/blank?)
+         (mapv read-string))
+    []))
+
+(defn run-handoffd-once!
+  "One daemon pass with tmux replaced by an argv recorder."
+  [root argv-file]
+  (run {:dir root :env {"SWARMFORGE_TMUX_STUB" (str argv-file)}}
+       "bb" (script "handoffd.bb") "--once" (str root)))
+
 (defn make-queued-handoff!
   ([root filename attrs]
    (let [sha (or (:commit attrs) (head-sha root))]
@@ -577,6 +592,252 @@
         (is (str/includes? (:err ready) "TASK_IN_PROCESS_IS_BATCH"))
         (is (= 2 (:exit done)))
         (is (str/includes? (:err done) "CURRENT_WORK_IS_BATCH"))))))
+
+(deftest handoffd-routes-every-tmux-call-through-the-argv-stub
+  ;; Given a queued outbox handoff and SWARMFORGE_TMUX_STUB set
+  ;; When the daemon runs one pass
+  ;; Then no real tmux runs: the wake text lands in the stub file instead
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"sender" "task" "receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (write-file (fs/path root ".swarmforge/handoffs/outbox/50_20260101T000000Z_000001_from_sender_to_receiver.handoff")
+                (handoff {:id "20260101T000000Z_000001_from_sender"
+                          :from "sender" :to "receiver"
+                          :priority "50" :type "message" :task "stub-seam"}))
+    (run-handoffd-once! root argv-file)
+    (let [argv (read-argv argv-file)]
+      (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-l"
+              "You have new handoff mail. If idle, run ready_for_next.sh."]
+             (first argv))
+          "the wake text send must be recorded, not executed"))))
+
+(deftest handoffd-submits-a-codex-wake-with-a-raw-carriage-return
+  ;; Given a codex role receiving a handoff
+  ;; When the daemon delivers it
+  ;; Then Enter goes out as the raw byte 0d, not as the symbolic C-m/C-j that
+  ;; tmux re-encodes for a TUI that negotiated extended keys
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"sender" "task" "receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (write-file (fs/path root ".swarmforge/handoffs/outbox/50_20260101T000000Z_000002_from_sender_to_receiver.handoff")
+                (handoff {:id "20260101T000000Z_000002_from_sender"
+                          :from "sender" :to "receiver"
+                          :priority "50" :type "message" :task "codex-enter"}))
+    (run-handoffd-once! root argv-file)
+    (let [argv (read-argv argv-file)]
+      (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-H" "0d"]
+             (second argv)))
+      (is (= 2 (count argv)) "raw CR replaces the C-m + C-j pair, so one submit call"))))
+
+(deftest handoffd-submits-a-claude-wake-with-csi-u-enter
+  ;; Given a claude role receiving a handoff
+  ;; When the daemon delivers it
+  ;; Then Enter stays CSI-u: claude negotiates the kitty keyboard protocol and
+  ;; ignores a bare CR
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"sender" "task" "receiver" "task"})
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (str "sender\tmaster\t" root "\tsession\tSender\tclaude\ttask\n"
+                     "receiver\tmaster\t" root "\tsession\tReceiver\tclaude\ttask\n"))
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (write-file (fs/path root ".swarmforge/handoffs/outbox/50_20260101T000000Z_000003_from_sender_to_receiver.handoff")
+                (handoff {:id "20260101T000000Z_000003_from_sender"
+                          :from "sender" :to "receiver"
+                          :priority "50" :type "message" :task "claude-enter"}))
+    (run-handoffd-once! root argv-file)
+    (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-H" "1b" "5b" "31" "33" "75"]
+           (second (read-argv argv-file))))))
+
+(defn entry-count
+  "Entries in dir, or 0 when the dir was never created. fs/glob on a missing
+  directory is not portable across babashka.fs versions."
+  [dir]
+  (if (fs/exists? dir) (count (fs/list-dir dir)) 0))
+
+(defn stalled-handoff!
+  "A handoff that has sat unclaimed in a recipient's inbox/new since 2026-01-01,
+  i.e. far past every retry delay."
+  [root filename id]
+  (put-handoff! root "new" filename
+                {:id id :from "sender" :to "receiver" :recipient "receiver"
+                 :priority "50" :type "message" :task "stalled"
+                 :enqueued-at "2026-01-01T00:00:00Z"}))
+
+(deftest handoffd-rewakes-a-handoff-left-unclaimed-in-inbox-new
+  ;; Given a handoff that has sat in inbox/new past the first retry delay
+  ;; When the daemon runs one pass
+  ;; Then it re-sends the same wake hint, because the file is the level: a
+  ;; keystroke the TUI swallowed leaves no other trace
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (stalled-handoff! root "50_20260101T000000Z_000010_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000010_from_sender")
+    (run-handoffd-once! root argv-file)
+    (let [argv (read-argv argv-file)]
+      (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-l"
+              "You have new handoff mail. If idle, run ready_for_next.sh."]
+             (first argv)))
+      (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-H" "0d"]
+             (second argv))))))
+
+(deftest handoffd-does-not-rewake-a-handoff-already-claimed
+  ;; Given the same old handoff, but already moved to in_process by ready_for_next
+  ;; When the daemon runs one pass
+  ;; Then no wake is sent: the move is the authoritative claim acknowledgement
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (put-handoff! root "in_process" "50_20260101T000000Z_000011_from_sender_to_receiver.handoff"
+                  {:id "20260101T000000Z_000011_from_sender"
+                   :from "sender" :to "receiver" :recipient "receiver"
+                   :priority "50" :type "message" :task "claimed"
+                   :enqueued-at "2026-01-01T00:00:00Z"})
+    (run-handoffd-once! root argv-file)
+    (is (= [] (read-argv argv-file)))))
+
+(deftest handoffd-leaves-the-original-file-as-the-only-payload
+  ;; Given an unclaimed handoff woken twice
+  ;; When two daemon passes run
+  ;; Then inbox/new still holds exactly that one file: a retry re-notifies, it
+  ;; never re-queues, and notification failure must never look like new work
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")
+        new-dir (fs/path root ".swarmforge/handoffs/inbox/new")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (stalled-handoff! root "50_20260101T000000Z_000012_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000012_from_sender")
+    (run-handoffd-once! root argv-file)
+    (run-handoffd-once! root argv-file)
+    (is (= 1 (count (fs/glob new-dir "*.handoff"))))
+    (is (= 0 (entry-count (fs/path root ".swarmforge/handoffs/inbox/failed"))))))
+
+(deftest handoffd-skips-wake-retries-for-a-busy-role
+  ;; Given a role already working one handoff and queuing a second
+  ;; When the daemon runs one pass
+  ;; Then no wake is sent: the queued file waits by design, and wake text
+  ;; injected into a working agent corrupts its input line
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (put-handoff! root "in_process" "50_20260101T000000Z_000020_from_sender_to_receiver.handoff"
+                  {:id "20260101T000000Z_000020_from_sender"
+                   :from "sender" :to "receiver" :recipient "receiver"
+                   :priority "50" :type "message" :task "working"
+                   :enqueued-at "2026-01-01T00:00:00Z"})
+    (stalled-handoff! root "50_20260101T000000Z_000021_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000021_from_sender")
+    (run-handoffd-once! root argv-file)
+    (is (= [] (read-argv argv-file)))))
+
+(deftest handoffd-caps-wake-notifications-per-pass
+  ;; Given three idle roles each holding one stalled handoff
+  ;; When the daemon runs one pass
+  ;; Then at most two are woken: poll-once! is single threaded, so an unbounded
+  ;; retry backlog would push outbox->inbox delivery behind it
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")]
+    (init-repo! root)
+    (setup-project! root {"alpha" "task" "beta" "task" "gamma" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (doseq [[n role] [["30" "alpha"] ["31" "beta"] ["32" "gamma"]]]
+      (put-handoff! root "new"
+                    (str "50_20260101T000000Z_0000" n "_from_sender_to_" role ".handoff")
+                    {:id (str "20260101T000000Z_0000" n "_from_sender")
+                     :from "sender" :to role :recipient role
+                     :priority "50" :type "message" :task "stalled"
+                     :enqueued-at "2026-01-01T00:00:00Z"}))
+    (run-handoffd-once! root argv-file)
+    ;; two wakes, each recorded as one text send plus one submit key
+    (is (= 4 (count (read-argv argv-file))))))
+
+(deftest handoffd-keeps-unclaimed-work-in-inbox-new-when-the-wake-fails
+  ;; Given a stalled handoff and a tmux socket with no server behind it, so the
+  ;; real tmux call fails
+  ;; When the daemon runs one pass with no stub
+  ;; Then the file stays in inbox/new and nothing lands in failed/: a lost
+  ;; notification is not invalid work
+  (let [root (tmp-dir)
+        new-dir (fs/path root ".swarmforge/handoffs/inbox/new")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket")
+                (str (fs/path root "no-such.sock") "\n"))
+    (stalled-handoff! root "50_20260101T000000Z_000040_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000040_from_sender")
+    (run {:dir root} "bb" (script "handoffd.bb") "--once" (str root))
+    (is (= 1 (count (fs/glob new-dir "*.handoff"))))
+    (is (= 0 (entry-count (fs/path root ".swarmforge/handoffs/inbox/failed"))))
+    (is (= 0 (entry-count (fs/path root ".swarmforge/handoffs/failed"))))
+    (is (str/includes? (read-file (fs/path root ".swarmforge/daemon/handoffd.log"))
+                       "wake-retry-failed"))))
+
+(deftest handoffd-stops-waking-after-the-attempt-cap
+  ;; Given a one-attempt cap and a 200ms retry interval
+  ;; When the daemon runs long enough for several passes
+  ;; Then it wakes once, logs wake-exhausted once, and leaves the file in place
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")
+        log-file (fs/path root ".swarmforge/daemon/handoffd.log")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (stalled-handoff! root "50_20260101T000000Z_000041_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000041_from_sender")
+    (run {:dir root :ok? false}
+         "sh" "-c"
+         (str "SWARMFORGE_TMUX_STUB=" argv-file
+              " SWARMFORGE_WAKE_ATTEMPT_CAP=1 SWARMFORGE_WAKE_RETRY_MS=200"
+              " bb " (script "handoffd.bb") " " root " >/dev/null 2>&1 &"))
+    (Thread/sleep 3000)
+    (run {:dir root} (script "stop_handoff_daemon.bb") (str root))
+    (Thread/sleep 300)
+    (let [log (read-file log-file)]
+      (is (= 1 (count (re-seq #"wake-retry " log))))
+      (is (= 1 (count (re-seq #"wake-exhausted " log))))
+      (is (= 1 (count (fs/glob (fs/path root ".swarmforge/handoffs/inbox/new") "*.handoff")))))))
+
+(deftest handoffd-keeps-retrying-an-old-handoff-past-the-first-wake
+  ;; Given an old unclaimed handoff and the DEFAULT attempt cap (no
+  ;; SWARMFORGE_WAKE_ATTEMPT_CAP override)
+  ;; When the daemon runs long enough for several poll passes
+  ;; Then it wakes more than once and never exhausts: a resume floor, not raw
+  ;; elapsed age, sets the ladder position a restart or a busy-role delay
+  ;; resumes at
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")
+        log-file (fs/path root ".swarmforge/daemon/handoffd.log")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (stalled-handoff! root "50_20260101T000000Z_000042_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000042_from_sender")
+    (run {:dir root :ok? false}
+         "sh" "-c"
+         (str "SWARMFORGE_TMUX_STUB=" argv-file
+              " SWARMFORGE_WAKE_RETRY_MS=200"
+              " bb " (script "handoffd.bb") " " root " >/dev/null 2>&1 &"))
+    (Thread/sleep 3500)
+    (run {:dir root} (script "stop_handoff_daemon.bb") (str root))
+    (Thread/sleep 300)
+    (let [log (read-file log-file)]
+      (is (>= (count (re-seq #"wake-retry " log)) 2))
+      (is (= 0 (count (re-seq #"wake-exhausted " log))))
+      (is (= 1 (count (fs/glob (fs/path root ".swarmforge/handoffs/inbox/new") "*.handoff")))))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.handoff-test)]
