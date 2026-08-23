@@ -133,12 +133,12 @@ key encoding:
 
 ```sh
 tmux -S "$SOCK" send-keys -t "$SESSION" -l "ready_for_next.sh"
-sleep 1
-# claude
+# 提交键按 backend 分：两支都发裸字节。符号键名（C-m/C-j）会过 tmux 的
+# key-encoding 层，协商了 extended keys 的 TUI 收到的不是字面 Enter。
+# claude：CSI-u Enter
 tmux -S "$SOCK" send-keys -t "$SESSION" -H 1b 5b 31 33 75
-# codex, copilot, or grok
-tmux -S "$SOCK" send-keys -t "$SESSION" C-m
-tmux -S "$SOCK" send-keys -t "$SESSION" C-j
+# 其它 backend（codex、grok…）：裸回车
+tmux -S "$SOCK" send-keys -t "$SESSION" -H 0d
 ```
 
 Run those tmux commands on the target host. Use only the branch matching the

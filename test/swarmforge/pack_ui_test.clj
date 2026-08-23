@@ -468,9 +468,11 @@
       (is (= text body)))))
 
 (deftest inject-master-records-send-keys-argv
-  ;; Given master session swarmforge-specifier in roles.tsv
+  ;; Given master session swarmforge-specifier running codex in roles.tsv
   ;; When --test-inject-argv records the would-be tmux argv
-  ;; Then it send-keys -l the text to that session, then C-m
+  ;; Then it send-keys -l the text, then a raw carriage return — the same
+  ;; encoding handoffd uses, because a symbolic C-m is re-encoded by tmux for a
+  ;; TUI that negotiated extended keys and then never submits
   (let [root (tmp-dir)
         argv-file (str (fs/path root "tmux.argv"))
         sock (str (fs/path root "tmux.sock"))
@@ -484,10 +486,9 @@
       (is (zero? (:exit result)))
       (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier:Specifier.0" "-l" text]
              (first argv)))
-      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier:Specifier.0" "C-m"]
+      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier:Specifier.0" "-H" "0d"]
              (second argv)))
-      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier:Specifier.0" "C-j"]
-             (nth argv 2))))))
+      (is (= 2 (count argv))))))
 
 (deftest pack-web-post-task-injects-payload-into-master-session
   ;; Given a tmux argv stub
@@ -505,8 +506,8 @@
       (is (zero? (:exit result)))
       (is (= "specifier" (task-lane root "htw-console-app")))
       (is (= example-task-payload (last (first argv))))
-      (is (= "C-m" (last (second argv))))
-      (is (= "C-j" (last (nth argv 2)))))))
+      (is (= ["-H" "0d"] (take-last 2 (second argv))))
+      (is (= 2 (count argv))))))
 
 (deftest pack-web-post-chat-injects-text-as-is
   ;; Given a tmux argv stub
@@ -524,8 +525,8 @@
       (is (zero? (:exit result)))
       (is (= text (last (first argv))))
       (is (not (str/starts-with? (str (last (first argv))) "Task:")))
-      (is (= "C-m" (last (second argv))))
-      (is (= "C-j" (last (nth argv 2)))))))
+      (is (= ["-H" "0d"] (take-last 2 (second argv))))
+      (is (= 2 (count argv))))))
 
 (deftest attention-reject-injects-a-message-to-master
   ;; Given a pending approval and a tmux argv stub
@@ -553,8 +554,8 @@
       (is (= [] (pending-names root)))
       (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app")))
       (is (= "Rejected: htw-console-app" (last (first argv))))
-      (is (= "C-m" (last (second argv))))
-      (is (= "C-j" (last (nth argv 2)))))))
+      (is (= ["-H" "0d"] (take-last 2 (second argv))))
+      (is (= 2 (count argv))))))
 
 (deftest pack-dashboard-chat-rail-posts-to-master
   ;; Given dashboard HTML
