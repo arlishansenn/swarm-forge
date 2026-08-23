@@ -839,6 +839,70 @@
       (is (= 0 (count (re-seq #"wake-exhausted " log))))
       (is (= 1 (count (fs/glob (fs/path root ".swarmforge/handoffs/inbox/new") "*.handoff")))))))
 
+(deftest handoffd-runs-the-alert-command-once-when-the-cap-is-spent
+  ;; Given SWARMFORGE_ALERT_CMD, a one-attempt cap and a 200ms retry interval
+  ;; When the daemon runs long enough for several passes past exhaustion
+  ;; Then the command runs exactly once: the daemon log is audit, the alert is
+  ;; delivery, and repeating it for the same handoff is noise a human learns to
+  ;; ignore
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")
+        alert-file (fs/path root "alert.log")
+        log-file (fs/path root ".swarmforge/daemon/handoffd.log")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (stalled-handoff! root "50_20260101T000000Z_000050_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000050_from_sender")
+    (run {:dir root :ok? false}
+         "sh" "-c"
+         (str "SWARMFORGE_TMUX_STUB=" argv-file
+              " SWARMFORGE_WAKE_ATTEMPT_CAP=1 SWARMFORGE_WAKE_RETRY_MS=200"
+              " SWARMFORGE_ALERT_CMD='echo \"$SWARMFORGE_ALERT_HANDOFF"
+              " $SWARMFORGE_ALERT_ATTEMPTS\" >> " alert-file "'"
+              " bb " (script "handoffd.bb") " " root " >/dev/null 2>&1 &"))
+    (Thread/sleep 3000)
+    (run {:dir root} (script "stop_handoff_daemon.bb") (str root))
+    (Thread/sleep 300)
+    (let [lines (if (fs/exists? alert-file)
+                  (remove str/blank? (str/split-lines (read-file alert-file)))
+                  [])]
+      (is (= 1 (count lines)) "the alert fires once, not once per poll pass")
+      (is (= "20260101T000000Z_000050_from_sender 1" (first lines))
+          "the command sees the handoff id and attempt count"))
+    (is (str/includes? (read-file log-file) "alert ")
+        "the alert attempt is auditable in the daemon log")))
+
+(deftest handoffd-survives-a-failing-alert-command
+  ;; Given an alert command that exits non-zero
+  ;; When the cap is spent
+  ;; Then the daemon logs the failure and keeps running: a broken alert channel
+  ;; must never stop delivery, and the work must not be quarantined
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")
+        log-file (fs/path root ".swarmforge/daemon/handoffd.log")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (stalled-handoff! root "50_20260101T000000Z_000051_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000051_from_sender")
+    (run {:dir root :ok? false}
+         "sh" "-c"
+         (str "SWARMFORGE_TMUX_STUB=" argv-file
+              " SWARMFORGE_WAKE_ATTEMPT_CAP=1 SWARMFORGE_WAKE_RETRY_MS=200"
+              " SWARMFORGE_ALERT_CMD='exit 7'"
+              " bb " (script "handoffd.bb") " " root " >/dev/null 2>&1 &"))
+    (Thread/sleep 3000)
+    (run {:dir root} (script "stop_handoff_daemon.bb") (str root))
+    (Thread/sleep 300)
+    (let [log (read-file log-file)]
+      (is (str/includes? log "alert ") "the failed attempt is still audited")
+      (is (str/includes? log "exit=7") "the command's exit code is recorded")
+      (is (= 1 (count (fs/glob (fs/path root ".swarmforge/handoffs/inbox/new") "*.handoff")))
+          "unclaimed work stays in inbox/new")
+      (is (= 0 (entry-count (fs/path root ".swarmforge/handoffs/inbox/failed")))
+          "a failed alert never quarantines work"))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.handoff-test)]
     (System/exit (+ fail error))))

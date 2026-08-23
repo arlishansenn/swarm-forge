@@ -576,6 +576,13 @@ outbox->inbox delivery. Unclaimed work is never quarantined or deleted: after
 the attempt cap is spent, the file stays in `inbox/new` and the daemon logs
 `wake-exhausted` instead of moving or removing it.
 
+The daemon log is an audit trail, not a delivery channel, so exhausting the cap
+also runs the operator's alert command once per handoff. The daemon does not
+know or care which channel that is: it runs `SWARMFORGE_ALERT_CMD` through a
+shell with `SWARMFORGE_ALERT_HANDOFF` and `SWARMFORGE_ALERT_ATTEMPTS` in its
+environment, logs the exit code and output, and swallows any failure. With the
+variable unset the behaviour degrades to the log line alone.
+
 The retry ladder is tuned by four environment variables:
 
 - `SWARMFORGE_WAKE_RETRY_MS` — collapses the backoff ladder to one flat
@@ -588,6 +595,13 @@ The retry ladder is tuned by four environment variables:
   a busy role frees up. Without this floor, a file old enough to have aged
   past the whole ladder would resume at the attempt cap and be exhausted by
   its very first wake.
+
+Alerting is configured by one more:
+
+- `SWARMFORGE_ALERT_CMD` — shell command run once when a handoff exhausts the
+  attempt cap. It reads `SWARMFORGE_ALERT_HANDOFF` and
+  `SWARMFORGE_ALERT_ATTEMPTS` from its environment to name what is stuck.
+  Unset means no alert is delivered.
 
 ## Implemented Helpers
 

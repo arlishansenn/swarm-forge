@@ -388,15 +388,41 @@
 
 (def alerted (atom #{}))
 
+(defn alert!
+  "Hand a cap-exhausted handoff to whatever channel the operator configured.
+
+  The daemon log is audit, not delivery: a chain once stalled eight hours with
+  the evidence sitting in this very log and nobody reading it. So the channel is
+  an env hook the deployment fills in - hermes, ntfy, mail, anything that reaches
+  a human - and this code stays ignorant of which. The command sees the handoff
+  id and attempt count as env vars so it can name what is stuck.
+
+  A broken alert channel must never stop the daemon, so a failing or missing
+  command is logged and swallowed."
+  [id attempts]
+  (when-let [cmd (System/getenv "SWARMFORGE_ALERT_CMD")]
+    (let [env (merge (into {} (System/getenv))
+                     {"SWARMFORGE_ALERT_HANDOFF" id
+                      "SWARMFORGE_ALERT_ATTEMPTS" (str attempts)})
+          result (try
+                   (sh "sh" "-c" cmd :env env)
+                   (catch Exception e {:exit -1 :out "" :err (.getMessage e)}))]
+      (log! "alert" id (str "exit=" (:exit result))
+            (str/trim (str (:out result) " " (:err result)))))))
+
 (defn wake-exhausted!
-  "Record that nobody claimed this handoff after the cap. The work stays in
-  inbox/new forever on purpose: quarantine is for malformed outbound handoffs,
-  never for work whose notification failed. Delivering this to a human is a
-  separate concern - see the SWARMFORGE_ALERT_CMD ticket."
+  "Record that nobody claimed this handoff after the cap, and alert the operator
+  once. The work stays in inbox/new forever on purpose: quarantine is for
+  malformed outbound handoffs, never for work whose notification failed.
+
+  The de-bounce is the point of the alerted set - reconcile reaches this cap
+  check on every later pass, and an alert that repeats every second is noise a
+  human learns to ignore."
   [id attempts]
   (when-not (contains? @alerted id)
     (swap! alerted conj id)
-    (log! "wake-exhausted" id (str "attempts=" attempts))))
+    (log! "wake-exhausted" id (str "attempts=" attempts))
+    (alert! id attempts)))
 
 (defn reconcile-once!
   "Re-send the wake hint for handoffs still sitting in a recipient's inbox/new.
