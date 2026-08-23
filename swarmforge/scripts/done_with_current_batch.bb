@@ -3,12 +3,10 @@
 (ns done-with-current-batch
   (:require [babashka.fs :as fs]
             [babashka.process :as process]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [handoff-lib :as hl]))
 
 (def script-dir (fs/parent *file*))
-
-(defn inbox-dir []
-  (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs" "inbox"))
 
 (defn timestamp []
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
@@ -66,7 +64,7 @@
   (process/exec (str (fs/path script-dir "ready_for_next_batch.sh"))))
 
 (defn -main []
-  (let [inbox (inbox-dir)
+  (let [inbox (hl/inbox-dir)
         in-process-dir (fs/path inbox "in_process")
         completed-dir (fs/path inbox "completed")]
     (doseq [dir [in-process-dir completed-dir]]
@@ -103,4 +101,9 @@
         (println "COMPLETED_BATCH:" (str target-dir))
         (run-ready!)))))
 
-(-main)
+(try
+  (-main)
+  ;; handoff-lib reports a broken roles.tsv by throwing. The agent reading this
+  ;; pane needs one actionable line, not a stack trace.
+  (catch clojure.lang.ExceptionInfo e
+    (fail! (or (:exit (ex-data e)) 1) (ex-message e))))

@@ -138,6 +138,11 @@
        (remove str/blank?)
        vec))
 
+;; Project-level on purpose, unlike the per-role inbox: a sender running inside
+;; its worktree still queues onto the project, and swarm-handoff-queues-on-the-
+;; project-from-a-worktree asserts exactly that. The daemon reads one project
+;; outbox and fans out into per-role inboxes, so the two sides are asymmetric by
+;; design - do not "unify" this with the inbox rule.
 (defn state-dir []
   (fs/path (project-root) ".swarmforge" "handoffs"))
 
