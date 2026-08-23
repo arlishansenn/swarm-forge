@@ -765,6 +765,52 @@
     ;; two wakes, each recorded as one text send plus one submit key
     (is (= 4 (count (read-argv argv-file))))))
 
+(deftest handoffd-keeps-unclaimed-work-in-inbox-new-when-the-wake-fails
+  ;; Given a stalled handoff and a tmux socket with no server behind it, so the
+  ;; real tmux call fails
+  ;; When the daemon runs one pass with no stub
+  ;; Then the file stays in inbox/new and nothing lands in failed/: a lost
+  ;; notification is not invalid work
+  (let [root (tmp-dir)
+        new-dir (fs/path root ".swarmforge/handoffs/inbox/new")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket")
+                (str (fs/path root "no-such.sock") "\n"))
+    (stalled-handoff! root "50_20260101T000000Z_000040_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000040_from_sender")
+    (run {:dir root} "bb" (script "handoffd.bb") "--once" (str root))
+    (is (= 1 (count (fs/glob new-dir "*.handoff"))))
+    (is (= 0 (entry-count (fs/path root ".swarmforge/handoffs/inbox/failed"))))
+    (is (= 0 (entry-count (fs/path root ".swarmforge/handoffs/failed"))))
+    (is (str/includes? (read-file (fs/path root ".swarmforge/daemon/handoffd.log"))
+                       "wake-retry-failed"))))
+
+(deftest handoffd-stops-waking-after-the-attempt-cap
+  ;; Given a one-attempt cap and a 200ms retry interval
+  ;; When the daemon runs long enough for several passes
+  ;; Then it wakes once, logs wake-exhausted once, and leaves the file in place
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")
+        log-file (fs/path root ".swarmforge/daemon/handoffd.log")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (stalled-handoff! root "50_20260101T000000Z_000041_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000041_from_sender")
+    (run {:dir root :ok? false}
+         "sh" "-c"
+         (str "SWARMFORGE_TMUX_STUB=" argv-file
+              " SWARMFORGE_WAKE_ATTEMPT_CAP=1 SWARMFORGE_WAKE_RETRY_MS=200"
+              " bb " (script "handoffd.bb") " " root " >/dev/null 2>&1 &"))
+    (Thread/sleep 3000)
+    (run {:dir root} (script "stop_handoff_daemon.bb") (str root))
+    (Thread/sleep 300)
+    (let [log (read-file log-file)]
+      (is (= 1 (count (re-seq #"wake-retry " log))))
+      (is (= 1 (count (re-seq #"wake-exhausted " log))))
+      (is (= 1 (count (fs/glob (fs/path root ".swarmforge/handoffs/inbox/new") "*.handoff")))))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.handoff-test)]
     (System/exit (+ fail error))))

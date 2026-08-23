@@ -15,15 +15,23 @@
 (def wake-echo-timeout-ms 5000)
 (def wake-echo-interval-ms 100)
 
+(defn env-long [name default]
+  (or (some-> (System/getenv name) parse-long) default))
+
 ;; Retry ladder for handoffs still sitting unclaimed in a recipient's inbox/new.
 ;; Overridable constants, not standards: a swallowed keystroke must be re-sent,
 ;; but an agent that is simply slow must not be spammed every second.
-(def retry-delays-ms [5000 15000 60000])
-(def retry-interval-ms 300000)
-(def retry-attempt-cap 12)
+;; SWARMFORGE_WAKE_RETRY_MS collapses the ladder to one interval; tests use it to
+;; observe several passes without waiting out the real schedule.
+(def retry-delays-ms
+  (if-let [flat (env-long "SWARMFORGE_WAKE_RETRY_MS" nil)]
+    [flat]
+    [5000 15000 60000]))
+(def retry-interval-ms (env-long "SWARMFORGE_WAKE_RETRY_MS" 300000))
+(def retry-attempt-cap (env-long "SWARMFORGE_WAKE_ATTEMPT_CAP" 12))
 ;; Wake retries per poll pass. poll-once! is single threaded, so an unbounded
 ;; retry backlog would push outbox->inbox delivery behind it.
-(def retry-notify-budget 2)
+(def retry-notify-budget (env-long "SWARMFORGE_WAKE_BUDGET" 2))
 
 ;; handoff id -> {:attempts n :last-ms t}. In memory only: a daemon restart costs
 ;; at most one extra idempotent wake, which is cheaper than a persistence surface
@@ -367,6 +375,18 @@
                    {:role-info role-info :path path :id id :attempt attempt})))
        (sort-by #(fs/file-name (:path %)))))
 
+(def alerted (atom #{}))
+
+(defn wake-exhausted!
+  "Record that nobody claimed this handoff after the cap. The work stays in
+  inbox/new forever on purpose: quarantine is for malformed outbound handoffs,
+  never for work whose notification failed. Delivering this to a human is a
+  separate concern - see the SWARMFORGE_ALERT_CMD ticket."
+  [id attempts]
+  (when-not (contains? @alerted id)
+    (swap! alerted conj id)
+    (log! "wake-exhausted" id (str "attempts=" attempts))))
+
 (defn reconcile-once!
   "Re-send the wake hint for handoffs still sitting in a recipient's inbox/new.
 
@@ -382,9 +402,17 @@
             (->> (wake-candidates roles now-ms)
                  (distinct-by :id)
                  (take retry-notify-budget))]
-      (notify! socket (:session role-info) (:agent role-info) false)
-      (swap! retry-state assoc id {:attempts (inc attempt) :last-ms now-ms})
-      (log! "wake-retry" id (str "attempt=" attempt)))))
+      (try
+        (notify! socket (:session role-info) (:agent role-info) false)
+        (log! "wake-retry" id (str "attempt=" attempt))
+        (catch Exception e
+          ;; Log and count, then come back next tick. Routing this through fail!
+          ;; would quarantine legitimate unclaimed work.
+          (log! "wake-retry-failed" id (.getMessage e))))
+      (let [attempts (inc attempt)]
+        (swap! retry-state assoc id {:attempts attempts :last-ms now-ms})
+        (when (>= attempts retry-attempt-cap)
+          (wake-exhausted! id attempts))))))
 
 (defn outbox-files [role-info]
   (let [outbox (fs/path (:worktree-path role-info) ".swarmforge" "handoffs" "outbox")]
