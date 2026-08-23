@@ -63,6 +63,17 @@ CURL_FAILS=1 "$SCRIPT" --root "$T" --pack six-pack --local >/dev/null 2>&1; rc=$
 check "download failure exits 5" 5 "$rc"
 check "download failure leaves nothing" "0" "$(ls -A "$T" 2>/dev/null | wc -l | tr -d ' ')"
 
+# 6. a --root containing a single quote is refused
+T="$WORK/proj-quote'oops"
+out=$("$SCRIPT" --root "$T" --pack six-pack --local 2>&1); rc=$?
+check "quoted root exits 2" 2 "$rc"
+check "quoted root STATUS" "STATUS=USAGE" "$(echo "$out" | head -1)"
+
+# 7. a missing option value takes the USAGE path instead of a raw bash error
+out=$("$SCRIPT" --root 2>&1); rc=$?
+check "missing --root value exits 2" 2 "$rc"
+check "missing --root value STATUS" "STATUS=USAGE" "$(echo "$out" | head -1)"
+
 echo "  $PASS passed, $FAIL failed"
 rm -rf "$WORK"
 [ "$FAIL" -eq 0 ]

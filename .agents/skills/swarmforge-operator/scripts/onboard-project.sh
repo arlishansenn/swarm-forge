@@ -11,17 +11,27 @@ TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
 ROOT='' PACK='' LOCAL=0
 
+# Under set -u, "$2" on a missing option value would die with a raw bash
+# unbound-variable error instead of our documented 2/USAGE contract.
+usage_error() { printf 'STATUS=USAGE\n%s\n' "$1" >&2; exit 2; }
+
 while [ $# -gt 0 ]; do
   case $1 in
-    --root) ROOT=$2; shift 2 ;;
-    --pack) PACK=$2; shift 2 ;;
-    --target) TARGET=$2; shift 2 ;;
-    --key) KEY=$2; shift 2 ;;
+    --root) [ $# -ge 2 ] || usage_error "--root requires a value"; ROOT=$2; shift 2 ;;
+    --pack) [ $# -ge 2 ] || usage_error "--pack requires a value"; PACK=$2; shift 2 ;;
+    --target) [ $# -ge 2 ] || usage_error "--target requires a value"; TARGET=$2; shift 2 ;;
+    --key) [ $# -ge 2 ] || usage_error "--key requires a value"; KEY=$2; shift 2 ;;
     --local) LOCAL=1; shift ;;
     *) sed -n '2,7p' "$0"; exit 2 ;;
   esac
 done
 [ -n "$ROOT" ] && [ -n "$PACK" ] || { sed -n '2,7p' "$0"; exit 2; }
+
+# ROOT is interpolated into a single-quoted segment of a shell string handed to
+# bash -c / ssh; a literal single quote in it would break out of that quoting.
+case $ROOT in
+  *"'"*) usage_error "--root must not contain a single quote" ;;
+esac
 
 # upstream README: main is the documentary branch, never a pack. Encoding that
 # rule here is the whole reason this script exists instead of a pasted curl.

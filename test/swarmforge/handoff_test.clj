@@ -811,6 +811,34 @@
       (is (= 1 (count (re-seq #"wake-exhausted " log))))
       (is (= 1 (count (fs/glob (fs/path root ".swarmforge/handoffs/inbox/new") "*.handoff")))))))
 
+(deftest handoffd-keeps-retrying-an-old-handoff-past-the-first-wake
+  ;; Given an old unclaimed handoff and the DEFAULT attempt cap (no
+  ;; SWARMFORGE_WAKE_ATTEMPT_CAP override)
+  ;; When the daemon runs long enough for several poll passes
+  ;; Then it wakes more than once and never exhausts: a resume floor, not raw
+  ;; elapsed age, sets the ladder position a restart or a busy-role delay
+  ;; resumes at
+  (let [root (tmp-dir)
+        argv-file (fs/path root "tmux.argv")
+        log-file (fs/path root ".swarmforge/daemon/handoffd.log")]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (stalled-handoff! root "50_20260101T000000Z_000042_from_sender_to_receiver.handoff"
+                      "20260101T000000Z_000042_from_sender")
+    (run {:dir root :ok? false}
+         "sh" "-c"
+         (str "SWARMFORGE_TMUX_STUB=" argv-file
+              " SWARMFORGE_WAKE_RETRY_MS=200"
+              " bb " (script "handoffd.bb") " " root " >/dev/null 2>&1 &"))
+    (Thread/sleep 3500)
+    (run {:dir root} (script "stop_handoff_daemon.bb") (str root))
+    (Thread/sleep 300)
+    (let [log (read-file log-file)]
+      (is (>= (count (re-seq #"wake-retry " log)) 2))
+      (is (= 0 (count (re-seq #"wake-exhausted " log))))
+      (is (= 1 (count (fs/glob (fs/path root ".swarmforge/handoffs/inbox/new") "*.handoff")))))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.handoff-test)]
     (System/exit (+ fail error))))

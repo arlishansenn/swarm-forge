@@ -29,6 +29,13 @@
     [5000 15000 60000]))
 (def retry-interval-ms (env-long "SWARMFORGE_WAKE_RETRY_MS" 300000))
 (def retry-attempt-cap (env-long "SWARMFORGE_WAKE_ATTEMPT_CAP" 12))
+;; Ladder position a file resumes at when the daemon has no memory of it - after a
+;; restart, or after a busy role finally frees up. Without this floor, elapsed
+;; wall-clock time alone is charged as attempts: a file older than the whole ladder
+;; resumes at the cap and is exhausted by its very first wake, which is precisely
+;; the 8-hour-idle case this reconciliation exists to fix. The floor keeps the
+;; restart from replaying the fast 5s/15s rungs while leaving most of the cap unspent.
+(def retry-resume-floor (env-long "SWARMFORGE_WAKE_RESUME_FLOOR" 3))
 ;; Wake retries per poll pass. poll-once! is single threaded, so an unbounded
 ;; retry backlog would push outbox->inbox delivery behind it.
 (def retry-notify-budget (env-long "SWARMFORGE_WAKE_BUDGET" 2))
@@ -331,7 +338,11 @@
   yet or the cap is spent.
 
   With no in-memory record the clock starts at the file's own enqueued_at rather
-  than at daemon start: after a restart the ladder resumes where it was."
+  than at daemon start: after a restart the ladder resumes where it was. That
+  resume position is clamped to retry-resume-floor, not just to (dec cap): age
+  alone would otherwise charge a long-idle file the full ladder as attempts and
+  exhaust it on its very first wake, which is exactly the silent-strand case
+  this reconciliation exists to fix."
   [now-ms id enqueued-ms]
   (if-let [{:keys [attempts last-ms]} (get @retry-state id)]
     (when (and (< attempts retry-attempt-cap)
@@ -339,7 +350,7 @@
       attempts)
     (let [age (- now-ms enqueued-ms)]
       (when (>= age (retry-delay-ms 0))
-        (min (attempts-from-age age) (dec retry-attempt-cap))))))
+        (min (attempts-from-age age) (dec retry-attempt-cap) retry-resume-floor)))))
 
 (defn inbox-dir [role-info state]
   (fs/path (:worktree-path role-info) ".swarmforge" "handoffs" "inbox" state))

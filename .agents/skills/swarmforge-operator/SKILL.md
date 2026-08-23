@@ -1,6 +1,6 @@
 ---
 name: swarmforge-operator
-description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, or stopping the swarm."
+description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, stopping the swarm, or installing an upstream pack (two-pack, four-pack, six-pack) into a new or existing project directory before the swarm has ever run."
 ---
 
 # SwarmForge Operator
