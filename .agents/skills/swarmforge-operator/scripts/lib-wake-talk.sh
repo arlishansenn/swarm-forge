@@ -5,6 +5,8 @@
 # the die/read_file/tmux_remote plumbing plus BUSY_RE/IDLE_RE/classify — they
 # never call resolve_role or send_and_verify, since neither sends keys.
 # stop-swarm.sh additionally uses git_status for its DIRTY-worktree check.
+# accept-work.sh (issue #17) additionally uses git_merge_base_ancestor for its
+# already-shipped exclusion check.
 # Sourced, never executed directly.
 #
 # Callers must set ROOT, TARGET, KEY, LOCAL before sourcing, and SOCK after
@@ -48,6 +50,29 @@ git_status() { # $1 = worktree path (as recorded in roles.tsv)
   else
     local cmd
     cmd=$(printf '%q' git)$(printf ' %q' -C "$1" status --porcelain)
+    ssh -i "$KEY" "$TARGET" "$cmd"
+  fi
+}
+
+# Runs `git -C <ROOT> merge-base --is-ancestor <commit> origin/main` for
+# accept-work.sh's already-shipped exclusion (issue #17). Unlike git_status,
+# this always runs at ROOT itself, never a worktree path: origin/main is a
+# property of the whole project repo, not any one worktree, and it means the
+# MANAGED PROJECT's own origin/main — a completely different repo than
+# swarm-forge's. Same LOCAL/remote shape as git_status and for the same
+# reason: a commit hash parsed out of a handoff file is exactly the
+# untrusted free text tmux_remote's own comment warns about, so it is
+# %q-quoted before crossing the single ssh-reparsed string, never
+# hand-interpolated. Exit status is git's own: 0 = ancestor (already
+# shipped), 1 = not an ancestor, anything else = could not be confirmed —
+# callers must treat "not confirmed" the same as "not shipped" (report it),
+# never suppress a completed task just because the check itself failed.
+git_merge_base_ancestor() { # $1 = commit
+  if [ "$LOCAL" = 1 ]; then
+    git -C "$ROOT" merge-base --is-ancestor "$1" origin/main
+  else
+    local cmd
+    cmd=$(printf '%q' git)$(printf ' %q' -C "$ROOT" merge-base --is-ancestor "$1" origin/main)
     ssh -i "$KEY" "$TARGET" "$cmd"
   fi
 }
