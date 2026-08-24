@@ -232,7 +232,11 @@ one's. It also does not fix the window watchdog's own empty-window-ID
 misjudgment (a launcher/watchdog-side defect) — it only keeps an operator
 from accidentally walking into it via this verb. The lock and drift
 preflight added by issue #29 guard entry into that same "zero to one" step;
-they do not extend what this verb otherwise does.
+they do not extend what this verb otherwise does. Once the launcher itself
+takes over, it independently mirrors — deletes and recreates, not overlays —
+and verifies each role worktree's `swarmforge/scripts/` against the
+installed source before that role starts, so a stale per-role copy can't
+outlive this verb's own project-level check.
 
 ## Verb: `update SwarmForge scripts`
 
