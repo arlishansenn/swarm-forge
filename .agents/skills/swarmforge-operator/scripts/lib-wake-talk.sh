@@ -209,6 +209,13 @@ last_line_has() {
 # classify()/BUSY_RE check is needed here; that classifier is documented
 # (SKILL.md, `read swarm`'s boundary paragraph) as intentionally incomplete
 # across backends and would just trade one false negative for another.
+#
+# Residual assumption, inherited from that same read-swarm.sh convention:
+# a backend that renders a static footer/hint line below the input — one
+# that never contains the input and doesn't change on submit — would make
+# last_line_has report "consumed" on the very first poll, whether or not
+# the submit key actually landed. No currently supported backend does
+# this; if one ever does, this is the false positive to watch for.
 send_and_verify() {
   local text=$1 i
   tmux_remote send-keys -t "$SESSION" -l "$text"
