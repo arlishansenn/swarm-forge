@@ -43,6 +43,41 @@ Stop if a runtime file is missing, the socket has no sessions, or there is not
 exactly one master row. A host can run several projects; only touch state under
 `ROOT` and the socket read from that project.
 
+## Verb contract
+
+Every verb is a handover verb, a report verb, or an effect verb (see `CONTEXT.md`).
+The kind decides what the verb owes you when it finishes.
+
+**Status line and exit codes.** A scripted verb prints `STATUS=<WORD>` as its first
+line. The exit codes have one meaning across all verbs:
+
+- `0` — the verb did its work.
+- `2` `USAGE` — bad arguments.
+- `3` — the target is not running. Never start it; that is a human decision.
+- `4` `DRIFT` — recorded state disagrees with real state. Ask before you repair.
+- `5` `ERROR` — the verb failed.
+- `6` `UNSAFE` — the verb refused to do destructive work because it found a
+  condition that a human must clear first. Nothing was changed.
+
+**A failure says why in plain text.** After the `STATUS=` line, a failed verb prints
+one sentence that tells you what to do. There is no machine-readable reason field:
+exit codes are what a script branches on, and the sentence is for a person.
+
+**Success can also speak.** A verb that did its work but found something you must
+know prints one or more `WARN=<one sentence>` lines and still exits `0`. Only report
+a fact that is true for this run and can become false later. A fact that is always
+true must be fixed at its cause, not warned about: a warning that appears every time
+is a warning that nobody reads.
+
+**A handover verb only contracts up to the handover.** It checks what it can, then
+replaces itself with the target program. The exit code after that belongs to that
+program, not to this contract.
+
+**Not every verb has a script yet.** `onboard project`, `open swarm`, and `dashboard`
+are scripted and follow this contract today. The other verbs are shell steps in this
+file; run them as written and read their raw output. Bringing them under the contract
+is tracked in the issue tracker.
+
 ## Verb: `onboard project`
 
 Install one upstream pack into a managed project directory. This is the
