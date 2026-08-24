@@ -12,7 +12,25 @@ Issues and specs for this repository live in GitHub Issues at
 - Apply or remove labels: `gh issue edit <number>`
 - Close: `gh issue close <number>`
 
-Run commands inside this clone so `gh` resolves the repository from `origin`.
+## This clone is a fork: `gh` defaults to the upstream
+
+`origin` is `arlishansenn/swarm-forge`; `upstream` is `unclebob/swarm-forge`. For a
+fork, `gh` resolves to the parent repository, not to `origin`. Running `gh` inside
+this clone is therefore not enough, and every `gh issue`/`gh label` command silently
+lands on the upstream tracker.
+
+Before any `gh` work in a fresh clone:
+
+```sh
+gh repo set-default arlishansenn/swarm-forge
+gh repo set-default --view   # must print arlishansenn/swarm-forge
+```
+
+Never create, edit, close, or comment on an issue in `unclebob/swarm-forge`.
+
+Issue numbers are per repository. A bare `#49` in an issue body resolves against
+this fork, where it may not exist. Write cross-repository references in full:
+`unclebob/swarm-forge#49`.
 
 ## Pull requests as a triage surface
 

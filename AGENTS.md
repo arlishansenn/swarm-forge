@@ -2,7 +2,9 @@
 
 ### Issue tracker
 
-Track work in GitHub Issues for `arlishansenn/swarm-forge`. See `docs/agents/issue-tracker.md`.
+Track work in GitHub Issues for `arlishansenn/swarm-forge`. Never create, edit, or
+comment on issues in the `unclebob/swarm-forge` upstream. This clone is a fork, so
+`gh` resolves to the upstream by default. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
