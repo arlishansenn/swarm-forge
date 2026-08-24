@@ -7,12 +7,18 @@
 # stop-swarm.sh additionally uses git_status for its DIRTY-worktree check.
 # accept-work.sh (issue #17) additionally uses git_merge_base_ancestor for its
 # already-shipped exclusion check. start-swarm.sh (issue #26) additionally
-# uses run_detached for its launch step.
+# uses run_detached for its launch step, and (issue #29) acquire_lock/
+# release_lock/scripts_digest/remote_scripts_digest/read_manifest for its
+# lock + drift preflight. A sibling verb, `update SwarmForge scripts`
+# (issue #29, not yet implemented), reuses the same lock and digest
+# primitives and is the WRITER for the manifest format read_manifest
+# parses below.
 # Sourced, never executed directly.
 #
 # Callers must set ROOT, TARGET, KEY, LOCAL before sourcing, and SOCK after
 # resolving it. Provides: die, read_file, tmux_remote, resolve_role,
-# send_and_verify, run_detached.
+# send_and_verify, run_detached, acquire_lock, release_lock, scripts_digest,
+# remote_scripts_digest, read_manifest.
 
 die() { printf 'STATUS=%s\n%s\n' "$1" "$2"; exit "${3:-5}"; }
 
@@ -127,6 +133,174 @@ run_detached() { # $1 = absolute log path, rest = argv to run detached
     ssh -i "$KEY" "$TARGET" \
       "mkdir -p \$(dirname $q_log) && cd $q_root && nohup $q_argv </dev/null >>$q_log 2>&1 &"
   fi
+}
+
+# ---------- project lock (issue #29: exclude start/update from interleaving
+# on one managed project) ----------
+# mkdir-based, no staleness/heartbeat/TTL judgment anywhere — a design
+# decision already closed by an adversarial review (see issue #29's
+# "Locking"/"Further Notes"): a held lock is held, full stop, regardless of
+# age. The operator's only way to clear one left by a dead/killed holder is
+# an explicit --force at the call site (see start-swarm.sh), never anything
+# automatic in here. Lock dir: $ROOT/.swarmforge/update-lock. Holder file:
+# $ROOT/.swarmforge/update-lock/holder, plain text, one line, the verb name
+# ("start" or "update") that acquired it.
+LOCKDIR=.swarmforge/update-lock
+
+# $1 = holder name ("start" or "update"). On success, the lock dir now
+# exists with its holder file written, and this returns 0. On an
+# already-held lock, returns 1 and sets LOCK_HOLDER to the existing holder
+# file's contents, for the caller to name in its own UNSAFE message.
+# Stealing a held lock (removing it and re-acquiring) is the CALLER's job
+# via release_lock + a retry, driven by --force — this function only ever
+# reports contention, never clears it itself. Same LOCAL/remote dual-mode
+# shape as tmux_remote/git_status: LOCAL runs mkdir directly (no shell in
+# the middle), remote builds one %q-quoted command string and ships it in a
+# single ssh call — never hand-interpolating $ROOT into a raw ssh string.
+acquire_lock() {
+  local holder=$1
+  if [ "$LOCAL" = 1 ]; then
+    if mkdir "$ROOT/$LOCKDIR" 2>/dev/null; then
+      printf '%s\n' "$holder" > "$ROOT/$LOCKDIR/holder"
+      return 0
+    fi
+    LOCK_HOLDER=$(cat "$ROOT/$LOCKDIR/holder" 2>/dev/null)
+    return 1
+  else
+    local cmd out
+    cmd="if mkdir $(printf '%q' "$ROOT/$LOCKDIR") 2>/dev/null; then printf '%s\n' $(printf '%q' "$holder") > $(printf '%q' "$ROOT/$LOCKDIR/holder"); else cat $(printf '%q' "$ROOT/$LOCKDIR/holder") 2>/dev/null; exit 1; fi"
+    if out=$(ssh -i "$KEY" "$TARGET" "$cmd"); then
+      return 0
+    fi
+    LOCK_HOLDER=$out
+    return 1
+  fi
+}
+
+# Removes the lock directory. Best effort, never dies — callers wire this
+# into their own `trap ... EXIT` (see start-swarm.sh), which must not itself
+# abort a script that is already exiting. Same LOCAL/remote dual-mode shape
+# as the rest of this file. No return-value contract beyond "tried."
+release_lock() {
+  if [ "$LOCAL" = 1 ]; then
+    rm -rf "$ROOT/$LOCKDIR" 2>/dev/null || true
+  else
+    local cmd
+    cmd=$(printf '%q' rm)$(printf ' %q' -rf "$ROOT/$LOCKDIR")
+    ssh -i "$KEY" "$TARGET" "$cmd" 2>/dev/null || true
+  fi
+}
+
+# ---------- scripts digest + manifest (issue #29: drift detection between
+# a managed project's installed swarmforge/scripts/ and its own identity
+# manifest) ----------
+
+# $1 = optional file path; omitted reads stdin. Prints just the hex digest
+# to stdout. macOS ships no sha256sum, only `shasum -a 256`; a typical Linux
+# ssh target has sha256sum — prefer it, fall back to shasum -a 256. Both
+# accept a path arg or stdin and both print "<hex>  <name>", hence the
+# `awk '{print $1}'` trim. Shipped verbatim (not re-derived) inside
+# remote_scripts_digest's embedded ssh snippet below, so there is exactly
+# one algorithm to reason about.
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$@" | awk '{print $1}'
+  else
+    shasum -a 256 "$@" | awk '{print $1}'
+  fi
+}
+
+# $1 = directory to digest. LOCAL-only — operates on a path already
+# resolved to be on the current machine; remote_scripts_digest below ships
+# this identical logic across ssh when LOCAL=0. Deterministic
+# content+executable-bit digest over a scripts tree (issue #29): for every
+# regular file under $1 (recursively; dotfiles and empty directories get no
+# special-casing — find -type f already only ever yields files), one line
+# "<relative-path> <x-or-dash> <sha256-of-contents>", sorted by relative
+# path, concatenated and sha256'd again as a whole. Relative to $1 itself
+# (not the caller's absolute location) with `/` separators, so the digest
+# doesn't change between the operator's source checkout and a managed
+# project's install path. Timestamps and directory order never affect it.
+# The trailing `|| true` neutralizes `set -o pipefail` turning a merely
+# EMPTY tree (find matches nothing, or the empty `while read` loop's own
+# exit status) into a spurious failure under this file's callers' `set -e`
+# — the digest of an empty tree is still a valid, deterministic value, not
+# an error.
+scripts_digest() {
+  local dir=$1 f rel x
+  { find "$dir" -type f 2>/dev/null || true; } | LC_ALL=C sort | while IFS= read -r f; do
+    rel=${f#"$dir"/}
+    [ -x "$f" ] && x=x || x=-
+    printf '%s %s %s\n' "$rel" "$x" "$(sha256_hex "$f")"
+  done | sha256_hex || true
+}
+
+# $1 = directory to digest (on $TARGET when LOCAL=0, otherwise the current
+# machine). Dual-mode wrapper (issue #29): start-swarm.sh only ever needs
+# to digest a MANAGED PROJECT's own already-installed swarmforge/scripts,
+# never the operator's own source checkout, so this is the only digest
+# entry point start-swarm.sh calls. LOCAL runs scripts_digest directly;
+# remote ships the identical algorithm across one ssh call, same
+# run_detached/tmux_remote shape (one %q-quoted command string, single ssh
+# call, no hand-interpolated $dir). The embedded snippet below is
+# copy-pasted line-for-line from sha256_hex/scripts_digest above, not
+# re-derived, so a remote digest and a local digest of the same tree can
+# never drift apart by implementation accident.
+remote_scripts_digest() {
+  local dir=$1
+  if [ "$LOCAL" = 1 ]; then
+    scripts_digest "$dir"
+  else
+    local snippet cmd
+    snippet=$(cat <<'EOS'
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@" | awk '{print $1}'
+  else shasum -a 256 "$@" | awk '{print $1}'; fi
+}
+dir=$1
+{ find "$dir" -type f 2>/dev/null || true; } | LC_ALL=C sort | while IFS= read -r f; do
+  rel=${f#"$dir"/}
+  [ -x "$f" ] && x=x || x=-
+  printf '%s %s %s\n' "$rel" "$x" "$(sha256_hex "$f")"
+done | sha256_hex || true
+EOS
+)
+    cmd=$(printf '%q' bash)$(printf ' %q' -c "$snippet" bash "$dir")
+    ssh -i "$KEY" "$TARGET" "$cmd"
+  fi
+}
+
+# Manifest READER (issue #29; the WRITER belongs to the `update SwarmForge
+# scripts` verb, a sibling task — this function nails down the exact
+# on-disk format the writer must match byte-for-byte). Path:
+# $ROOT/.swarmforge/scripts-manifest — a plain file, sibling to
+# .swarmforge/sessions.tsv etc., outside the digested swarmforge/scripts/
+# tree so digest computation is never self-referential. Format: plain
+# KEY=value lines, one per line, no quoting (this codebase's existing
+# runtime-file convention, not JSON). Required keys: SOURCE_COMMIT=<sha>,
+# SOURCE_REPO=<best-effort identity, or the literal string "unknown">,
+# DIGEST=<sha256 hex from scripts_digest>. Key order does not matter to
+# this reader and extra keys are ignored — it only ever looks for DIGEST=,
+# the only field start-swarm.sh needs.
+#
+# Reads via read_file (already handles LOCAL/remote). On success, PRINTS
+# the digest value to stdout and returns 0 — callers capture it by command
+# substitution (`MANIFEST_DIGEST=$(read_manifest)`), exactly like every
+# other value this file's callers pull out of a runtime file. A missing
+# manifest, or one with no DIGEST= line, is NOT an error at this function's
+# level: it returns 1 and prints nothing, leaving "missing manifest" as the
+# caller's own DRIFT case (a legacy managed project without a manifest is
+# DRIFT even if an incidental byte comparison would appear equal — issue
+# #29).
+read_manifest() {
+  local raw line
+  raw=$(read_file .swarmforge/scripts-manifest 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    case $line in
+      DIGEST=*) printf '%s\n' "${line#DIGEST=}"; return 0 ;;
+    esac
+  done <<< "$raw"
+  return 1
 }
 
 # ---------- report-verb classification (issue #15, shared per issue #11) ----

@@ -157,7 +157,7 @@ has reproduced twice under manual operation.
 
 ```sh
 scripts/start-swarm.sh --root <project-root> --terminal <value> \
-  [--target user@host] [--key <path>] [--local]
+  [--target user@host] [--key <path>] [--local] [--force]
 ```
 
 `--terminal` is **required**, not an optional env passthrough — unlike
@@ -181,6 +181,21 @@ file with no live server behind it (the watchdog-kill aftermath `open
 swarm` already knows how to name) is the stopped state this verb exists to
 recover from, not "already running" — it proceeds to launch.
 
+Next, it acquires a project-scoped lock (issue #29) at
+`$ROOT/.swarmforge/update-lock`, excluding a concurrent `update SwarmForge
+scripts` on the same managed project — a lock already held by that verb is
+`6` `UNSAFE`, naming the holder. Then, unless `--force` is given, it
+recomputes a deterministic digest of the managed project's installed
+`swarmforge/scripts/` and compares it against `$ROOT/.swarmforge/
+scripts-manifest`: a missing manifest or a digest mismatch is `4` `DRIFT`,
+and the launcher is never invoked — this is exactly the failure mode that
+let a running swarm reach handoff with scripts its own launcher didn't
+recognize as required. `--force` overrides both the lock contention and the
+drift check (never the already-running check above, which has no
+override): it steals a held lock and skips the digest comparison entirely.
+The lock is held through the rest of this script, including launch and the
+readiness poll, and is released on every exit path.
+
 The launch itself runs detached, local or remote: `SWARMFORGE_TERMINAL=
 <value> nohup ./swarm >log 2>&1 &` (or without the env var, for `auto`),
 never a bare foreground `./swarm` — a bare launch is exactly what does not
@@ -195,20 +210,28 @@ Exit codes / STATUS line:
 - `0` `STARTED` — the swarm came up; `SOCK`/`TERMINAL` are reported.
 - `2` `USAGE` — missing `--root`, missing `--terminal`, or `--terminal` not
   one of the accepted values. Nothing is attempted.
+- `4` `DRIFT` — installed `swarmforge/scripts/` do not match
+  `$ROOT/.swarmforge/scripts-manifest`, or it's missing (issue #29). The
+  launcher is never invoked; re-run `update SwarmForge scripts` first, or
+  pass `--force` to launch anyway.
 - `5` `ERROR` — the runtime files never confirmed readiness within budget.
   This covers both `./swarm` exiting non-zero and it simply never becoming
   ready: the launch is intentionally detached (see above), so this script
   never inspects the launcher's own exit code, only the runtime files it
   should eventually produce — check the launch log named in the message.
 - `6` `UNSAFE` — the swarm is already running; refuses to start a second
-  daemon. Nothing was changed.
+  daemon. Nothing was changed. This also now covers the project lock being
+  held by a concurrent `update SwarmForge scripts` (issue #29), naming the
+  holder — unlike the already-running case, `--force` clears a held lock.
 
 **Boundary:** this verb only covers "from zero to one." Whether to `--force`
 a restart over an already-running swarm, or wait out one that is still
 tearing down, are `stop swarm`'s and `open swarm`'s territory, not this
 one's. It also does not fix the window watchdog's own empty-window-ID
 misjudgment (a launcher/watchdog-side defect) — it only keeps an operator
-from accidentally walking into it via this verb.
+from accidentally walking into it via this verb. The lock and drift
+preflight added by issue #29 guard entry into that same "zero to one" step;
+they do not extend what this verb otherwise does.
 
 ## Verb: `dashboard`
 

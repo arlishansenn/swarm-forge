@@ -75,6 +75,39 @@ reset_stub() { rm -rf "$STUB"; mkdir -p "$STUB"; : > "$STUB/calls.log"; }
 ROOT=$WORK/fixtures/proj
 mkdir -p "$ROOT/.swarmforge"
 
+# ---------- issue #29 fixtures: drift/lock cases need a real scripts_digest
+# over a fixture tree to write a MATCHING manifest. Chosen over shelling out
+# to start-swarm.sh's own digest step (there's no way to observe an
+# intermediate value from outside the script, only its final STATUS line)
+# — sourcing lib-wake-talk.sh directly in a subshell is the less awkward
+# option given how Task A implemented this: scripts_digest is LOCAL-only
+# and takes just a directory arg, no ROOT/TARGET/KEY machinery needed to
+# call it standalone. ----------
+compute_digest() { # $1 = dir
+  ( LOCAL=1
+    . "$HERE/lib-wake-talk.sh"
+    scripts_digest "$1" )
+}
+# Fresh scripts tree + matching manifest, shared by every case in this
+# file: seeded once below so cases 1-10 (predating issue #29, exercising
+# unrelated behavior) sail through the new drift preflight unchanged, and
+# reused/overridden explicitly by the issue #29 cases further down. Not
+# reset_stub's job (that only clears $STUB) — a separate reset so a case
+# can start from a known .swarmforge/swarmforge state.
+reset_scripts_fixture() {
+  rm -rf "$ROOT/.swarmforge/update-lock" "$ROOT/.swarmforge/scripts-manifest" "$ROOT/swarmforge"
+  mkdir -p "$ROOT/swarmforge/scripts"
+  printf '#!/bin/sh\necho hi\n' > "$ROOT/swarmforge/scripts/run.sh"
+  chmod +x "$ROOT/swarmforge/scripts/run.sh"
+  printf 'helper data\n' > "$ROOT/swarmforge/scripts/lib.sh"
+}
+write_matching_manifest() {
+  local d; d=$(compute_digest "$ROOT/swarmforge/scripts")
+  printf 'SOURCE_COMMIT=deadbeef\nSOURCE_REPO=unknown\nDIGEST=%s\n' "$d" > "$ROOT/.swarmforge/scripts-manifest"
+}
+reset_scripts_fixture
+write_matching_manifest
+
 # ---------- fake launchers ----------
 # slow-launcher: records its own PID immediately (so a test can signal it
 # before it finishes), records whether SWARMFORGE_TERMINAL was exported,
@@ -287,6 +320,118 @@ for _ in $(seq 1 $((DELAY * 4 + 10))); do [ -f "$STUB/marker" ] && break; sleep 
 [ -f "$STUB/marker" ] \
   && ok "regression: marker appeared after the \$(...) capture had already returned — launcher genuinely kept running detached" \
   || bad "regression: marker appeared after capture returned" "never appeared"
+
+# ---------- issue #29: lock + drift preflight, inserted between the
+# already-running check and launch ----------
+
+# 11. missing manifest -> STATUS=DRIFT, exit 4, launcher never invoked
+reset_stub
+reset_scripts_fixture
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh run --local --root "$ROOT" --terminal none
+check "missing-manifest exit" 4 "$RC"
+[ "$(status_line)" = "STATUS=DRIFT" ] \
+  && ok "missing-manifest status is DRIFT" || bad "missing-manifest status is DRIFT" "$OUT"
+! launcher_ran && ok "missing-manifest: launcher never invoked" \
+  || bad "missing-manifest: launcher never invoked" "$(cat "$STUB/calls.log")"
+# 11b (brief case 8): the drift refusal above still released the lock —
+# same trap release_lock EXIT path as any other exit.
+[ -d "$ROOT/.swarmforge/update-lock" ] \
+  && bad "missing-manifest: lock released" "update-lock still exists after a DRIFT refusal" \
+  || ok "missing-manifest: lock released after a DRIFT refusal"
+
+# 12. manifest present but DIGEST= doesn't match the installed tree ->
+#     STATUS=DRIFT, exit 4, launcher never invoked
+reset_stub
+reset_scripts_fixture
+printf 'SOURCE_COMMIT=deadbeef\nSOURCE_REPO=unknown\nDIGEST=0000000000000000000000000000000000000000000000000000000000000000\n' \
+  > "$ROOT/.swarmforge/scripts-manifest"
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh run --local --root "$ROOT" --terminal none
+check "digest-mismatch exit" 4 "$RC"
+[ "$(status_line)" = "STATUS=DRIFT" ] \
+  && ok "digest-mismatch status is DRIFT" || bad "digest-mismatch status is DRIFT" "$OUT"
+! launcher_ran && ok "digest-mismatch: launcher never invoked" \
+  || bad "digest-mismatch: launcher never invoked" "$(cat "$STUB/calls.log")"
+
+# 13. manifest present and digest genuinely matches -> proceeds to launch
+#     normally, STATUS=STARTED
+reset_stub
+reset_scripts_fixture
+write_matching_manifest
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh SF_START_READY_TRIES=10 SF_START_READY_INTERVAL=0.3 SF_TEST_DELAY=0.5 \
+  run --local --root "$ROOT" --terminal none
+check "digest-match exit" 0 "$RC"
+[ "$(status_line)" = "STATUS=STARTED" ] \
+  && ok "digest-match status is STARTED" || bad "digest-match status is STARTED" "$OUT"
+# 13b (brief case 7): lock released after a clean, --force-free run too,
+# not just after a DRIFT refusal.
+[ -d "$ROOT/.swarmforge/update-lock" ] \
+  && bad "digest-match: lock released" "update-lock still exists after a clean STARTED run" \
+  || ok "digest-match: lock released after a clean run"
+
+# 14. --force overrides DRIFT: mismatched manifest AND --force -> proceeds
+#     to launch anyway, STATUS=STARTED
+reset_stub
+reset_scripts_fixture
+printf 'SOURCE_COMMIT=deadbeef\nSOURCE_REPO=unknown\nDIGEST=0000000000000000000000000000000000000000000000000000000000000000\n' \
+  > "$ROOT/.swarmforge/scripts-manifest"
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh SF_START_READY_TRIES=10 SF_START_READY_INTERVAL=0.3 SF_TEST_DELAY=0.5 \
+  run --local --root "$ROOT" --terminal none --force
+check "force-overrides-drift exit" 0 "$RC"
+[ "$(status_line)" = "STATUS=STARTED" ] \
+  && ok "force-overrides-drift status is STARTED" || bad "force-overrides-drift status is STARTED" "$OUT"
+
+# 15. lock contention: a pre-existing lock held by `update` -> STATUS=UNSAFE,
+#     exit 6, message names `update`, launcher never invoked, lock directory
+#     still exists afterward (start never touches someone else's lock
+#     without --force)
+reset_stub
+reset_scripts_fixture
+write_matching_manifest
+mkdir -p "$ROOT/.swarmforge/update-lock"
+printf 'update\n' > "$ROOT/.swarmforge/update-lock/holder"
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh run --local --root "$ROOT" --terminal none
+check "lock-contention exit" 6 "$RC"
+[ "$(status_line)" = "STATUS=UNSAFE" ] \
+  && ok "lock-contention status is UNSAFE" || bad "lock-contention status is UNSAFE" "$OUT"
+printf '%s' "$OUT" | grep -q "'update'" \
+  && ok "lock-contention: message names 'update'" || bad "lock-contention: message names 'update'" "$OUT"
+! launcher_ran && ok "lock-contention: launcher never invoked" \
+  || bad "lock-contention: launcher never invoked" "$(cat "$STUB/calls.log")"
+[ -f "$ROOT/.swarmforge/update-lock/holder" ] \
+  && ok "lock-contention: lock directory still exists afterward (untouched)" \
+  || bad "lock-contention: lock directory still exists afterward" "lock dir/holder missing"
+
+# 16. --force overrides lock contention: same pre-created lock, --force ->
+#     proceeds (lock removed and re-acquired), reaches launch,
+#     STATUS=STARTED
+reset_stub
+reset_scripts_fixture
+write_matching_manifest
+mkdir -p "$ROOT/.swarmforge/update-lock"
+printf 'update\n' > "$ROOT/.swarmforge/update-lock/holder"
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh SF_START_READY_TRIES=10 SF_START_READY_INTERVAL=0.3 SF_TEST_DELAY=0.5 \
+  run --local --root "$ROOT" --terminal none --force
+check "force-overrides-lock exit" 0 "$RC"
+[ "$(status_line)" = "STATUS=STARTED" ] \
+  && ok "force-overrides-lock status is STARTED" || bad "force-overrides-lock status is STARTED" "$OUT"
+
+# 17. already-running still takes priority and still has no override:
+#     a live socket AND a mismatched manifest AND --force -> still
+#     STATUS=UNSAFE exit 6 for "already running" (not DRIFT, not a launch)
+#     — proves --force never reaches the already-running check
+reset_stub
+reset_scripts_fixture
+printf 'SOURCE_COMMIT=deadbeef\nSOURCE_REPO=unknown\nDIGEST=0000000000000000000000000000000000000000000000000000000000000000\n' \
+  > "$ROOT/.swarmforge/scripts-manifest"
+printf '%s\n' "$STUB/fake.sock" > "$ROOT/.swarmforge/tmux-socket"
+touch "$STUB/live"
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh run --local --root "$ROOT" --terminal none --force
+check "already-running-beats-force exit" 6 "$RC"
+[ "$(status_line)" = "STATUS=UNSAFE" ] \
+  && ok "already-running-beats-force status is UNSAFE (not DRIFT)" \
+  || bad "already-running-beats-force status is UNSAFE" "$OUT"
+! launcher_ran && ok "already-running-beats-force: launcher never invoked" \
+  || bad "already-running-beats-force: launcher never invoked" "$(cat "$STUB/calls.log")"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

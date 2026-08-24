@@ -10,11 +10,18 @@
 # cannot reproduce a third time via this verb.
 #
 # Exit codes / STATUS line:
-#   0 STARTED   2 USAGE   5 ERROR   6 UNSAFE
+#   0 STARTED   2 USAGE   4 DRIFT   5 ERROR   6 UNSAFE
 # Contract details live in ../SKILL.md (verb: start swarm).
 #
 # Usage: start-swarm.sh --root <project-root> --terminal <value> \
-#   [--target user@host] [--key <path>] [--local]
+#   [--target user@host] [--key <path>] [--local] [--force]
+#
+# issue #29: before launch, this script also acquires a project-scoped lock
+# (excluding a concurrent `update SwarmForge scripts`) and checks the
+# managed project's installed swarmforge/scripts against its own identity
+# manifest. --force overrides BOTH of those (steals a held lock, skips the
+# drift check) — it never touches the already-running check above, which
+# has no override.
 #
 # --terminal is REQUIRED, not an optional env passthrough: unlike --force on
 # stop-swarm.sh (which waives a state check a human can knowingly override),
@@ -33,7 +40,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
-ROOT='' TERMINAL='' LOCAL=0
+ROOT='' TERMINAL='' LOCAL=0 FORCE=0
 
 # Canonical --terminal value set: the basenames of
 # swarmforge/scripts/terminal-adapters/*.sh (today: ghostty, iterm2, none,
@@ -58,14 +65,15 @@ while [ $# -gt 0 ]; do
     --target) TARGET=$2; shift 2 ;;
     --key) KEY=$2; shift 2 ;;
     --local) LOCAL=1; shift ;;
-    *) sed -n '2,25p' "$0"; exit 2 ;;
+    --force) FORCE=1; shift ;;
+    *) sed -n '2,36p' "$0"; exit 2 ;;
   esac
 done
-[ -n "$ROOT" ] || { sed -n '2,25p' "$0"; exit 2; }
-[ -n "$TERMINAL" ] || { sed -n '2,25p' "$0"; exit 2; }
+[ -n "$ROOT" ] || { sed -n '2,36p' "$0"; exit 2; }
+[ -n "$TERMINAL" ] || { sed -n '2,36p' "$0"; exit 2; }
 case " $TERMINAL_VALUES " in
   *" $TERMINAL "*) ;;
-  *) sed -n '2,25p' "$0"; exit 2 ;;
+  *) sed -n '2,36p' "$0"; exit 2 ;;
 esac
 
 # Overridable so tests can point the launch at a stub instead of a real
@@ -87,6 +95,33 @@ if SOCK=$(read_file .swarmforge/tmux-socket 2>/dev/null); then
   SOCK=${SOCK%$'\n'}
   if tmux_remote list-sessions >/dev/null 2>&1; then
     die UNSAFE "socket $SOCK already has a live tmux server — swarm already running; refusing to start a second one" 6
+  fi
+fi
+
+# ---------- lock: exclude a concurrent update (issue #29) ----------
+if ! acquire_lock start; then
+  if [ "$FORCE" != 1 ]; then
+    die UNSAFE "project lock held by '$LOCK_HOLDER' — wait, or re-run with --force to break a lock left by a dead process" 6
+  fi
+  # --force: the operator's explicit statement that the reported holder is
+  # not actually active — steal the lock (remove, then re-acquire fresh)
+  # rather than refuse. This is the only way a held lock is ever cleared
+  # without its original holder exiting cleanly.
+  release_lock
+  acquire_lock start || die ERROR \
+    "failed to acquire project lock at $ROOT/.swarmforge/update-lock even after --force cleared it" 5
+fi
+# Covers every exit path from here on (STARTED/0, ERROR/5, any die) — the
+# lock stays held through the rest of this script (drift check, launch,
+# readiness poll) and is released exactly once, here, never by a manual
+# release_lock call elsewhere in this file.
+trap release_lock EXIT
+
+# ---------- drift: installed scripts vs their own manifest (issue #29) ----------
+if [ "$FORCE" != 1 ]; then
+  INSTALLED_DIGEST=$(remote_scripts_digest "$ROOT/swarmforge/scripts")
+  if ! MANIFEST_DIGEST=$(read_manifest) || [ "$MANIFEST_DIGEST" != "$INSTALLED_DIGEST" ]; then
+    die DRIFT "installed SwarmForge scripts do not match $ROOT/.swarmforge/scripts-manifest (or it's missing) — run update SwarmForge scripts first, or re-run with --force to launch anyway" 4
   fi
 fi
 

@@ -336,7 +336,7 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 | 动词 | 作用 |
 |---|---|
-| `start swarm <root> --terminal <值>` | 从停机状态显式启动 swarm；`--terminal` 必传（`ghostty`/`iterm2`/`none`/`terminal-app`/`windows-terminal`/`auto`），杜绝 #10 那次靠自动探测踩中 watchdog 拆除的坑；已在跑（socket 探活成功）拒绝重复启动（退出 6）；本地/远端都走 `nohup` 脱离终端启动，回读 runtime 文件确认后才报 `STATUS=STARTED` |
+| `start swarm <root> --terminal <值>` | 从停机状态显式启动 swarm；`--terminal` 必传（`ghostty`/`iterm2`/`none`/`terminal-app`/`windows-terminal`/`auto`），杜绝 #10 那次靠自动探测踩中 watchdog 拆除的坑；已在跑（socket 探活成功）拒绝重复启动（退出 6，无 override）；启动前还会取 project lock 并比对已装 `swarmforge/scripts` 与其 manifest 的 digest，manifest 缺失或不一致报 `STATUS=DRIFT`（退出 4），锁被 `update SwarmForge scripts` 占用同样报 `UNSAFE`（退出 6）——`--force` 可越过锁占用与 DRIFT，但越不过「已在跑」；本地/远端都走 `nohup` 脱离终端启动，回读 runtime 文件确认后才报 `STATUS=STARTED` |
 | `open swarm <root>` | 把运行中的 swarm 以 cmux workspace 打开；停机时报原因，命中 window watchdog 拆除会点名，绝不代人启动 |
 | `dashboard <root>` | 建 SSH 隧道开 browser workspace 连 pack_web 看板；额外校验端口后面真是本项目的 `pack_web`（`--serve` 参数比对），不是同机别的项目撞上来的 |
 | `attach <role>` | 临时附加到某个角色的 tmux session |
