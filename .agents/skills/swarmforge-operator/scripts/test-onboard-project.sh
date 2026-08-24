@@ -14,7 +14,13 @@ check(){ [ "$2" = "$3" ] && ok "$1" || bad "$1" "expected [$2] got [$3]"; }
 
 # ---------- fixture tarball: one dir holding a swarm launcher + swarmforge/ ----
 mkdir -p "$WORK/bin" "$WORK/src/pack-root/swarmforge"
-echo '#!/bin/sh' > "$WORK/src/pack-root/swarm"
+# ARCHIVE_URL shape matches a real deployed launcher (see podsum/swarm) so the
+# rewrite test below exercises the exact line onboard-project.sh has to edit.
+cat > "$WORK/src/pack-root/swarm" <<'EOF'
+#!/bin/sh
+MAIN_BRANCH="${SWARMFORGE_SCRIPTS_BRANCH:-main}"
+ARCHIVE_URL="${SWARMFORGE_SCRIPTS_URL:-https://github.com/unclebob/swarm-forge/archive/refs/heads/${MAIN_BRANCH}.tar.gz}"
+EOF
 echo 'roles' > "$WORK/src/pack-root/swarmforge/roles.txt"
 tar -czf "$WORK/pack.tgz" -C "$WORK/src" pack-root
 
@@ -38,6 +44,13 @@ check "six-pack exits 0" 0 "$rc"
 check "six-pack STATUS" "STATUS=ONBOARDED" "$(echo "$out" | head -1)"
 check "swarm launcher landed" "yes" "$([ -f "$T/swarm" ] && echo yes || echo no)"
 check "swarmforge/ landed" "yes" "$([ -d "$T/swarmforge" ] && echo yes || echo no)"
+check "ARCHIVE_URL rewritten to fork, override structure intact" \
+  'ARCHIVE_URL="${SWARMFORGE_SCRIPTS_URL:-https://github.com/arlishansenn/swarm-forge/archive/refs/heads/${MAIN_BRANCH}.tar.gz}"' \
+  "$(grep '^ARCHIVE_URL=' "$T/swarm")"
+check "MAIN_BRANCH line untouched" \
+  'MAIN_BRANCH="${SWARMFORGE_SCRIPTS_BRANCH:-main}"' \
+  "$(grep '^MAIN_BRANCH=' "$T/swarm")"
+check "stdout has no WARN" "no" "$(echo "$out" | grep -q '^WARN=' && echo yes || echo no)"
 
 # 2. main is refused
 T=$WORK/proj-main
