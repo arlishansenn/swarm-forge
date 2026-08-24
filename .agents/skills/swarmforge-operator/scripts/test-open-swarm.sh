@@ -264,6 +264,36 @@ rm -f "$WORK/fixtures/twopack/.swarmforge/live-marker"
 run twopack
 check "socket-dead exit" 3 "$RC"
 check "socket-dead no mutation" 0 "$(mutcount)"
+
+# 8a socket dead + watchdog log ends in KILL-ALL-SESSIONS → message names the
+# watchdog and carries the kill line's own timestamp (issue #10)
+printf '2026-08-23T22:45:02.100000Z watchdog-start backend= terminal-app\n2026-08-23T22:45:06.654321Z KILL-ALL-SESSIONS tearing down the entire swarm\n' \
+  > "$WORK/fixtures/twopack/.swarmforge/window-watchdog.log"
+run twopack
+check "watchdog-killed exit" 3 "$RC"
+printf '%s\n' "$OUT" | grep -qi watchdog \
+  && ok "watchdog-killed message names watchdog" || bad "watchdog-killed message names watchdog" "$OUT"
+printf '%s\n' "$OUT" | grep -q '2026-08-23T22:45:06.654321Z' \
+  && ok "watchdog-killed message carries kill-line timestamp" || bad "watchdog-killed message carries kill-line timestamp" "$OUT"
+printf '%s\n' "$OUT" | grep -q 'REASON=' \
+  && bad "watchdog-killed no REASON= field" "found REASON= in output" || ok "watchdog-killed no REASON= field"
+rm -f "$WORK/fixtures/twopack/.swarmforge/window-watchdog.log"
+
+# 8b socket dead, no watchdog log at all → message unchanged, no watchdog mention
+run twopack
+check "no-watchdog-log exit" 3 "$RC"
+printf '%s\n' "$OUT" | grep -qi watchdog \
+  && bad "no-watchdog-log message stays silent on watchdog" "$OUT" || ok "no-watchdog-log message stays silent on watchdog"
+
+# 8c socket dead, watchdog log present but never killed anything → still silent
+printf '2026-08-23T22:45:02.100000Z watchdog-start backend= terminal-app\n' \
+  > "$WORK/fixtures/twopack/.swarmforge/window-watchdog.log"
+run twopack
+check "benign-watchdog-log exit" 3 "$RC"
+printf '%s\n' "$OUT" | grep -qi watchdog \
+  && bad "benign-watchdog-log message stays silent on watchdog" "$OUT" || ok "benign-watchdog-log message stays silent on watchdog"
+rm -f "$WORK/fixtures/twopack/.swarmforge/window-watchdog.log"
+
 touch "$WORK/fixtures/twopack/.swarmforge/live-marker"  # restore for later cases
 
 # 9 drift: extra matching workspace → exit 4

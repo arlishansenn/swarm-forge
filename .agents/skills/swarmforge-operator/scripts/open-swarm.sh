@@ -50,12 +50,28 @@ ROLES=$(read_file .swarmforge/roles.tsv) \
   || die STOPPED "$ROOT/.swarmforge/roles.tsv missing — swarm not running" 3
 SOCK=${SOCK%$'\n'}
 
+# watchdog-killed vs human-stopped (issue #10): a dead tmux server with the
+# runtime files still intact is exactly the state the window watchdog leaves
+# behind after kill-all-sessions! — as opposed to a human's `stop swarm`,
+# which never touches this log. The two demand opposite next steps (restart
+# vs fix the terminal backend first), so name the cause when we can. The
+# watchdog runs kill-all-sessions! at most once per launch and exits, so the
+# log is small; read it whole via the same read_file() every other runtime
+# file uses rather than adding a separate tail-over-ssh path.
+watchdog_suffix() {
+  local log ts
+  log=$(read_file .swarmforge/window-watchdog.log 2>/dev/null) || return 0
+  ts=$(printf '%s\n' "$log" | grep 'KILL-ALL-SESSIONS' | tail -1 | awk '{print $1}')
+  [ -n "$ts" ] || return 0
+  printf ' — swarm was torn down by the window watchdog at %s — fix the terminal backend before restarting' "$ts"
+}
+
 # runtime gate: socket must actually answer. Stale files after a reboot
 # look identical to a live swarm otherwise.
 if [ "$LOCAL" = 1 ]; then tmux -S "$SOCK" list-sessions >/dev/null 2>&1 \
-  || die STOPPED "socket $SOCK has no tmux server — swarm not running; refusing to start it" 3
+  || die STOPPED "socket $SOCK has no tmux server — swarm not running; refusing to start it$(watchdog_suffix)" 3
 else ssh -i "$KEY" "$TARGET" "tmux -S '$SOCK' list-sessions" >/dev/null 2>&1 \
-  || die STOPPED "socket $SOCK has no tmux server on $TARGET — swarm not running; refusing to start it" 3
+  || die STOPPED "socket $SOCK has no tmux server on $TARGET — swarm not running; refusing to start it$(watchdog_suffix)" 3
 fi
 
 [ -n "$(printf '%s\n' "$SESSIONS" | tr -d '\t\n ')" ] \
