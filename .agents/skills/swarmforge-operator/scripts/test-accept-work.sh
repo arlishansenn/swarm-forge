@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # test-accept-work.sh — end-to-end checks for accept-work.sh against a
 # stubbed git (issue #17). Run: bash scripts/test-accept-work.sh. Exits
-# non-zero on any failure. Tests run --local (same convention as
-# test-stop-swarm.sh), so ssh is never invoked and never stubbed; find/sed
-# run for real against fixture files under a temp ROOT. Only `git` is
-# stubbed, for the merge-base --is-ancestor exclusion check.
+# non-zero on any failure. Local-mode cases run --local (same convention as
+# test-stop-swarm.sh), so ssh is never invoked there; find/sed run for real
+# against fixture files under a temp ROOT, and only `git` is stubbed, for the
+# merge-base --is-ancestor exclusion check. A remote-mode case below (issue
+# #36) adds a stub ssh that actually simulates real ssh's own
+# stdin-forwarding behavior — see test-read-swarm.sh's stub comment for why
+# a naive argv-logging stub would not catch this bug.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ACCEPT=$HERE/accept-work.sh
@@ -32,6 +35,21 @@ done
 grep -qxF "$commit" "$STUB/shipped-commits" 2>/dev/null && exit 0 || exit 1
 EOF
 chmod +x "$WORK/bin/git"
+
+# ---------- stub ssh (issue #36) — see test-read-swarm.sh for why this must
+# actually drain its own stdin when invoked without -n, not just log argv
+# and run the command ----------
+cat > "$WORK/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+STUB=${STUB:?}
+printf 'ssh %s\n' "$*" >> "$STUB/calls.log"
+has_n=0
+for a in "$@"; do [ "$a" = "-n" ] && has_n=1; done
+[ "$has_n" = 1 ] || cat >/dev/null
+cmd=${*: -1}
+bash -c "$cmd"
+EOF
+chmod +x "$WORK/bin/ssh"
 
 export STUB=$WORK/stub
 reset_stub() { rm -rf "$STUB"; mkdir -p "$STUB"; : > "$STUB/calls.log"; : > "$STUB/shipped-commits"; }
@@ -94,6 +112,11 @@ EOF
 
 run() {
   OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB bash "$ACCEPT" --local --root "$ROOT" 2>&1)
+  RC=$?
+}
+run_remote() {  # runs against $ROOT via --target instead of --local
+  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB \
+    bash "$ACCEPT" --target test-target --key /dev/null --root "$ROOT" 2>&1)
   RC=$?
 }
 
@@ -203,6 +226,26 @@ BEFORE=$(inbox_checksum)
 run; run
 AFTER=$(inbox_checksum)
 check "no writes under inbox/ across two runs" "$BEFORE" "$AFTER"
+
+# 8. remote mode, 3+ deduped rows, a LATER (not first) row's commit already
+#    shipped (issue #36): the DEDUPED loop's git_merge_base_ancestor call
+#    must not drain the loop's here-string and silently drop every row past
+#    the first — rows 1 and 2 must still be reported, and row 3 must still
+#    be correctly excluded, not just accidentally missing.
+reset_fixture; reset_stub
+ship cccccccccc
+mk_completed - 01_a.handoff task-a aaaaaaaaaa 100
+mk_completed - 02_b.handoff task-b bbbbbbbbbb 90
+mk_completed - 03_c.handoff task-c cccccccccc 80
+run_remote
+check "remote 3-row exit" 0 "$RC"
+printf '%s\n' "$OUT" | grep -q 'task: task-a' \
+  && ok "remote: first row (unshipped) reported" || bad "remote: first row (unshipped) reported" "$OUT"
+printf '%s\n' "$OUT" | grep -q 'task: task-b' \
+  && ok "remote: second row (unshipped) reported" || bad "remote: second row (unshipped) reported" "$OUT"
+! printf '%s\n' "$OUT" | grep -q 'task: task-c' \
+  && ok "remote: third row (already-shipped) correctly excluded" \
+  || bad "remote: third row (already-shipped) correctly excluded" "$OUT"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

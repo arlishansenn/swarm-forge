@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # test-stop-swarm.sh — end-to-end checks for stop-swarm.sh against a stubbed
 # tmux/git/close-swarm. Run: bash scripts/test-stop-swarm.sh. Exits non-zero
-# on any failure. Tests run --local (same convention as test-wake-talk.sh and
-# test-read-swarm.sh), so ssh is never invoked and never stubbed.
+# on any failure. Local-mode cases run --local (same convention as
+# test-wake-talk.sh and test-read-swarm.sh), so ssh is never invoked there.
+# Remote-mode cases below (issue #36) add a stub ssh that actually simulates
+# real ssh's own stdin-forwarding behavior — see test-read-swarm.sh's stub
+# comment for why a naive argv-logging stub would not catch this bug.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 STOP=$HERE/stop-swarm.sh
@@ -67,6 +70,21 @@ exit 0
 EOF
 chmod +x "$WORK/bin/close-swarm"
 
+# ---------- stub ssh (issue #36) — see test-read-swarm.sh for why this must
+# actually drain its own stdin when invoked without -n, not just log argv
+# and run the command ----------
+cat > "$WORK/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+STUB=${STUB:?}
+printf 'ssh %s\n' "$*" >> "$STUB/calls.log"
+has_n=0
+for a in "$@"; do [ "$a" = "-n" ] && has_n=1; done
+[ "$has_n" = 1 ] || cat >/dev/null
+cmd=${*: -1}
+bash -c "$cmd"
+EOF
+chmod +x "$WORK/bin/ssh"
+
 export STUB=$WORK/stub
 reset_stub() {
   rm -rf "$STUB"; mkdir -p "$STUB/panes" "$STUB/git"; : > "$STUB/calls.log"
@@ -101,6 +119,40 @@ run() {  # run [extra args...]
 }
 close_swarm_called() { grep -q '^close-swarm ' "$STUB/calls.log"; }
 kill_session_called() { grep -q 'kill-session' "$STUB/calls.log"; }
+
+# ---------- remote-mode fixture: 3 roles, 3 distinct worktrees (issue #36 —
+# a second/later role or worktree silently skipped by the SESSIONS or ROLES
+# loop is a real safety-gate bypass, not just a report gap: stop swarm must
+# never let close-swarm run when a later row was actually BUSY/UNKNOWN/DIRTY)
+ROOT3=$WORK/fixtures/threepack
+WT3_CODER=$ROOT3/.worktrees/coder
+WT3_CLEANER=$ROOT3/.worktrees/cleaner
+WT3_REVIEWER=$ROOT3/.worktrees/reviewer
+mkdir -p "$ROOT3/.swarmforge"
+printf '1\tcoder\tswarmforge-coder\tCoder\tcodex\n2\tcleaner\tswarmforge-cleaner\tCleaner\tclaude\n3\treviewer\tswarmforge-reviewer\tReviewer\tclaude\n' \
+  > "$ROOT3/.swarmforge/sessions.tsv"
+printf 'coder\tcoder\t%s\tswarmforge-coder\tCoder\tcodex\ttask\n' "$WT3_CODER" \
+  > "$ROOT3/.swarmforge/roles.tsv"
+printf 'cleaner\tcleaner\t%s\tswarmforge-cleaner\tCleaner\tclaude\ttask\n' "$WT3_CLEANER" \
+  >> "$ROOT3/.swarmforge/roles.tsv"
+printf 'reviewer\treviewer\t%s\tswarmforge-reviewer\tReviewer\tclaude\ttask\n' "$WT3_REVIEWER" \
+  >> "$ROOT3/.swarmforge/roles.tsv"
+printf '/tmp/sf-stop-swarm-remote.sock\n' > "$ROOT3/.swarmforge/tmux-socket"
+
+run_remote() {  # run_remote [extra args...]
+  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB CLOSE_SWARM="$WORK/bin/close-swarm" \
+    bash "$STOP" --target test-target --key /dev/null --root "$ROOT3" "$@" 2>&1)
+  RC=$?
+}
+all_clean3() {
+  reset_stub; touch "$STUB/live"
+  set_pane swarmforge-coder    '❯'
+  set_pane swarmforge-cleaner  '❯'
+  set_pane swarmforge-reviewer '❯'
+  clean_status "$WT3_CODER"
+  clean_status "$WT3_CLEANER"
+  clean_status "$WT3_REVIEWER"
+}
 
 # an all-clean baseline every scenario starts from, then dirties one thing
 all_clean() {
@@ -182,6 +234,48 @@ check "no-server exit" 3 "$RC"
 printf '%s\n' "$OUT" | head -1 | grep -q '^STATUS=STOPPED$' \
   && ok "no-server status is STOPPED" || bad "no-server status is STOPPED" "$OUT"
 ! close_swarm_called && ok "no-server: close-swarm never called" || bad "no-server: close-swarm never called" "$(cat "$STUB/calls.log")"
+
+# 7. remote mode, SECOND (not first) role BUSY (issue #36): the SESSIONS
+#    loop must still reach cleaner's row even though coder's own tmux_remote
+#    call runs first — a truncated loop would silently report all-clean and
+#    let close-swarm run.
+all_clean3
+set_pane swarmforge-cleaner 'Working (44s • esc to interrupt)'
+run_remote
+check "remote second-busy exit" 6 "$RC"
+printf '%s\n' "$OUT" | head -1 | grep -q '^STATUS=UNSAFE$' \
+  && ok "remote second-busy status is UNSAFE" || bad "remote second-busy status is UNSAFE" "$OUT"
+printf '%s\n' "$OUT" | grep -q '^BUSY=cleaner$' \
+  && ok "remote second-busy line names cleaner" || bad "remote second-busy line names cleaner" "$OUT"
+! close_swarm_called && ok "remote second-busy: close-swarm never called" \
+  || bad "remote second-busy: close-swarm never called" "$(cat "$STUB/calls.log")"
+
+# 8. remote mode, SECOND role UNKNOWN (blank pane) — same gate, same reason
+all_clean3
+set_pane swarmforge-cleaner ''
+run_remote
+check "remote second-unknown exit" 6 "$RC"
+printf '%s\n' "$OUT" | grep -q '^UNKNOWN=cleaner$' \
+  && ok "remote second-unknown line names cleaner" || bad "remote second-unknown line names cleaner" "$OUT"
+! close_swarm_called && ok "remote second-unknown: close-swarm never called" \
+  || bad "remote second-unknown: close-swarm never called" "$(cat "$STUB/calls.log")"
+
+# 9. remote mode, SECOND (not first) distinct worktree DIRTY (issue #36):
+#    the ROLES loop's git_status call must still reach cleaner's worktree.
+all_clean3
+set_status "$WT3_CLEANER" ' M a.txt'
+run_remote
+check "remote second-dirty exit" 6 "$RC"
+printf '%s\n' "$OUT" | grep -q "^DIRTY=$WT3_CLEANER (1 files)\$" \
+  && ok "remote second-dirty line names cleaner's worktree" || bad "remote second-dirty line names cleaner's worktree" "$OUT"
+! close_swarm_called && ok "remote second-dirty: close-swarm never called" \
+  || bad "remote second-dirty: close-swarm never called" "$(cat "$STUB/calls.log")"
+
+# 10. remote mode, all-clean across 3 roles/worktrees still stops normally
+all_clean3
+run_remote
+check "remote clean exit" 0 "$RC"
+close_swarm_called && ok "remote clean: close-swarm called" || bad "remote clean: close-swarm called" "$(cat "$STUB/calls.log")"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
