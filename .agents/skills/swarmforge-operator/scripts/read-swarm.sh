@@ -40,30 +40,13 @@ SOCK=${SOCK%$'\n'}
 tmux_remote list-sessions >/dev/null 2>&1 \
   || die STOPPED "socket $SOCK has no tmux server — swarm not running" 3
 
-# ---------- classification: two small, high-confidence marker sets ----------
-# Issue #15's boundary: do not try to enumerate every backend's error states.
-# A line that doesn't confidently match one of these is UNKNOWN, including a
-# blank pane — the old two-state rule's "empty prompt = idle" is exactly the
-# silent misread this ticket exists to stop.
-#
-# BUSY: the "esc to interrupt" hint tied to codex's interruptible-work banner
-# ("Working (44s • esc to interrupt)"), or the "<participle> for Ns" shape of
-# claude's spinner line ("Baked for 13s", "Cogitated for 28s"). The spinner
-# glyph itself is skipped as a marker — unicode chrome a font/terminal may not
-# round-trip byte-for-byte; the text shape after it is the stable part.
-# IDLE: a bare prompt character with nothing else on the line (claude's empty
-# input line), or the literal placeholder text inviting input ("Ask Codex to
-# do anything").
-BUSY_RE='esc to interrupt|[A-Za-z]+(ed|ing) for [0-9]+s'
-IDLE_RE='^(❯|>)[[:space:]]*$|Ask .* to do anything'
-
-classify() { # $1 = last non-empty pane line ("" for a blank pane)
-  if [ -z "$1" ]; then echo UNKNOWN
-  elif printf '%s' "$1" | grep -qE "$BUSY_RE"; then echo BUSY
-  elif printf '%s' "$1" | grep -qE "$IDLE_RE"; then echo IDLE
-  else echo UNKNOWN
-  fi
-}
+# ---------- classification ----------
+# BUSY_RE/IDLE_RE/classify() live in lib-wake-talk.sh (issue #11): stop
+# swarm's preflight needs the exact same three-state judgment this script
+# uses, so the marker sets and the function moved to the file both scripts
+# already source, instead of staying here as a copy that could drift. Issue
+# #15's boundary — do not enumerate every backend's error state; unmatched
+# text, including a blank pane, is UNKNOWN — is documented there now.
 
 printf 'STATUS=READ\n'
 while IFS=$'\t' read -r _index role session _display _agent; do

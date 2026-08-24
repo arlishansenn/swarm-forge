@@ -1,8 +1,10 @@
 # lib-wake-talk.sh — send-then-verify logic shared by wake-role.sh and
 # talk-role.sh (issue #14: a mismatched backend must fail loudly, not send
-# keys into the void). read-swarm.sh (issue #15) also sources this file, but
-# only for the die/read_file/tmux_remote plumbing — it never calls
-# resolve_role or send_and_verify, since a report verb never sends keys.
+# keys into the void). read-swarm.sh (issue #15) and stop-swarm.sh (issue
+# #11) also source this file: both are report-shaped verbs that only need
+# the die/read_file/tmux_remote plumbing plus BUSY_RE/IDLE_RE/classify — they
+# never call resolve_role or send_and_verify, since neither sends keys.
+# stop-swarm.sh additionally uses git_status for its DIRTY-worktree check.
 # Sourced, never executed directly.
 #
 # Callers must set ROOT, TARGET, KEY, LOCAL before sourcing, and SOCK after
@@ -30,6 +32,48 @@ tmux_remote() {
     local cmd a
     cmd=$(printf '%q' tmux)$(printf ' %q' -S "$SOCK" "$@")
     ssh -i "$KEY" "$TARGET" "$cmd"
+  fi
+}
+
+# Runs `git -C <path> status --porcelain` for stop-swarm.sh's DIRTY-worktree
+# check (issue #11). Same shape as tmux_remote and for the same reason: LOCAL
+# execs git directly with no shell in the middle, so argv needs no escaping;
+# remote mode crosses one ssh exec that reparses a single string, so each
+# argument is %q-quoted before joining — a worktree path out of roles.tsv is
+# exactly the kind of free text tmux_remote's own comment warns about, not
+# something to hand-interpolate into a shell string.
+git_status() { # $1 = worktree path (as recorded in roles.tsv)
+  if [ "$LOCAL" = 1 ]; then
+    git -C "$1" status --porcelain
+  else
+    local cmd
+    cmd=$(printf '%q' git)$(printf ' %q' -C "$1" status --porcelain)
+    ssh -i "$KEY" "$TARGET" "$cmd"
+  fi
+}
+
+# ---------- report-verb classification (issue #15, shared per issue #11) ----
+# Moved here from read-swarm.sh so stop-swarm.sh's preflight reads a role's
+# BUSY/IDLE/UNKNOWN state exactly the way `read swarm` does — the issue #11
+# acceptance criterion is that the two judgments never drift apart, which a
+# second copy of this logic could not guarantee.
+#
+# BUSY: the "esc to interrupt" hint tied to codex's interruptible-work banner
+# ("Working (44s • esc to interrupt)"), or the "<participle> for Ns" shape of
+# claude's spinner line ("Baked for 13s", "Cogitated for 28s"). The spinner
+# glyph itself is skipped as a marker — unicode chrome a font/terminal may not
+# round-trip byte-for-byte; the text shape after it is the stable part.
+# IDLE: a bare prompt character with nothing else on the line (claude's empty
+# input line), or the literal placeholder text inviting input ("Ask Codex to
+# do anything").
+BUSY_RE='esc to interrupt|[A-Za-z]+(ed|ing) for [0-9]+s'
+IDLE_RE='^(❯|>)[[:space:]]*$|Ask .* to do anything'
+
+classify() { # $1 = last non-empty pane line ("" for a blank pane)
+  if [ -z "$1" ]; then echo UNKNOWN
+  elif printf '%s' "$1" | grep -qE "$BUSY_RE"; then echo BUSY
+  elif printf '%s' "$1" | grep -qE "$IDLE_RE"; then echo IDLE
+  else echo UNKNOWN
   fi
 }
 
