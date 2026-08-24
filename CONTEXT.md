@@ -35,3 +35,19 @@ _Avoid_: pack (when meaning the running process)
 **Pack**:
 A named role topology (`two-pack`, `four-pack`, `six-pack`) recorded in `swarmforge.conf`.
 _Avoid_: swarm (when meaning the topology file)
+
+## Operator verbs
+
+An operator verb is one named operation an operator runs against a managed project. Every verb is one of three kinds, and the kind decides what the verb owes the operator when it finishes.
+
+**Handover verb**:
+A verb whose success is passing control to another program, so it has no completion state of its own.
+_Avoid_: interactive verb, attach verb
+
+**Report verb**:
+A verb whose success is producing a reading of current state; it changes nothing.
+_Avoid_: read-only verb, query verb
+
+**Effect verb**:
+A verb that changes the world, so "did it act" and "did it succeed" are separate questions.
+_Avoid_: mutating verb, write verb, action verb
