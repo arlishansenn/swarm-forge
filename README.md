@@ -336,15 +336,15 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 | 动词 | 作用 |
 |---|---|
-| `open swarm <root>` | 把运行中的 swarm 以 cmux workspace 打开（下文脚本契约） |
-| `dashboard <root>` | 建 SSH 隧道，开一个 browser workspace 连 pack_web 看板 |
+| `open swarm <root>` | 把运行中的 swarm 以 cmux workspace 打开；停机时报原因，命中 window watchdog 拆除会点名，绝不代人启动 |
+| `dashboard <root>` | 建 SSH 隧道开 browser workspace 连 pack_web 看板；额外校验端口后面真是本项目的 `pack_web`（`--serve` 参数比对），不是同机别的项目撞上来的 |
 | `attach <role>` | 临时附加到某个角色的 tmux session |
-| `read swarm` | 逐角色截屏，看 idle/Working/handoff 邮件通知 |
-| `wake <role>` | 唤醒：注入 `ready_for_next.sh` 并按 backend 编码提交 |
-| `talk <role>` | 给指定角色发送一条行为切片 |
-| `onboard project` | 把 upstream 的 two-pack/four-pack/six-pack 装进一个项目目录；拒绝 `main`，目标非空时零写入拒绝；装完不启动 |
-| `accept work` | 人工验收：读最后收件人 `inbox/completed/` 的 handoff，报 `task`/`commit`，据此开 PR 并关联 issue；completed 目录只读不改 |
-| `stop swarm` | 走 `close-swarm` 正常停机，必要时补杀本项目 daemon |
+| `read swarm` | 逐角色截屏，三态分类 `IDLE`/`BUSY`/`UNKNOWN`（认不出就是 UNKNOWN，不猜成 idle），每行都附原始 pane 文本 |
+| `wake <role>` | 唤醒：注入 `ready_for_next.sh`，按 backend 编码提交后**验证真的被消费**，没提交成功报错并点名 backend 不匹配 |
+| `talk <role>` | 给指定角色发一条行为切片，同样验证送达且被提交，不是发了就算 |
+| `onboard project` | 把 upstream 的 two-pack/four-pack/six-pack 装进一个项目目录；拒绝 `main`，目标非空时零写入拒绝；改写 `ARCHIVE_URL` 默认值指向本 fork，装完不启动 |
+| `accept work` | 人工验收：读终端 handoff 报 `task`/`commit`；同时扫 `inbox/new`/`inbox/in_process` 的滞留，卡链了会 `WARN=` 报出来，不再跟"没活干"读起来一样 |
+| `stop swarm` | 停机前先 preflight：有角色 `BUSY`/`UNKNOWN` 或 worktree 有未提交改动就拒绝停机（退出 6），全干净才走 `close-swarm`；`--force` 跳过 preflight 复现今天的裸停机 |
 
 默认远端是 `admin@100.64.0.4`，可用 `--target`/`--key` 覆盖；`--local` 改走本地文件系统。
 
