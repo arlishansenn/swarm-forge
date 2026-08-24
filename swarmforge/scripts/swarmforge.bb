@@ -337,18 +337,29 @@
              (fs/path worktree-path "swarmforge" "constitution.prompt")
              {:replace-existing true})))
 
+(defn executable-relative-paths [dir]
+  (let [root (fs/path dir)]
+    (->> (fs/glob root "**" {:hidden true})
+         (filter fs/regular-file?)
+         (filter fs/executable?)
+         (map #(str (fs/relativize root %)))
+         set)))
+
+(defn scripts-mirror-matches? [src dest]
+  ;; diff -rq only compares file content; a file that is byte-identical but
+  ;; lost its +x bit during mirroring would pass diff and then fail to exec
+  ;; at launch, so executable-bit parity is checked separately.
+  (and (sh-ok? "diff" "-rq" (str src) (str dest))
+       (= (executable-relative-paths src) (executable-relative-paths dest))))
+
 (defn sync-worktree-scripts! [ctx]
   (doseq [row (:roles ctx)
           :let [worktree-path (:worktree-path row)]
           :when (not= (str worktree-path) (str (:working-dir ctx)))]
     (let [role-scripts-dir (fs/path worktree-path "swarmforge" "scripts")
           role-state-dir (fs/path worktree-path ".swarmforge")]
-      (fs/create-dirs role-scripts-dir)
-      (doseq [entry (fs/list-dir (:script-dir ctx))]
-        (let [target (fs/path role-scripts-dir (fs/file-name entry))]
-          (if (fs/directory? entry)
-            (fs/copy-tree entry target {:replace-existing true})
-            (fs/copy entry target {:replace-existing true}))))
+      (fs/delete-tree role-scripts-dir)
+      (copy-tree-into! (:script-dir ctx) role-scripts-dir)
       (sync-worktree-roles! ctx worktree-path)
       (fs/create-dirs (fs/path role-state-dir "notify"))
       (fs/copy (:sessions-file ctx) (fs/path role-state-dir "sessions.tsv") {:replace-existing true})
@@ -738,6 +749,12 @@
           (doseq [[index row] (map-indexed vector (:roles ctx))]
             (when (pos? index)
               (Thread/sleep delay-ms))
+            (when (not= (str (:worktree-path row)) (str (:working-dir ctx)))
+              (let [role-scripts-dir (fs/path (:worktree-path row) "swarmforge" "scripts")]
+                (when-not (scripts-mirror-matches? (:script-dir ctx) role-scripts-dir)
+                  (fail! (str red "Error:" reset " Scripts mirror for role '" (:role row)
+                              "' does not match the installed source (" role-scripts-dir
+                              " vs " (:script-dir ctx) ")")))))
             (launch-role! ctx index row)))
         (println)
         (println (str green bold "SwarmForge is ready." reset))
@@ -791,6 +808,16 @@
 (defn test-sleep-inhibitor-prefix! []
   (println (str/join " " (or (sleep-inhibitor-prefix) []))))
 
+(defn test-sync-worktree-scripts! [root]
+  (let [ctx (prepare-ctx (context root))]
+    (sync-worktree-scripts! ctx)
+    (println "OK")))
+
+(defn test-scripts-mirror-matches! [src dest]
+  (if (scripts-mirror-matches? src dest)
+    (println "MATCH")
+    (do (println "MISMATCH") (System/exit 1))))
+
 (defn -main [& args]
   (case (first args)
     "--test-parse" (test-parse! (or (second args) (System/getProperty "user.dir")))
@@ -805,6 +832,8 @@
     "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
     "--test-sleep-inhibitor-prefix" (test-sleep-inhibitor-prefix!)
     "--test-tmux-base-indexes" (test-tmux-base-indexes! (second args))
+    "--test-sync-worktree-scripts" (test-sync-worktree-scripts! (or (second args) (System/getProperty "user.dir")))
+    "--test-scripts-mirror-matches" (test-scripts-mirror-matches! (second args) (nth args 2))
     (run-main! (or (first args) (System/getProperty "user.dir")))))
 
 (apply -main *command-line-args*)

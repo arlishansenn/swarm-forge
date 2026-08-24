@@ -74,8 +74,9 @@ replaces itself with the target program. The exit code after that belongs to tha
 program, not to this contract.
 
 **Not every verb has a script yet.** `onboard project`, `open swarm`, `dashboard`,
-`wake role`, `talk role`, `read swarm`, `stop swarm`, `accept work`, and
-`start swarm` are scripted and follow this contract today. The other verbs
+`wake role`, `talk role`, `read swarm`, `stop swarm`, `accept work`,
+`start swarm`, and `update SwarmForge scripts` are scripted and follow this
+contract today. The other verbs
 are shell steps in this file; run them as written and read their raw output.
 Bringing them under the contract is tracked in the issue tracker.
 
@@ -157,7 +158,7 @@ has reproduced twice under manual operation.
 
 ```sh
 scripts/start-swarm.sh --root <project-root> --terminal <value> \
-  [--target user@host] [--key <path>] [--local]
+  [--target user@host] [--key <path>] [--local] [--force]
 ```
 
 `--terminal` is **required**, not an optional env passthrough — unlike
@@ -181,6 +182,21 @@ file with no live server behind it (the watchdog-kill aftermath `open
 swarm` already knows how to name) is the stopped state this verb exists to
 recover from, not "already running" — it proceeds to launch.
 
+Next, it acquires a project-scoped lock (issue #29) at
+`$ROOT/.swarmforge/update-lock`, excluding a concurrent `update SwarmForge
+scripts` on the same managed project — a lock already held by that verb is
+`6` `UNSAFE`, naming the holder. Then, unless `--force` is given, it
+recomputes a deterministic digest of the managed project's installed
+`swarmforge/scripts/` and compares it against `$ROOT/.swarmforge/
+scripts-manifest`: a missing manifest or a digest mismatch is `4` `DRIFT`,
+and the launcher is never invoked — this is exactly the failure mode that
+let a running swarm reach handoff with scripts its own launcher didn't
+recognize as required. `--force` overrides both the lock contention and the
+drift check (never the already-running check above, which has no
+override): it steals a held lock and skips the digest comparison entirely.
+The lock is held through the rest of this script, including launch and the
+readiness poll, and is released on every exit path.
+
 The launch itself runs detached, local or remote: `SWARMFORGE_TERMINAL=
 <value> nohup ./swarm >log 2>&1 &` (or without the env var, for `auto`),
 never a bare foreground `./swarm` — a bare launch is exactly what does not
@@ -195,20 +211,97 @@ Exit codes / STATUS line:
 - `0` `STARTED` — the swarm came up; `SOCK`/`TERMINAL` are reported.
 - `2` `USAGE` — missing `--root`, missing `--terminal`, or `--terminal` not
   one of the accepted values. Nothing is attempted.
+- `4` `DRIFT` — installed `swarmforge/scripts/` do not match
+  `$ROOT/.swarmforge/scripts-manifest`, or it's missing (issue #29). The
+  launcher is never invoked; re-run `update SwarmForge scripts` first, or
+  pass `--force` to launch anyway.
 - `5` `ERROR` — the runtime files never confirmed readiness within budget.
   This covers both `./swarm` exiting non-zero and it simply never becoming
   ready: the launch is intentionally detached (see above), so this script
   never inspects the launcher's own exit code, only the runtime files it
   should eventually produce — check the launch log named in the message.
 - `6` `UNSAFE` — the swarm is already running; refuses to start a second
-  daemon. Nothing was changed.
+  daemon. Nothing was changed. This also now covers the project lock being
+  held by a concurrent `update SwarmForge scripts` (issue #29), naming the
+  holder — unlike the already-running case, `--force` clears a held lock.
 
 **Boundary:** this verb only covers "from zero to one." Whether to `--force`
 a restart over an already-running swarm, or wait out one that is still
 tearing down, are `stop swarm`'s and `open swarm`'s territory, not this
 one's. It also does not fix the window watchdog's own empty-window-ID
 misjudgment (a launcher/watchdog-side defect) — it only keeps an operator
-from accidentally walking into it via this verb.
+from accidentally walking into it via this verb. The lock and drift
+preflight added by issue #29 guard entry into that same "zero to one" step;
+they do not extend what this verb otherwise does. Once the launcher itself
+takes over, it independently mirrors — deletes and recreates, not overlays —
+and verifies each role worktree's `swarmforge/scripts/` against the
+installed source before that role starts, so a stale per-role copy can't
+outlive this verb's own project-level check.
+
+## Verb: `update SwarmForge scripts`
+
+Run the bundled script; it installs THIS repo's own `swarmforge/scripts/`
+into a managed project's `swarmforge/scripts/`, the counterpart to `start
+swarm`'s drift check (issue #29): a project onboarded from an upstream pack
+(whose scripts came from wherever that pack's `./swarm` first-run
+`ARCHIVE_URL` pointed) can drift onto scripts this fork's own launcher
+doesn't recognize as required — exactly podsum's real incident, a legacy
+`./swarm` whose `ARCHIVE_URL` line was never repointed and a
+`swarmforge/scripts/` tree missing files the current launcher expects. This
+verb is the WRITER for the identity manifest `start swarm`'s preflight
+reads; the two never disagree about what "this project's scripts came from
+here" means, because one writes the format the other reads, byte for byte.
+
+```sh
+scripts/update-swarmforge-scripts.sh --root <project-root> \
+  [--target user@host] [--key <path>] [--local] [--force]
+```
+
+It stages the operator's own source checkout into a fresh temp copy
+first, validates that STAGED copy against the same required-helpers and
+terminal-adapters lists `swarmforge.bb`'s own `check-helper-scripts!`
+enforces, and only then replaces the managed project's scripts tree,
+manifest, and (if present) legacy `./swarm` launcher — all three
+atomically, with rollback on any failure from the swap onward. Nothing at
+`$ROOT` is touched until staging and validation both pass.
+
+Preflight order deliberately mirrors `start swarm`'s (issue #29): 1)
+refuse if the swarm is already running, no override, zero side effects, the
+project lock never touched; 2) acquire the same project-scoped lock
+`start swarm` uses, excluding a concurrent launch — `--force` steals a
+held lock; 3) everything else runs with the lock held. The source checkout
+this verb installs FROM is always resolved from where the operator script
+itself lives, on the operator's own machine, regardless of whether `$ROOT`
+is local or remote — a dirty (uncommitted) source checkout under
+`swarmforge/scripts/` is refused with **no override, ever**: unlike the
+lock, `--force` has no effect on this check, because an uncommitted source
+checkout is never safe to ship. `--force` here does exactly one thing —
+steal a held lock — and nothing more.
+
+Exit codes / STATUS line:
+
+- `0` `UPDATED` — the scripts tree, manifest, and legacy launcher (if
+  present) were replaced; `ROOT`/`DIGEST`/`SOURCE_COMMIT` are reported.
+- `2` `USAGE` — missing `--root`.
+- `5` `ERROR` — the source checkout is dirty under `swarmforge/scripts/`
+  (no override); the staged copy is missing a required helper or terminal
+  adapter (names the file, `$ROOT` untouched); the manifest write failed
+  (rolled back to the previous scripts tree); or a legacy `$ROOT/swarm`
+  launcher's `ARCHIVE_URL` line didn't match the expected pattern after
+  rewrite (names `$ROOT/swarm`, rolls back the scripts swap and manifest
+  write too — the whole point of this verb existing).
+- `6` `UNSAFE` — the swarm is already running (no override), or the
+  project lock is held by a concurrent `start swarm` (names the holder;
+  `--force` steals it).
+
+**Boundary:** this verb only ever installs the operator's own current
+source checkout; it never fetches, never targets a different commit or
+branch, and never starts or stops anything. A managed project with no
+`$ROOT/swarm` file at all is not an error — the launcher-rewrite step is
+simply skipped, since not every managed project necessarily has that
+legacy file. It also never repairs a running swarm's already-loaded
+process state: a `DRIFT` reported by `start swarm` means "update, then
+start" — this verb is the "update" half, never the "start" half.
 
 ## Verb: `dashboard`
 
@@ -548,5 +641,27 @@ delay elapsed, then sends the launcher a real `SIGHUP` (local case — what a
 closing session delivers) and confirms it still finishes and writes its
 marker file afterward, and (remote case, via a stub `ssh` that actually
 executes the launch command instead of just logging it) that the marker
-appears only after the stub ssh invocation itself has already returned. Run
-them after any change to the scripts or the stub contracts.
+appears only after the stub ssh invocation itself has already returned.
+`scripts/test-update-swarmforge-scripts.sh` runs `update-swarmforge-scripts.sh`
+against a stubbed tmux/ssh and real local filesystem operations for staging,
+digesting, validation, and replacement (stubbing only the ssh/tmux
+boundary, per issue #29's Testing Decisions), against disposable fixture
+git repos built from a real copy of this repo's own scripts so the
+dirty-source case never depends on this checkout's own live git state.
+Covers missing `--root`, an already-running swarm (refused with `--force`,
+zero filesystem changes), project-lock contention naming the holder and
+`--force` stealing it, a dirty source checkout, a staged tree missing a
+required helper or terminal adapter (names the file, `$ROOT` untouched), a
+successful local update (manifest digest/commit/repo correct, old tree
+gone, legacy launcher rewritten and verified, `swarmforge.conf`/roles/
+constitution/`sessions.tsv` byte-identical before and after), a legacy
+launcher whose `ARCHIVE_URL` never matches the expected pattern (rolls back
+the scripts swap and manifest write, not just the launcher), a manifest
+write failure (old tree restored), a project with no legacy `./swarm` file
+at all (launcher rewrite skipped, not an error), a full remote update over
+the stub-ssh tar-pipe transfer, and the required cross-verb case: this
+script's own successful update followed by `start-swarm.sh --local` with no
+`--force` proceeding straight to `STATUS=STARTED` instead of `DRIFT`,
+proving the digest this script writes and `start-swarm.sh`'s own read of it
+genuinely agree. Run them after any change to the scripts or the stub
+contracts.
