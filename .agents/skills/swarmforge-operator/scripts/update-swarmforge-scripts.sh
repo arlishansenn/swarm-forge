@@ -309,7 +309,7 @@ EOS
   SWAP_CMD=$(printf '%q' bash)$(printf ' %q' -c "$SNIPPET" bash \
     "$ROOT" "$REMOTE_STAGE" "$SOURCE_COMMIT" "$SOURCE_REPO" "$DIGEST")
 
-  if ! SWAP_OUT=$(ssh -i "$KEY" "$TARGET" "$SWAP_CMD" 2>&1); then
+  if ! SWAP_OUT=$(ssh -n -i "$KEY" "$TARGET" "$SWAP_CMD" 2>&1); then
     case $SWAP_OUT in
       *MANIFEST_WRITE_FAILED*)
         die ERROR "failed to write manifest at $ROOT/.swarmforge/scripts-manifest on $TARGET — rolled back to the previous scripts tree" 5 ;;

@@ -24,7 +24,7 @@ die() { printf 'STATUS=%s\n%s\n' "$1" "$2"; exit "${3:-5}"; }
 
 read_file() { # $1 = path under ROOT
   if [ "$LOCAL" = 1 ]; then cat "$ROOT/$1"
-  else ssh -i "$KEY" "$TARGET" "cat '$ROOT/$1'"; fi
+  else ssh -n -i "$KEY" "$TARGET" "cat '$ROOT/$1'"; fi
 }
 
 # Runs tmux on the target with argv passed through untouched, never a
@@ -40,7 +40,7 @@ tmux_remote() {
   else
     local cmd a
     cmd=$(printf '%q' tmux)$(printf ' %q' -S "$SOCK" "$@")
-    ssh -i "$KEY" "$TARGET" "$cmd"
+    ssh -n -i "$KEY" "$TARGET" "$cmd"
   fi
 }
 
@@ -57,7 +57,7 @@ git_status() { # $1 = worktree path (as recorded in roles.tsv)
   else
     local cmd
     cmd=$(printf '%q' git)$(printf ' %q' -C "$1" status --porcelain)
-    ssh -i "$KEY" "$TARGET" "$cmd"
+    ssh -n -i "$KEY" "$TARGET" "$cmd"
   fi
 }
 
@@ -80,7 +80,7 @@ git_merge_base_ancestor() { # $1 = commit
   else
     local cmd
     cmd=$(printf '%q' git)$(printf ' %q' -C "$ROOT" merge-base --is-ancestor "$1" origin/main)
-    ssh -i "$KEY" "$TARGET" "$cmd"
+    ssh -n -i "$KEY" "$TARGET" "$cmd"
   fi
 }
 
@@ -130,7 +130,7 @@ run_detached() { # $1 = absolute log path, rest = argv to run detached
     q_argv=$(printf '%q ' "$@")
     q_log=$(printf '%q' "$log")
     q_root=$(printf '%q' "$ROOT")
-    ssh -i "$KEY" "$TARGET" \
+    ssh -n -i "$KEY" "$TARGET" \
       "mkdir -p \$(dirname $q_log) && cd $q_root && nohup $q_argv </dev/null >>$q_log 2>&1 &"
   fi
 }
@@ -169,7 +169,7 @@ acquire_lock() {
   else
     local cmd out
     cmd="if mkdir $(printf '%q' "$ROOT/$LOCKDIR") 2>/dev/null; then printf '%s\n' $(printf '%q' "$holder") > $(printf '%q' "$ROOT/$LOCKDIR/holder"); else cat $(printf '%q' "$ROOT/$LOCKDIR/holder") 2>/dev/null; exit 1; fi"
-    if out=$(ssh -i "$KEY" "$TARGET" "$cmd"); then
+    if out=$(ssh -n -i "$KEY" "$TARGET" "$cmd"); then
       return 0
     fi
     LOCK_HOLDER=$out
@@ -187,7 +187,7 @@ release_lock() {
   else
     local cmd
     cmd=$(printf '%q' rm)$(printf ' %q' -rf "$ROOT/$LOCKDIR")
-    ssh -i "$KEY" "$TARGET" "$cmd" 2>/dev/null || true
+    ssh -n -i "$KEY" "$TARGET" "$cmd" 2>/dev/null || true
   fi
 }
 
@@ -274,7 +274,7 @@ done | sha256_hex || true
 EOS
 )
     cmd=$(printf '%q' bash)$(printf ' %q' -c "$snippet" bash "$dir")
-    ssh -i "$KEY" "$TARGET" "$cmd"
+    ssh -n -i "$KEY" "$TARGET" "$cmd"
   fi
 }
 

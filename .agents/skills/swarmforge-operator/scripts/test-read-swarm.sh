@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # test-read-swarm.sh — end-to-end checks for read-swarm.sh against a stubbed
 # tmux. Run: bash scripts/test-read-swarm.sh. Exits non-zero on any failure.
-# Tests run --local (same convention as test-wake-talk.sh), so ssh is never
-# invoked and never stubbed.
+# Local-mode cases run --local (same convention as test-wake-talk.sh), so ssh
+# is never invoked there. A remote-mode case (issue #36) below adds a stub
+# ssh that actually simulates real ssh's own stdin-forwarding behavior.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 READ=$HERE/read-swarm.sh
@@ -41,6 +42,35 @@ case $CMD in
 esac
 EOF
 chmod +x "$WORK/bin/tmux"
+
+# ---------- stub ssh (issue #36) ----------
+# A naive stub that just logs argv and runs the shipped command (the
+# pre-existing test-start-swarm.sh pattern) does NOT reproduce this bug: the
+# bug is in real ssh's OWN stdin-forwarding behavior, not in whatever command
+# ssh happens to run — tmux capture-pane never reads stdin itself, so a stub
+# that skips straight to running the command would pass against the broken
+# code too. Real ssh, run non-interactively without -n, still drains and
+# forwards whatever is on its own stdin to the remote side even though the
+# remote command never asks for it; since the ssh process inherits whatever
+# fd 0 the calling shell has open at that moment, an ssh call made from
+# inside a `while read ... done <<< "$SESSIONS"` loop drains that loop's own
+# here-string on its first invocation, and every subsequent `read -r` in
+# that same loop then hits EOF. This stub reproduces exactly that: without
+# -n anywhere in argv, it drains its own stdin (`cat >/dev/null`) before
+# running the command; with -n, it skips the drain, matching the documented
+# behavior "-n: Redirects stdin from /dev/null".
+cat > "$WORK/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+STUB=${STUB:?}
+printf 'ssh %s\n' "$*" >> "$STUB/calls.log"
+has_n=0
+for a in "$@"; do [ "$a" = "-n" ] && has_n=1; done
+[ "$has_n" = 1 ] || cat >/dev/null
+cmd=${*: -1}
+bash -c "$cmd"
+EOF
+chmod +x "$WORK/bin/ssh"
+
 export STUB=$WORK/stub
 
 reset_stub() { rm -rf "$STUB"; mkdir -p "$STUB/panes"; : > "$STUB/calls.log"; }
@@ -60,6 +90,21 @@ run() {
   RC=$?
 }
 role_line() { printf '%s\n' "$OUT" | awk -v r="$1" '$1==r'; }  # role_line <role>
+
+# ---------- remote-mode fixture: 3 sessions, not 2 (issue #36's own
+# acceptance criteria: "防止只修成恰好读取两项" — a fix that happens to
+# survive exactly two rows but not N would slip through a 2-row test) -------
+ROOT3=$WORK/fixtures/threepack
+mkdir -p "$ROOT3/.swarmforge"
+printf '1\tcoder\tswarmforge-coder\tCoder\tcodex\n2\tcleaner\tswarmforge-cleaner\tCleaner\tclaude\n3\treviewer\tswarmforge-reviewer\tReviewer\tclaude\n' \
+  > "$ROOT3/.swarmforge/sessions.tsv"
+printf '/tmp/sf-read-swarm-remote.sock\n' > "$ROOT3/.swarmforge/tmux-socket"
+
+run_remote() {
+  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB \
+    bash "$READ" --target test-target --key /dev/null --root "$ROOT3" 2>&1)
+  RC=$?
+}
 
 echo "== RED/GREEN suite for read-swarm.sh =="
 
@@ -132,6 +177,22 @@ set_pane swarmforge-cleaner '❯'
 run
 ! grep -q 'send-keys' "$STUB/calls.log" \
   && ok "read swarm never calls send-keys" || bad "read swarm never calls send-keys" "$(cat "$STUB/calls.log")"
+
+# 7. remote mode, 3+ sessions (issue #36): a caller ssh's own default
+#    stdin-forwarding must not drain the loop's here-string and truncate the
+#    report — every role must appear, in sessions.tsv order.
+reset_stub; touch "$STUB/live"
+set_pane swarmforge-coder    '❯'
+set_pane swarmforge-cleaner  '❯'
+set_pane swarmforge-reviewer '❯'
+run_remote
+check "remote 3-role exit" 0 "$RC"
+for r in coder cleaner reviewer; do
+  [ -n "$(role_line "$r")" ] \
+    && ok "remote: role $r present in report" || bad "remote: role $r present in report" "$OUT"
+done
+ORDER=$(printf '%s\n' "$OUT" | awk '$1=="coder"||$1=="cleaner"||$1=="reviewer"{print $1}' | tr '\n' ' ')
+check "remote 3-role order matches sessions.tsv" "coder cleaner reviewer " "$ORDER"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
