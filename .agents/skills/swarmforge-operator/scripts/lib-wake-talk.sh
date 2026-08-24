@@ -178,9 +178,44 @@ CONSUME_INTERVAL=${SF_CONSUME_INTERVAL:-0.5}
 
 pane_has() { tmux_remote capture-pane -p -t "$SESSION" | grep -qF -- "$1"; }
 
+# Whole-pane presence, scoped to the pane's LAST NON-EMPTY LINE — same
+# extraction read-swarm.sh's classification loop uses before calling
+# classify() (issue #15). The input line is always that last non-empty
+# line; once a backend redraws with new content below the submitted text
+# (transcript echo, a busy marker, the next prompt — anything), the text
+# stops being the last line even though whole-pane `pane_has` still finds
+# it higher up in scrollback. `|| true` matches read-swarm.sh's own guard:
+# grep exits 1 on no match, which would otherwise trip `set -o pipefail`.
+last_line_has() {
+  local last
+  last=$(tmux_remote capture-pane -p -t "$SESSION" | grep -v '^$' | tail -1 || true)
+  printf '%s' "$last" | grep -qF -- "$1"
+}
+
 # Type $1, confirm it arrived, submit with the backend's own key encoding
 # (never symbolic C-m/C-j — see submit-keys in handoffd.bb), then confirm
-# the input line no longer holds it. Dies ERROR/5 on either failure to wait.
+# the text is no longer the pane's last non-empty line. Dies ERROR/5 on
+# either failure to wait.
+#
+# issue #28: consumption used to be judged by whole-pane `pane_has`, which
+# stays true forever on backends (Grok observed live on podsum) that move
+# submitted text into persisted transcript history rather than erasing it —
+# a false negative on a message that was actually sent and already running.
+# last_line_has is immune to that: history sitting above the last line
+# doesn't matter, only whether the text is still what's currently in the
+# editable input position. This also naturally covers the issue's "输入框为
+# 空或 role 已进入 BUSY" success condition — both a cleared input line and a
+# BUSY marker redraw change the last line away from $text, so no separate
+# classify()/BUSY_RE check is needed here; that classifier is documented
+# (SKILL.md, `read swarm`'s boundary paragraph) as intentionally incomplete
+# across backends and would just trade one false negative for another.
+#
+# Residual assumption, inherited from that same read-swarm.sh convention:
+# a backend that renders a static footer/hint line below the input — one
+# that never contains the input and doesn't change on submit — would make
+# last_line_has report "consumed" on the very first poll, whether or not
+# the submit key actually landed. No currently supported backend does
+# this; if one ever does, this is the false positive to watch for.
 send_and_verify() {
   local text=$1 i
   tmux_remote send-keys -t "$SESSION" -l "$text"
@@ -198,7 +233,7 @@ send_and_verify() {
   fi
 
   for ((i = 0; i < CONSUME_TRIES; i++)); do
-    pane_has "$text" || return 0
+    last_line_has "$text" || return 0
     sleep "$CONSUME_INTERVAL"
   done
   die ERROR \
