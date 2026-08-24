@@ -109,20 +109,36 @@ SOURCE_REPO=$(git -C "$SOURCE_ROOT" remote get-url origin 2>/dev/null || echo un
 # ---------- stage: fresh copy of SOURCE_SCRIPTS, bytes + exec bits
 # preserved (cp -R does both on macOS and Linux; verified empirically while
 # building this script). Staging always happens locally, even for a remote
-# --target: SOURCE_SCRIPTS is always local to the operator.
+# --target: SOURCE_SCRIPTS is always local to the operator. Location
+# depends on mode:
 #
-# Staged under $ROOT/swarmforge/ itself (never mktemp -d's default
+# LOCAL=1: staged under $ROOT/swarmforge/ itself (never mktemp -d's default
 # $TMPDIR/tmp, which is commonly a separate tmpfs mount on Linux) so the
-# swap `mv` below is guaranteed same-filesystem-as-destination and therefore
-# atomic — same guarantee the backup rename already has by construction. A
-# leading `.` keeps it out of naive directory listings; nothing in this
-# codebase iterates $ROOT/swarmforge/'s own contents (confirmed against
+# `mv` below (this same local $STAGED into $ROOT/swarmforge/scripts) is
+# guaranteed same-filesystem-as-destination and therefore atomic — same
+# guarantee the backup rename already has by construction. A leading `.`
+# keeps it out of naive directory listings; nothing in this codebase
+# iterates $ROOT/swarmforge/'s own contents (confirmed against
 # swarmforge.bb: its only dir listing is `fs/list-dir` on :script-dir, i.e.
 # $ROOT/swarmforge/scripts itself, a sibling of this staging dir, not its
-# parent). ----------
-STAGED="$ROOT/swarmforge/.stage.$$"
-rm -rf "$STAGED"
-mkdir -p "$ROOT/swarmforge"
+# parent).
+#
+# LOCAL=0 (remote): $ROOT is a path on $TARGET, not this machine — every
+# other $ROOT-touching call in this codebase (read_file, acquire_lock,
+# release_lock) is LOCAL/remote-aware and never touches a literal
+# $ROOT-prefixed path locally, and this staging dir must not either: it's
+# only ever read from (cp -R here, tar below), never `mv`'d anywhere, so it
+# never needed the same-filesystem-as-$ROOT guarantee in the first place.
+# Plain system temp via mktemp -d. REMOTE_STAGE below (on $TARGET itself)
+# is what actually gets mv'd into the final destination on that host, and
+# that one does need — and has — the same-filesystem guarantee. ----------
+if [ "$LOCAL" = 1 ]; then
+  STAGED="$ROOT/swarmforge/.stage.$$"
+  rm -rf "$STAGED"
+  mkdir -p "$ROOT/swarmforge"
+else
+  STAGED=$(mktemp -d)
+fi
 cp -R "$SOURCE_SCRIPTS/." "$STAGED/"
 
 # ---------- validate the STAGED copy (never the live source, never the

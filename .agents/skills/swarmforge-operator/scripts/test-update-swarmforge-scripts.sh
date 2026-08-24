@@ -47,6 +47,16 @@ cat > "$WORK/bin/ssh" <<'EOF'
 STUB=${STUB:?}
 printf 'ssh %s\n' "$*" >> "$STUB/calls.log"
 cmd=${*: -1}
+# SSH_REMAP_FROM/TO (unset by default, a no-op for every other test): lets a
+# single test simulate a genuinely SEPARATE remote filesystem by rewriting
+# any occurrence of the local sentinel path in the shipped remote command
+# string to a different local directory before executing it — instead of
+# every "remote" call landing back on the exact same $ROOT path the local
+# side uses, which would hide a script that wrongly touches a local path
+# matching $ROOT directly (never through this ssh stub at all).
+if [ -n "${SSH_REMAP_FROM:-}" ]; then
+  cmd=${cmd//$SSH_REMAP_FROM/$SSH_REMAP_TO}
+fi
 bash -c "$cmd"
 EOF
 chmod +x "$WORK/bin/ssh"
@@ -117,6 +127,27 @@ write_legacy_launcher() { # a genuinely hand-edited launcher, the podsum case
   cat > "$ROOT/swarm" <<'EOF'
 #!/bin/sh
 ARCHIVE_URL="https://example.com/hand-edited/never-matches.tar.gz"
+EOF
+}
+
+# Same layout as reset_root/write_good_launcher, parametrized by path — used
+# to stand up a "managed project" fixture at an arbitrary directory, for the
+# test below that needs a project fixture living somewhere OTHER than $ROOT
+# (simulating a genuinely separate remote filesystem, per SSH_REMAP above).
+build_project_fixture() { # $1 = root dir
+  local r=$1
+  rm -rf "$r"
+  mkdir -p "$r/swarmforge/scripts" "$r/swarmforge/roles" "$r/.swarmforge"
+  printf '#!/bin/sh\necho old\n' > "$r/swarmforge/scripts/old-file.sh"
+  chmod +x "$r/swarmforge/scripts/old-file.sh"
+  printf 'window coder codex coder\n' > "$r/swarmforge/swarmforge.conf"
+  printf 'coder role prompt\n' > "$r/swarmforge/roles/coder.prompt"
+  printf 'constitution text\n' > "$r/swarmforge/constitution.prompt"
+  printf '1\tcoder\tsess\tCoder\tcodex\n' > "$r/.swarmforge/sessions.tsv"
+  cat > "$r/swarm" <<'EOF'
+#!/bin/sh
+MAIN_BRANCH="${SWARMFORGE_SCRIPTS_BRANCH:-main}"
+ARCHIVE_URL="${SWARMFORGE_SCRIPTS_URL:-https://github.com/unclebob/swarm-forge/archive/refs/heads/${MAIN_BRANCH}.tar.gz}"
 EOF
 }
 
@@ -363,11 +394,18 @@ else
   check "default source resolution status" "STATUS=UPDATED" "$(status_line)"
 fi
 
-# 13. staging location (issue #29 review finding 1): STAGED/REMOTE_STAGE
-#     must live under $ROOT/swarmforge/, never mktemp -d's default $TMPDIR —
-#     which is commonly a separate filesystem/mount from $ROOT on Linux,
-#     making the swap `mv` fall back to a non-atomic copy+delete. Confirmed
-#     by tracing the script's own variable assignment via `bash -x`, not by
+# 13. staging location (issue #29 review round 2 finding 1, refined by
+#     review round 3): the path that actually gets `mv`'d into the final
+#     destination must live under that destination's own $ROOT/swarmforge/,
+#     never mktemp -d's default $TMPDIR — which is commonly a separate
+#     filesystem/mount, making the swap `mv` fall back to a non-atomic
+#     copy+delete. For LOCAL=1 that's $STAGED itself (mv'd straight into
+#     $ROOT/swarmforge/scripts locally); for remote mode it's REMOTE_STAGE
+#     on $TARGET (mv'd there by the remote swap script) — the LOCAL-side
+#     $STAGED in remote mode is only ever read from (cp -R/tar), never
+#     mv'd, so it belongs in system temp instead (see test 14 for why it
+#     must NOT be under a local path matching $ROOT). Confirmed by tracing
+#     the script's own variable assignments via `bash -x`, not by
 #     inference from side effects.
 # 13a. local
 reset_stub; reset_root; write_good_launcher
@@ -391,6 +429,45 @@ grep -qF "REMOTE_STAGE=$ROOT/swarmforge/.stage-remote." "$WORK/trace-err.txt" \
   && ok "staging location (remote): REMOTE_STAGE under \$ROOT/swarmforge/, not /tmp" \
   || bad "staging location (remote): REMOTE_STAGE under \$ROOT/swarmforge/, not /tmp" \
        "$(grep 'REMOTE_STAGE=' "$WORK/trace-err.txt" | head -3)"
+grep -qF "STAGED=$ROOT/swarmforge/.stage." "$WORK/trace-err.txt" \
+  && bad "staging location (remote): LOCAL-side STAGED must NOT be under \$ROOT/swarmforge/" \
+       "$(grep '^+ STAGED=' "$WORK/trace-err.txt" | head -3)" \
+  || ok "staging location (remote): LOCAL-side STAGED not under \$ROOT/swarmforge/ (system temp instead)"
+
+# 14. remote mode must never touch a literal $ROOT-prefixed path on the
+#     OPERATOR's own local machine (issue #29 review round 3 regression:
+#     the round-2 same-filesystem fix made the shared staging step —
+#     $STAGED="$ROOT/swarmforge/.stage.$$", mkdir -p "$ROOT/swarmforge",
+#     cp -R into it — run unconditionally before the LOCAL/remote branch
+#     split, so a --target run created and left behind $ROOT/swarmforge/ on
+#     the operator's own machine even though $ROOT is a path on $TARGET).
+#     A fixture sharing one $ROOT string between "local" and "simulated
+#     remote" (test 11 above) can never catch this — every ssh call loops
+#     back to the SAME local $ROOT either way. Uses SSH_REMAP (see the ssh
+#     stub above) to point every ssh-routed call at a genuinely different
+#     local directory, so this test can tell "touched via ssh, i.e. really
+#     on the target host" apart from "touched directly by this script's own
+#     process, i.e. actually on the operator's machine" — and asserts the
+#     project-root path this run was invoked with is never created directly.
+ROOT_NOTLOCAL=$WORK/root-not-on-this-machine
+REMOTE_ONLY=$WORK/remote-only-proj
+rm -rf "$ROOT_NOTLOCAL"
+build_project_fixture "$REMOTE_ONLY"
+reset_stub
+PATH="$WORK/bin:$PATH" STUB=$STUB SF_SOURCE_ROOT=$SRC_GOOD TARGET=testhost KEY=/dev/null \
+  SSH_REMAP_FROM=$ROOT_NOTLOCAL SSH_REMAP_TO=$REMOTE_ONLY \
+  bash "$SCRIPT" --root "$ROOT_NOTLOCAL" --target testhost --key /dev/null \
+  > "$OUTFILE" 2>&1
+RC=$?; OUT=$(cat "$OUTFILE")
+check "remote-only \$ROOT: update still succeeds" 0 "$RC"
+check "remote-only \$ROOT: status" "STATUS=UPDATED" "$(status_line)"
+[ ! -e "$ROOT_NOTLOCAL" ] && ok "remote-only \$ROOT: no \$ROOT-prefixed path created on the operator's own machine" \
+  || bad "remote-only \$ROOT: no \$ROOT-prefixed path created on the operator's own machine" \
+       "$(find "$ROOT_NOTLOCAL" 2>&1)"
+[ -x "$REMOTE_ONLY/swarmforge/scripts/swarmforge.bb" ] && ok "remote-only \$ROOT: simulated remote host actually updated" \
+  || bad "remote-only \$ROOT: simulated remote host actually updated" "swarmforge.bb missing under $REMOTE_ONLY"
+[ ! -f "$REMOTE_ONLY/swarmforge/scripts/old-file.sh" ] && ok "remote-only \$ROOT: old tree gone on simulated remote host" \
+  || bad "remote-only \$ROOT: old tree gone on simulated remote host" "old-file.sh still present"
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
