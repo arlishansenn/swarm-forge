@@ -1,9 +1,13 @@
 # lib-wake-talk.sh — send-then-verify logic shared by wake-role.sh and
 # talk-role.sh (issue #14: a mismatched backend must fail loudly, not send
-# keys into the void). Sourced, never executed directly.
+# keys into the void). read-swarm.sh (issue #15) also sources this file, but
+# only for the die/read_file/tmux_remote plumbing — it never calls
+# resolve_role or send_and_verify, since a report verb never sends keys.
+# Sourced, never executed directly.
 #
 # Callers must set ROOT, TARGET, KEY, LOCAL before sourcing, and SOCK after
-# resolving it. Provides: die, read_file, resolve_role, send_and_verify.
+# resolving it. Provides: die, read_file, tmux_remote, resolve_role,
+# send_and_verify.
 
 die() { printf 'STATUS=%s\n%s\n' "$1" "$2"; exit "${3:-5}"; }
 
