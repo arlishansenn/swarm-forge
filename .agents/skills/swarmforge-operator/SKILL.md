@@ -74,10 +74,10 @@ replaces itself with the target program. The exit code after that belongs to tha
 program, not to this contract.
 
 **Not every verb has a script yet.** `onboard project`, `open swarm`, `dashboard`,
-`wake role`, `talk role`, `read swarm`, `stop swarm`, and `accept work` are
-scripted and follow this contract today. The other verbs are shell steps in
-this file; run them as written and read their raw output. Bringing them under
-the contract is tracked in the issue tracker.
+`wake role`, `talk role`, `read swarm`, `stop swarm`, `accept work`, and
+`start swarm` are scripted and follow this contract today. The other verbs
+are shell steps in this file; run them as written and read their raw output.
+Bringing them under the contract is tracked in the issue tracker.
 
 ## Verb: `onboard project`
 
@@ -141,6 +141,74 @@ Hard rules for this verb:
   yourself per the cmux skill and pass `--window <ref>`.
 - **No destructive cleanup without explicit user approval** — the script
   closes nothing, and neither should you.
+
+## Verb: `start swarm`
+
+Run the bundled script; it starts a stopped swarm the deliberate way (issue
+#26), the counterpart to `open swarm` refusing to do it automatically
+(issue #10). Today's only alternative is a manual `ssh` + `nohup ./swarm &`,
+and the exact detail that manual path leaves to memory — the terminal
+backend `./swarm` will otherwise auto-detect — is the root cause of the #10
+incident: launched from a real terminal-less ssh session, `osascript`
+existing was enough for `detect-terminal-backend` to pick `terminal-app`
+with no real window behind it, and the window watchdog tore the whole swarm
+down within seconds once it couldn't find that window. That failure mode
+has reproduced twice under manual operation.
+
+```sh
+scripts/start-swarm.sh --root <project-root> --terminal <value> \
+  [--target user@host] [--key <path>] [--local]
+```
+
+`--terminal` is **required**, not an optional env passthrough — unlike
+`stop swarm`'s `--force`, which waives a state check a human can knowingly
+override, `--terminal` is a required choice like `--root` itself: this is
+exactly the choice the #10/#26 incident shows must never be silently
+skipped. Accepted values are `ghostty`, `iterm2`, `none`, `terminal-app`,
+`windows-terminal` (the same canonical backends `SWARMFORGE_TERMINAL`
+accepts — one per file in `swarmforge/scripts/terminal-adapters/*.sh`) plus
+`auto`: "I know automatic detection exists and I am explicitly choosing it."
+`auto` is never forwarded to `SWARMFORGE_TERMINAL` literally — the script
+simply does not export that variable at all when `auto` is chosen, letting
+`detect-terminal-backend`'s own fallback chain run exactly as it does today.
+Any other value is `2` `USAGE`, same as a missing `--root`.
+
+Before touching anything, it checks whether the swarm is already running —
+the same socket-liveness read `stop-swarm.sh`/`open-swarm.sh` use, inverted:
+a socket that answers means starting again would spin up a second daemon
+and a colliding second tmux session, so it refuses. A stale `tmux-socket`
+file with no live server behind it (the watchdog-kill aftermath `open
+swarm` already knows how to name) is the stopped state this verb exists to
+recover from, not "already running" — it proceeds to launch.
+
+The launch itself runs detached, local or remote: `SWARMFORGE_TERMINAL=
+<value> nohup ./swarm >log 2>&1 &` (or without the env var, for `auto`),
+never a bare foreground `./swarm` — a bare launch is exactly what does not
+survive the ssh session (or local shell) that started it closing, which is
+the other half of how the #10 incident happened. It then polls the same
+runtime files every other verb trusts (`tmux-socket`, then `tmux -S "$SOCK"
+list-sessions`) until they confirm the swarm actually came up, rather than
+reporting success just because the launch command was issued.
+
+Exit codes / STATUS line:
+
+- `0` `STARTED` — the swarm came up; `SOCK`/`TERMINAL` are reported.
+- `2` `USAGE` — missing `--root`, missing `--terminal`, or `--terminal` not
+  one of the accepted values. Nothing is attempted.
+- `5` `ERROR` — the runtime files never confirmed readiness within budget.
+  This covers both `./swarm` exiting non-zero and it simply never becoming
+  ready: the launch is intentionally detached (see above), so this script
+  never inspects the launcher's own exit code, only the runtime files it
+  should eventually produce — check the launch log named in the message.
+- `6` `UNSAFE` — the swarm is already running; refuses to start a second
+  daemon. Nothing was changed.
+
+**Boundary:** this verb only covers "from zero to one." Whether to `--force`
+a restart over an already-running swarm, or wait out one that is still
+tearing down, are `stop swarm`'s and `open swarm`'s territory, not this
+one's. It also does not fix the window watchdog's own empty-window-ID
+misjudgment (a launcher/watchdog-side defect) — it only keeps an operator
+from accidentally walking into it via this verb.
 
 ## Verb: `dashboard`
 
@@ -466,5 +534,19 @@ WARN, a stale `inbox/new` backlog and a stale `inbox/in_process` backlog that
 each WARN with their count and worktree name, an in-progress
 `inbox/in_process` file under its longer threshold that must not WARN, the
 already-shipped-commit exclusion, terminal-handoff dedup across chain hops,
-and that two runs never change a byte under any `inbox/` tree. Run them after
-any change to the scripts or the stub contracts.
+and that two runs never change a byte under any `inbox/` tree.
+`scripts/test-start-swarm.sh` runs `start-swarm.sh` against a stubbed
+tmux/ssh and a fake `./swarm` launcher, covering missing `--root`/
+`--terminal`, an invalid `--terminal` value, an already-running swarm
+(refused, launcher never invoked), a stale dead socket (proceeds to
+launch), `--terminal`'s value reaching the launcher's environment, `auto`
+never being exported, and launch timeout. Its detachment cases prove real
+process survival rather than argv shape: a fake launcher records its own
+PID and sleeps past the point `start-swarm.sh` has already returned
+control, and the test asserts start-swarm.sh returned well before that
+delay elapsed, then sends the launcher a real `SIGHUP` (local case — what a
+closing session delivers) and confirms it still finishes and writes its
+marker file afterward, and (remote case, via a stub `ssh` that actually
+executes the launch command instead of just logging it) that the marker
+appears only after the stub ssh invocation itself has already returned. Run
+them after any change to the scripts or the stub contracts.

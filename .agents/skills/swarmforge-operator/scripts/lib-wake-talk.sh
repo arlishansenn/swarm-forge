@@ -6,12 +6,13 @@
 # never call resolve_role or send_and_verify, since neither sends keys.
 # stop-swarm.sh additionally uses git_status for its DIRTY-worktree check.
 # accept-work.sh (issue #17) additionally uses git_merge_base_ancestor for its
-# already-shipped exclusion check.
+# already-shipped exclusion check. start-swarm.sh (issue #26) additionally
+# uses run_detached for its launch step.
 # Sourced, never executed directly.
 #
 # Callers must set ROOT, TARGET, KEY, LOCAL before sourcing, and SOCK after
 # resolving it. Provides: die, read_file, tmux_remote, resolve_role,
-# send_and_verify.
+# send_and_verify, run_detached.
 
 die() { printf 'STATUS=%s\n%s\n' "$1" "$2"; exit "${3:-5}"; }
 
@@ -74,6 +75,54 @@ git_merge_base_ancestor() { # $1 = commit
     local cmd
     cmd=$(printf '%q' git)$(printf ' %q' -C "$ROOT" merge-base --is-ancestor "$1" origin/main)
     ssh -i "$KEY" "$TARGET" "$cmd"
+  fi
+}
+
+# Runs $2.. as a backgrounded, nohup'd command against $TARGET/local, for
+# start-swarm.sh's launch step (issue #26) — the counterpart to tmux_remote/
+# git_status, but for a command whose whole point is to keep running after
+# this function returns. Never waits on the child; the caller's own
+# readiness poll is what confirms it actually came up. Each remote argv
+# element is %q-quoted before joining into the single ssh command string,
+# same reasoning as tmux_remote's own comment: a launcher path or env value
+# is untrusted free text, never hand-interpolated.
+#
+# `</dev/null` on the backgrounded command is load-bearing, not decoration:
+# without it, a caller that itself captures this script's combined output
+# (`$(start-swarm.sh ... 2>&1)`, or an orchestrator's subprocess call with
+# stdout/stderr piped, both common ways a verb script gets driven) can block
+# waiting for that pipe to reach EOF for as long as the launched swarm keeps
+# running, because the child inherits a duplicate of the pipe's write end
+# through its own unredirected stdin. `</dev/null` closes that path.
+#
+# LOCAL never wraps the launch in a subshell or `bash -c` — `cd`/`nohup ...
+# &` run directly at this function's own top level, `cd`-ing back
+# afterward. That is not style: this session empirically found that ANY
+# extra shell layer between the caller and the final backgrounded command
+# (a `(...)` subshell, `bash -c '...'`, even `eval`) reintroduces the exact
+# same pipe-EOF block above even with `</dev/null` in place, on bash 3.2
+# (macOS's stock /bin/bash) — only running the redirected, nohup'd command
+# with nothing shell-level between it and the caller avoids it.
+run_detached() { # $1 = absolute log path, rest = argv to run detached
+  local log=$1; shift
+  if [ "$LOCAL" = 1 ]; then
+    mkdir -p "$(dirname "$log")"
+    local prev; prev=$(pwd)
+    cd "$ROOT"
+    nohup "$@" </dev/null >>"$log" 2>&1 &
+    cd "$prev"
+  else
+    # Remote crosses ssh's own channel, not a raw inherited pipe — this
+    # session verified by hand (twice) that a real `ssh ... 'cd ROOT &&
+    # nohup CMD >LOG 2>&1 &'` genuinely detaches and returns promptly;
+    # ssh's channel-close semantics are not the local pipe-fd quirk above,
+    # so the subshell-avoidance rule doesn't apply to this branch.
+    local q_argv q_log q_root
+    q_argv=$(printf '%q ' "$@")
+    q_log=$(printf '%q' "$log")
+    q_root=$(printf '%q' "$ROOT")
+    ssh -i "$KEY" "$TARGET" \
+      "mkdir -p \$(dirname $q_log) && cd $q_root && nohup $q_argv </dev/null >>$q_log 2>&1 &"
   fi
 }
 
