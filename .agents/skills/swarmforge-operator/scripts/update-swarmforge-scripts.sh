@@ -47,6 +47,10 @@ TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
 ROOT='' LOCAL=0 FORCE=0
 
+# Verb contract: a scripted verb prints STATUS=<WORD> as its first line —
+# same pattern onboard-project.sh's usage_error() uses.
+usage() { printf 'STATUS=USAGE\n'; sed -n '2,32p' "$0"; exit 2; }
+
 while [ $# -gt 0 ]; do
   case $1 in
     --root) ROOT=$2; shift 2 ;;
@@ -54,10 +58,10 @@ while [ $# -gt 0 ]; do
     --key) KEY=$2; shift 2 ;;
     --local) LOCAL=1; shift ;;
     --force) FORCE=1; shift ;;
-    *) sed -n '2,32p' "$0"; exit 2 ;;
+    *) usage ;;
   esac
 done
-[ -n "$ROOT" ] || { sed -n '2,32p' "$0"; exit 2; }
+[ -n "$ROOT" ] || usage
 
 # Four `..` from .../swarmforge-operator/scripts lands on the repo root:
 # .../<repo-root>/.agents/skills/swarmforge-operator/scripts -> repo-root.
@@ -152,11 +156,20 @@ fail_staged() { # $1 = message
 [ -x "$STAGED/swarmforge.bb" ] || fail_staged \
   "staged scripts tree has no executable swarmforge.bb at $STAGED/swarmforge.bb"
 
+command -v bb >/dev/null 2>&1 || fail_staged \
+  "'bb' is not on PATH — cannot validate the staged tree's required helpers"
+
+# Plain command substitution (unlike process substitution) propagates a
+# failing `bb` under set -e, so a broken/missing bb surfaces as an error
+# instead of silently reading zero lines and skipping every check below.
+HELPERS=$(bb "$STAGED/swarmforge.bb" --test-required-helpers) || fail_staged \
+  "bb $STAGED/swarmforge.bb --test-required-helpers failed — cannot validate the staged tree's required helpers"
+
 while IFS= read -r helper; do
   [ -n "$helper" ] || continue
   [ -x "$STAGED/$helper" ] || fail_staged \
     "staged scripts tree is missing required helper '$helper' (or it is not executable) at $STAGED/$helper"
-done < <(bb "$STAGED/swarmforge.bb" --test-required-helpers)
+done <<< "$HELPERS"
 
 for adapter in $TERMINAL_ADAPTERS; do
   [ -x "$STAGED/terminal-adapters/$adapter" ] || fail_staged \
@@ -180,27 +193,44 @@ if [ "$LOCAL" = 1 ]; then
   fi
   mv "$STAGED" "$ROOT/swarmforge/scripts"
 
+  # Back up any pre-existing manifest alongside the scripts-tree backup, so
+  # a rollback below can restore it instead of just deleting the new one —
+  # a missing manifest over an intact old scripts tree is neither the old
+  # nor the new installation (issue #29 review round 4 finding).
   mkdir -p "$ROOT/.swarmforge"
+  MANIFEST_BACKUP=""
+  if [ -f "$ROOT/.swarmforge/scripts-manifest" ]; then
+    MANIFEST_BACKUP="$ROOT/.swarmforge/scripts-manifest.old.$$"
+    cp "$ROOT/.swarmforge/scripts-manifest" "$MANIFEST_BACKUP"
+  fi
   if ! printf 'SOURCE_COMMIT=%s\nSOURCE_REPO=%s\nDIGEST=%s\n' \
         "$SOURCE_COMMIT" "$SOURCE_REPO" "$DIGEST" \
         > "$ROOT/.swarmforge/scripts-manifest" 2>/dev/null; then
     rm -rf "$ROOT/swarmforge/scripts"
     [ "$OLD_MOVED" = 1 ] && mv "$BACKUP" "$ROOT/swarmforge/scripts"
+    rm -f "$MANIFEST_BACKUP"
     die ERROR "failed to write manifest at $ROOT/.swarmforge/scripts-manifest — rolled back to the previous scripts tree" 5
   fi
 
   if [ -f "$ROOT/swarm" ]; then
     T=$(mktemp)
     sed '/^ARCHIVE_URL=/s#unclebob/swarm-forge#arlishansenn/swarm-forge#' "$ROOT/swarm" > "$T"
-    mv "$T" "$ROOT/swarm"
+    # cat into the existing inode (not `mv`, which would carry mktemp's
+    # 0600 mode and owner onto $ROOT/swarm) so the launcher's own
+    # executable bit and owner survive the rewrite (issue #29 review round
+    # 4 finding — Critical: `mv` from mktemp bricked every legacy launcher).
+    cat "$T" > "$ROOT/swarm"
+    rm -f "$T"
     if ! grep -q '^ARCHIVE_URL=.*arlishansenn/swarm-forge' "$ROOT/swarm"; then
       rm -rf "$ROOT/swarmforge/scripts" "$ROOT/.swarmforge/scripts-manifest"
       [ "$OLD_MOVED" = 1 ] && mv "$BACKUP" "$ROOT/swarmforge/scripts"
+      [ -n "$MANIFEST_BACKUP" ] && mv "$MANIFEST_BACKUP" "$ROOT/.swarmforge/scripts-manifest"
       die ERROR "$ROOT/swarm exists but its ARCHIVE_URL line did not match the expected upstream pattern after rewrite — rolled back to the previous scripts tree and manifest" 5
     fi
   fi
 
   [ "$OLD_MOVED" = 1 ] && rm -rf "$BACKUP"
+  rm -f "$MANIFEST_BACKUP"
 else
   # ---------- remote replace: staged tree lives on the OPERATOR's machine
   # and must reach $TARGET. One tar-over-ssh call extracts it into a fresh
@@ -243,25 +273,36 @@ if [ -d "$root/swarmforge/scripts" ]; then
 fi
 mv "$stage" "$root/swarmforge/scripts"
 mkdir -p "$root/.swarmforge"
+manifest_backup=""
+if [ -f "$root/.swarmforge/scripts-manifest" ]; then
+  manifest_backup="$root/.swarmforge/scripts-manifest.old.$$"
+  cp "$root/.swarmforge/scripts-manifest" "$manifest_backup"
+fi
 if ! printf 'SOURCE_COMMIT=%s\nSOURCE_REPO=%s\nDIGEST=%s\n' "$commit" "$repo" "$digest" \
       > "$root/.swarmforge/scripts-manifest" 2>/dev/null; then
   rm -rf "$root/swarmforge/scripts"
   [ "$old_moved" = 1 ] && mv "$root/swarmforge/scripts.old.$$" "$root/swarmforge/scripts"
+  rm -f "$manifest_backup"
   echo MANIFEST_WRITE_FAILED >&2
   exit 5
 fi
 if [ -f "$root/swarm" ]; then
   t=$(mktemp)
   sed '/^ARCHIVE_URL=/s#unclebob/swarm-forge#arlishansenn/swarm-forge#' "$root/swarm" > "$t"
-  mv "$t" "$root/swarm"
+  # cat into the existing inode, not `mv`, so the launcher's mode/owner
+  # survive the rewrite (see the LOCAL branch above for why).
+  cat "$t" > "$root/swarm"
+  rm -f "$t"
   if ! grep -q '^ARCHIVE_URL=.*arlishansenn/swarm-forge' "$root/swarm"; then
     rm -rf "$root/swarmforge/scripts" "$root/.swarmforge/scripts-manifest"
     [ "$old_moved" = 1 ] && mv "$root/swarmforge/scripts.old.$$" "$root/swarmforge/scripts"
+    [ -n "$manifest_backup" ] && mv "$manifest_backup" "$root/.swarmforge/scripts-manifest"
     echo LAUNCHER_MISMATCH >&2
     exit 5
   fi
 fi
 [ "$old_moved" = 1 ] && rm -rf "$root/swarmforge/scripts.old.$$"
+rm -f "$manifest_backup"
 echo OK
 EOS
 )

@@ -122,12 +122,17 @@ write_good_launcher() {
 MAIN_BRANCH="${SWARMFORGE_SCRIPTS_BRANCH:-main}"
 ARCHIVE_URL="${SWARMFORGE_SCRIPTS_URL:-https://github.com/unclebob/swarm-forge/archive/refs/heads/${MAIN_BRANCH}.tar.gz}"
 EOF
+  # A real legacy launcher is executable — issue #29 review round 4 finding:
+  # a fixture that starts non-executable can never catch a rewrite that
+  # destroys the executable bit.
+  chmod 755 "$ROOT/swarm"
 }
 write_legacy_launcher() { # a genuinely hand-edited launcher, the podsum case
   cat > "$ROOT/swarm" <<'EOF'
 #!/bin/sh
 ARCHIVE_URL="https://example.com/hand-edited/never-matches.tar.gz"
 EOF
+  chmod 755 "$ROOT/swarm"
 }
 
 # Same layout as reset_root/write_good_launcher, parametrized by path — used
@@ -149,6 +154,7 @@ build_project_fixture() { # $1 = root dir
 MAIN_BRANCH="${SWARMFORGE_SCRIPTS_BRANCH:-main}"
 ARCHIVE_URL="${SWARMFORGE_SCRIPTS_URL:-https://github.com/unclebob/swarm-forge/archive/refs/heads/${MAIN_BRANCH}.tar.gz}"
 EOF
+  chmod 755 "$r/swarm"
 }
 
 # Sorted "relpath sha256" listing for every file under $ROOT — used for
@@ -188,6 +194,7 @@ fi
 reset_stub; reset_root
 run --local
 check "missing --root exit" 2 "$RC"
+check "missing --root status" "STATUS=USAGE" "$(status_line)"
 
 # 2. swarm running (live socket) -> 6 UNSAFE, no override even with
 #    --force, zero filesystem changes at $ROOT, lock never created
@@ -258,6 +265,28 @@ printf '%s\n' "$OUT" | grep -q "iterm2.sh" \
   || bad "missing adapter: ROOT untouched" "old-file.sh missing"
 SRC=$SRC_GOOD
 
+# 6b. `bb` unavailable on PATH -> 5 ERROR, required-helper validation must
+#     refuse rather than silently skip every check (issue #29 review round 4
+#     finding: a process-substitution read of a failing/missing `bb` reads
+#     zero lines and previously reported STATUS=UPDATED as if nothing were
+#     wrong). PATH is narrowed to exclude bb's real directory while keeping
+#     a real `git` (via a symlink) and the plain POSIX toolset the script
+#     itself depends on.
+mkdir -p "$WORK/bin-nobb"
+ln -sf "$(command -v git)" "$WORK/bin-nobb/git"
+reset_stub; reset_root; write_good_launcher
+PATH="$WORK/bin:$WORK/bin-nobb:/usr/bin:/bin" STUB=$STUB SF_SOURCE_ROOT=$SRC_GOOD \
+  TARGET=testhost KEY=/dev/null bash "$SCRIPT" --local --root "$ROOT" > "$OUTFILE" 2>&1
+RC=$?; OUT=$(cat "$OUTFILE")
+check "bb missing exit" 5 "$RC"
+check "bb missing status" "STATUS=ERROR" "$(status_line)"
+printf '%s\n' "$OUT" | grep -qi "bb" \
+  && ok "bb missing: message mentions bb" || bad "bb missing: message mentions bb" "$OUT"
+[ -f "$ROOT/swarmforge/scripts/old-file.sh" ] && ok "bb missing: ROOT untouched" \
+  || bad "bb missing: ROOT untouched" "old-file.sh missing"
+[ ! -f "$ROOT/.swarmforge/scripts-manifest" ] && ok "bb missing: no manifest written" \
+  || bad "bb missing: no manifest written" "manifest exists"
+
 # 7. successful update (local): STATUS=UPDATED/0, manifest correct, old
 #    tree gone, new tree present, legacy launcher rewritten + verified
 reset_stub; reset_root; write_good_launcher
@@ -280,9 +309,14 @@ check "manifest SOURCE_REPO" "https://example.invalid/fixture.git" "$GOT_REPO"
   || bad "new scripts tree present" "swarmforge.bb missing"
 grep -q '^ARCHIVE_URL=.*arlishansenn/swarm-forge' "$ROOT/swarm" \
   && ok "legacy launcher rewritten and verified" || bad "legacy launcher rewritten and verified" "$(cat "$ROOT/swarm")"
+[ -x "$ROOT/swarm" ] && ok "legacy launcher still executable after rewrite" \
+  || bad "legacy launcher still executable after rewrite" "$(stat -f '%Lp' "$ROOT/swarm" 2>/dev/null || stat -c '%a' "$ROOT/swarm")"
 compgen -G "$ROOT/swarmforge/scripts.old.*" > /dev/null \
   && bad "backup dir removed on success" "backup still present" \
   || ok "backup dir removed on success"
+compgen -G "$ROOT/.swarmforge/scripts-manifest.old.*" > /dev/null \
+  && bad "manifest backup removed on success" "manifest backup still present" \
+  || ok "manifest backup removed on success"
 PRESERVE_AFTER=$(snapshot swarmforge/swarmforge.conf swarmforge/roles/coder.prompt \
   swarmforge/constitution.prompt .swarmforge/sessions.tsv)
 [ "$PRESERVE_BEFORE" = "$PRESERVE_AFTER" ] && ok "preservation: conf/roles/constitution/sessions.tsv byte-identical" \
@@ -309,7 +343,9 @@ check "cross-verb: start-swarm status is STARTED, not DRIFT" "STATUS=STARTED" "$
 
 # 8. legacy launcher whose ARCHIVE_URL doesn't match the expected pattern
 #    -> 5 ERROR naming $ROOT/swarm, scripts swap + manifest write rolled
-#    back (old tree restored, manifest absent)
+#    back (old tree restored, manifest absent since none pre-existed), and
+#    the launcher itself stays executable (issue #29 review round 4 finding
+#    — the mode-clobbering `mv` from mktemp happens on this path too).
 reset_stub; reset_root; write_legacy_launcher
 run --local --root "$ROOT"
 check "launcher mismatch exit" 5 "$RC"
@@ -324,6 +360,31 @@ printf '%s\n' "$OUT" | grep -qF "$ROOT/swarm" \
 compgen -G "$ROOT/swarmforge/scripts.old.*" > /dev/null \
   && bad "launcher mismatch: backup cleaned up" "backup dir left behind" \
   || ok "launcher mismatch: backup cleaned up"
+compgen -G "$ROOT/.swarmforge/scripts-manifest.old.*" > /dev/null \
+  && bad "launcher mismatch: manifest backup cleaned up" "manifest backup left behind" \
+  || ok "launcher mismatch: manifest backup cleaned up"
+[ -x "$ROOT/swarm" ] && ok "launcher mismatch: launcher still executable" \
+  || bad "launcher mismatch: launcher still executable" "$(stat -f '%Lp' "$ROOT/swarm" 2>/dev/null || stat -c '%a' "$ROOT/swarm")"
+
+# 8b. same launcher-mismatch rollback, but with a real PRE-EXISTING manifest
+#     (as a project that had already been updated once would have) — the
+#     rollback must restore that old manifest byte-for-byte, not just leave
+#     it deleted (issue #29 review round 4 Important finding: a missing
+#     manifest over an intact old scripts tree reports DRIFT on the next
+#     `start swarm` even though the tree itself is fine).
+reset_stub; reset_root; write_legacy_launcher
+printf 'SOURCE_COMMIT=preexisting\nSOURCE_REPO=preexisting\nDIGEST=preexisting\n' \
+  > "$ROOT/.swarmforge/scripts-manifest"
+PRE_MANIFEST=$(cat "$ROOT/.swarmforge/scripts-manifest")
+run --local --root "$ROOT"
+check "launcher mismatch w/ prior manifest: exit" 5 "$RC"
+[ -f "$ROOT/.swarmforge/scripts-manifest" ] && ok "launcher mismatch w/ prior manifest: manifest present after rollback" \
+  || bad "launcher mismatch w/ prior manifest: manifest present after rollback" "manifest missing"
+check "launcher mismatch w/ prior manifest: byte-identical to before" \
+  "$PRE_MANIFEST" "$(cat "$ROOT/.swarmforge/scripts-manifest" 2>/dev/null)"
+compgen -G "$ROOT/.swarmforge/scripts-manifest.old.*" > /dev/null \
+  && bad "launcher mismatch w/ prior manifest: backup cleaned up" "manifest backup left behind" \
+  || ok "launcher mismatch w/ prior manifest: backup cleaned up"
 
 # 9. manifest write failure -> 5 ERROR, old scripts tree restored. Forced
 #    deterministically by pre-creating a READ-ONLY scripts-manifest file
