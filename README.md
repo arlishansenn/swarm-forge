@@ -332,10 +332,11 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 使用前提：skill 的使用者工作目录是本仓库。放在被操作 project 里时，本仓库会话调不到它。
 
-### 九个 verb
+### 十个 verb
 
 | 动词 | 作用 |
 |---|---|
+| `start swarm <root> --terminal <值>` | 从停机状态显式启动 swarm；`--terminal` 必传（`ghostty`/`iterm2`/`none`/`terminal-app`/`windows-terminal`/`auto`），杜绝 #10 那次靠自动探测踩中 watchdog 拆除的坑；已在跑（socket 探活成功）拒绝重复启动（退出 6）；本地/远端都走 `nohup` 脱离终端启动，回读 runtime 文件确认后才报 `STATUS=STARTED` |
 | `open swarm <root>` | 把运行中的 swarm 以 cmux workspace 打开；停机时报原因，命中 window watchdog 拆除会点名，绝不代人启动 |
 | `dashboard <root>` | 建 SSH 隧道开 browser workspace 连 pack_web 看板；额外校验端口后面真是本项目的 `pack_web`（`--serve` 参数比对），不是同机别的项目撞上来的 |
 | `attach <role>` | 临时附加到某个角色的 tmux session |
