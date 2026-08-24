@@ -123,7 +123,9 @@ Read the result from its output and exit code:
 - `0` `STATUS=OPENED|REUSED` — report `WORKSPACES`, `ATTACHED`, `REPAIRED`,
   `MASTER_DISPLAY`/`MASTER_WS` to the user. The script leaves the user's
   focus untouched; name where the master lives instead of focusing it.
-- `3` `STOPPED` — the swarm is not running. Report the reason and stop.
+- `3` `STOPPED` — the swarm is not running. Report the reason and stop. When
+  the message names the window watchdog, a human must fix the terminal
+  backend before restarting — relaunching as-is repeats the same kill.
 - `4` `DRIFT` — cmux state disagrees with runtime files (half-finished run or
   changed topology). Ask the user before closing or re-creating anything.
 - `5` `ERROR` — show the message; check cmux state before retrying. Never
