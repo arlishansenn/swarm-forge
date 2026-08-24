@@ -20,6 +20,17 @@ check(){ [ "$2" = "$3" ] && ok "$1" || bad "$1" "expected [$2] got [$3]"; }
 # simulated input line/pane content; a missing "live" flag simulates a
 # socket with no tmux server (exit 3 gate); a missing "consume" flag makes
 # the -H submit call a no-op, simulating a submit key that never lands.
+#
+# When "consume" IS set, a "retain" flag picks which of the two real
+# redraw shapes issue #28 found backends actually use:
+#   - no "retain": pane.txt is wiped to empty — claude/codex observed
+#     behavior, the input line clears with no duplicate left behind.
+#   - "retain" set: pane.txt keeps the already-typed text and gets a new
+#     line appended below it (a busy marker, matching the "Thinking…" line
+#     from the issue's real Grok transcript) — Grok's observed behavior,
+#     where the submitted text moves into persisted history instead of
+#     being erased. This is the case the old whole-pane pane_has check
+#     mistook for "never submitted".
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
@@ -35,7 +46,15 @@ case $CMD in
     shift 2  # drop -t <session>
     case $1 in
       -l) printf '%s' "$2" >> "$STUB/pane.txt" ;;
-      -H) [ -f "$STUB/consume" ] && : > "$STUB/pane.txt" ;;
+      -H)
+        if [ -f "$STUB/consume" ]; then
+          if [ -f "$STUB/retain" ]; then
+            printf '\nThinking…\n' >> "$STUB/pane.txt"
+          else
+            : > "$STUB/pane.txt"
+          fi
+        fi
+        ;;
     esac
     exit 0 ;;
   capture-pane) cat "$STUB/pane.txt" 2>/dev/null || true; exit 0 ;;
@@ -80,28 +99,61 @@ if [ ! -f "$WAKE" ] || [ ! -f "$TALK" ]; then
   echo "scripts missing — RED confirmed, all cases fail"; exit 1
 fi
 
-# 1. submit succeeds (claude backend: CSI-u Enter) → exit 0
+# 1. submit succeeds, input line clears to blank (claude/codex observed
+#    behavior; CSI-u Enter for claude) → exit 0
 reset_stub; touch "$STUB/live" "$STUB/consume"
 run_wake claude
-check "wake success exit" 0 "$RC"
-check "wake success status" WOKEN "$(val STATUS)"
+check "wake success exit (blank-on-consume)" 0 "$RC"
+check "wake success status (blank-on-consume)" WOKEN "$(val STATUS)"
 grep -q "send-keys -t swarmforge-coder -H 1b 5b 31 33 75" "$STUB/calls.log" \
   && ok "wake used CSI-u submit for claude" || bad "wake used CSI-u submit for claude" "not found in calls.log"
 
-# 2. talk succeeds (grok backend: raw CR) → exit 0
+# 1b. same blank-on-consume redraw, through talk-role.sh — both verbs share
+#     send_and_verify, so both must accept it.
 reset_stub; touch "$STUB/live" "$STUB/consume"
+run_talk claude "do the thing"
+check "talk success exit (blank-on-consume)" 0 "$RC"
+check "talk success status (blank-on-consume)" SENT "$(val STATUS)"
+
+# 2. submit succeeds, but the pane RETAINS the submitted text in transcript
+#    history and redraws a busy line below it instead of clearing (issue
+#    #28: Grok's real behavior on podsum) → still exit 0. This is the
+#    fixture that proves the CONSUME check no longer depends on the text
+#    disappearing from the whole pane, only from the last non-empty line.
+reset_stub; touch "$STUB/live" "$STUB/consume" "$STUB/retain"
 run_talk grok "do the thing"
-check "talk success exit" 0 "$RC"
-check "talk success status" SENT "$(val STATUS)"
+check "talk success exit (retain-history-on-consume)" 0 "$RC"
+check "talk success status (retain-history-on-consume)" SENT "$(val STATUS)"
 grep -q "send-keys -t swarmforge-coder -H 0d" "$STUB/calls.log" \
   && ok "talk used raw CR submit for grok" || bad "talk used raw CR submit for grok" "not found in calls.log"
+grep -qF "do the thing" "$STUB/pane.txt" \
+  && ok "retain-history fixture actually kept the text in pane.txt" \
+  || bad "retain-history fixture actually kept the text in pane.txt" "$(cat "$STUB/pane.txt")"
 
-# 3. text delivered but never consumed (submit key swallowed) → exit 5, mentions backend
-reset_stub; touch "$STUB/live"  # no "consume" flag: -H never clears the pane
+# 2b. same retain-history redraw, through wake-role.sh (acceptance
+#     criterion: wake role must also treat retained history as success).
+reset_stub; touch "$STUB/live" "$STUB/consume" "$STUB/retain"
+run_wake grok
+check "wake success exit (retain-history-on-consume)" 0 "$RC"
+check "wake success status (retain-history-on-consume)" WOKEN "$(val STATUS)"
+
+# 3. text delivered but never consumed (submit key swallowed) → exit 5,
+#    mentions backend. "retain" is irrelevant here since -H never even
+#    fires without "consume" — kept unset to match the no-op path exactly.
+reset_stub; touch "$STUB/live"  # no "consume" flag: -H never touches the pane
 run_wake claude
 check "unconsumed exit" 5 "$RC"
 printf '%s\n' "$OUT" | grep -q "backend (claude)" \
   && ok "unconsumed message names the backend" || bad "unconsumed message names the backend" "$OUT"
+
+# 3b. same swallowed-key case for grok — the backend actually named in the
+#     issue's real reproduction — proving the new last-line check doesn't
+#     overcorrect into never reporting a genuine failure.
+reset_stub; touch "$STUB/live"
+run_talk grok "do the thing"
+check "unconsumed exit (grok)" 5 "$RC"
+printf '%s\n' "$OUT" | grep -q "backend (grok)" \
+  && ok "unconsumed message names the backend (grok)" || bad "unconsumed message names the backend (grok)" "$OUT"
 
 # 4. role not in sessions.tsv → exit 5
 reset_stub; touch "$STUB/live" "$STUB/consume"
