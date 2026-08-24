@@ -74,10 +74,10 @@ replaces itself with the target program. The exit code after that belongs to tha
 program, not to this contract.
 
 **Not every verb has a script yet.** `onboard project`, `open swarm`, `dashboard`,
-`wake role`, `talk role`, `read swarm`, and `stop swarm` are scripted and follow
-this contract today. The other verbs are shell steps in this file; run them as
-written and read their raw output. Bringing them under the contract is tracked
-in the issue tracker.
+`wake role`, `talk role`, `read swarm`, `stop swarm`, and `accept work` are
+scripted and follow this contract today. The other verbs are shell steps in
+this file; run them as written and read their raw output. Bringing them under
+the contract is tracked in the issue tracker.
 
 ## Verb: `onboard project`
 
@@ -284,20 +284,21 @@ Human acceptance after the swarm finishes a task. The chain ends when the
 last recipient completes its inbound handoff; that completed file is the
 delivery record.
 
-For each completed task, list the terminal handoff per sender worktree and
-read its headers:
+Run the bundled script; it reports the terminal handoff per task the same way
+this verb always has, and also closes a real gap (issue #17): a handoff stuck
+in `inbox/new` — delivered but never claimed, the chain is broken — used to
+read identically to "no work finished yet," because the old manual command
+only ever looked at `inbox/completed`. Those two situations call for opposite
+human responses (keep waiting vs. go find out why nothing picked it up), so
+the script now WARNs about both `inbox/new` and `inbox/in_process` backlogs
+old enough to be a stuck chain rather than normal in-transit delay:
 
 ```sh
-# find the newest completed handoff in each role worktree
-"${SSH[@]}" "find '$ROOT/.swarmforge/handoffs/inbox/completed' \
-  '$ROOT'/.worktrees/*/.swarmforge/handoffs/inbox/completed \
-  -name '*.handoff' 2>/dev/null | sort | tail"
-
-# read task + commit from a completed file
-"${SSH[@]}" "sed -n '1,15p' <file>"
+scripts/accept-work.sh --root <project-root> \
+  [--target user@host] [--key <path>] [--local]
 ```
 
-Report to the human, per task:
+Report body, per not-yet-shipped task:
 
 - `task:` — the stable task name the chain carried (maps to the issue when the
   intake named it, e.g. `issue-50-brief-quality` → `Closes #50`).
@@ -305,16 +306,46 @@ Report to the human, per task:
   carry.
 - `completed_at:` — when the chain finished.
 
-Rules:
+Exit codes / STATUS line:
+
+- `0` `REPORTED` — the verb did its work. This includes runs that print one or
+  more `WARN=` lines: a stuck chain is information this verb successfully
+  reported, not a verb failure.
+- `2` `USAGE` — missing `--root`.
+- `5` `ERROR` — `$ROOT/.swarmforge/handoffs` could not be found (wrong
+  `--root`/`--target`/`--local`, or the target is unreachable).
+
+**`WARN=` lines** report a backlog stuck long enough that it is not just
+normal in-transit delay, one line per affected worktree:
+
+```
+WARN=3 handoffs are stuck in inbox/new in cleaner — the chain is not moving
+WARN=1 handoffs are stuck in inbox/in_process in coder — claimed but not finishing
+```
+
+Staleness is judged by each handoff's own header timestamp
+(`enqueued_at`/`dequeued_at`), never filesystem mtime — the same source of
+truth `handoffd.bb`'s own retry ladder uses. Presence alone is not stuck: a
+healthy chain routinely has a file sit briefly between delivery and pickup
+(the daemon's own reconciliation doesn't send its first retry wake until 5s
+have passed), so `inbox/new` only WARNs past 5 minutes — long enough to have
+outlasted the daemon's fast retry rungs. `inbox/in_process` uses a longer,
+30-minute threshold, since a role can legitimately work a real task for many
+minutes; warning at the same 5-minute mark would fire on healthy in-progress
+work, not a stuck chain.
+
+Rules (unchanged from the manual command this replaces):
 
 - **Exclude already-shipped tasks.** A completed handoff whose `commit:` is
   already on `origin/main` (or an ancestor of `HEAD`) has been accepted and
-  merged; it must not be reported again. Check with
-  `git merge-base --is-ancestor <commit> origin/main`. Also skip intermediate
-  chain records (a task appears once per hop); keep only the terminal handoff
-  — the newest completed file for a given `task:` per worktree.
-- Files under `inbox/completed/` are audit records; never modify, move, or
-  delete them.
+  merged; it must not be reported again. This runs `git merge-base
+  --is-ancestor <commit> origin/main` against the **managed project's own**
+  git repository at `$ROOT` — not swarm-forge's — the same way `stop swarm`'s
+  `git status` check runs against the project's own worktrees. A check that
+  cannot be confirmed (bad commit, no `origin/main`) is treated as "not
+  shipped," never silently dropped. Also skip intermediate chain records (a
+  task appears once per hop); keep only the terminal handoff — the newest
+  completed file for a given `task:` per worktree.
 - The handoff points at the commit only. The code itself is in git; verify
   with `git show --stat <commit>` or tests before opening the PR.
 - When opening the PR, carry the `task:` → issue mapping into the PR body
@@ -323,6 +354,15 @@ Rules:
 - The board directory (`$ROOT/.swarmforge/board/`, when present) carries the
   same task name in `tasks.tsv` and the intake text in `<task>.txt`; use it to
   cross-check which issue the task came from.
+
+**Boundary:** this is a report verb (`CONTEXT.md` "## Operator verbs") — it
+only reads. It never modifies, moves, or deletes anything under `inbox/`:
+`completed/` is an audit trail, `new/` and `in_process/` are live queue state
+owned by the daemon and the `ready_for_next`/`done_with_current` helpers, not
+by a human-facing report. It also does not try to diagnose *why* a handoff
+went unclaimed — that could be the daemon stopped, the role busy, or a failed
+wake (see issue #14) — this verb's only job is to make a stuck chain visible,
+not to explain it.
 
 ## Verb: `stop swarm`
 
@@ -402,5 +442,13 @@ attached), a dead socket, and that the script never calls `send-keys`.
 tmux/git/close-swarm, covering a `BUSY` role, an `UNKNOWN` role, a `DIRTY`
 worktree, `--force` bypassing the gate, an all-clean stop, and a dead socket
 — and asserts that on every blocked case neither `kill-session` nor
-`close-swarm` is ever called. Run them after any change to the scripts or the
-stub contracts.
+`close-swarm` is ever called. `scripts/test-accept-work.sh` runs
+`accept-work.sh` against a stubbed `git` (find/sed run for real against
+fixture files, `--local` so ssh is never invoked), covering a clean run with
+no stuck handoffs, a fresh (not-yet-stale) `inbox/new` file that must not
+WARN, a stale `inbox/new` backlog and a stale `inbox/in_process` backlog that
+each WARN with their count and worktree name, an in-progress
+`inbox/in_process` file under its longer threshold that must not WARN, the
+already-shipped-commit exclusion, terminal-handoff dedup across chain hops,
+and that two runs never change a byte under any `inbox/` tree. Run them after
+any change to the scripts or the stub contracts.
