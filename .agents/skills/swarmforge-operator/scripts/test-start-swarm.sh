@@ -170,12 +170,14 @@ fi
 reset_stub
 OUT=$(bash "$START" --local --terminal none 2>&1); RC=$?
 check "missing --root exit" 2 "$RC"
+check "missing --root status" "STATUS=USAGE" "$(status_line)"
 ! launcher_ran && ok "missing --root: launcher never ran" || bad "missing --root: launcher never ran" "$STUB"
 
 # 2. missing --terminal -> 2 USAGE
 reset_stub
 OUT=$(bash "$START" --local --root "$ROOT" 2>&1); RC=$?
 check "missing --terminal exit" 2 "$RC"
+check "missing --terminal status" "STATUS=USAGE" "$(status_line)"
 ! launcher_ran && ok "missing --terminal: launcher never ran" || bad "missing --terminal: launcher never ran" "$STUB"
 
 # 3. invalid --terminal value -> 2 USAGE (not forwarded, not silently
@@ -183,6 +185,7 @@ check "missing --terminal exit" 2 "$RC"
 reset_stub
 OUT=$(bash "$START" --local --root "$ROOT" --terminal bogus 2>&1); RC=$?
 check "bad --terminal exit" 2 "$RC"
+check "bad --terminal status" "STATUS=USAGE" "$(status_line)"
 
 # 4. already running (socket answers) -> 6 UNSAFE, refuses to start a
 #    second daemon; launcher never invoked

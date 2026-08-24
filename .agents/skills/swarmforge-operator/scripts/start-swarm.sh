@@ -58,6 +58,11 @@ ROOT='' TERMINAL='' LOCAL=0 FORCE=0
 # but adds that round trip to every single invocation.
 TERMINAL_VALUES='ghostty iterm2 none terminal-app windows-terminal auto'
 
+# Verb contract: a scripted verb prints STATUS=<WORD> as its first line —
+# same pattern onboard-project.sh's usage_error() uses (issue #29 review
+# round 4 finding).
+usage() { printf 'STATUS=USAGE\n'; sed -n '2,36p' "$0"; exit 2; }
+
 while [ $# -gt 0 ]; do
   case $1 in
     --root) ROOT=$2; shift 2 ;;
@@ -66,14 +71,14 @@ while [ $# -gt 0 ]; do
     --key) KEY=$2; shift 2 ;;
     --local) LOCAL=1; shift ;;
     --force) FORCE=1; shift ;;
-    *) sed -n '2,36p' "$0"; exit 2 ;;
+    *) usage ;;
   esac
 done
-[ -n "$ROOT" ] || { sed -n '2,36p' "$0"; exit 2; }
-[ -n "$TERMINAL" ] || { sed -n '2,36p' "$0"; exit 2; }
+[ -n "$ROOT" ] || usage
+[ -n "$TERMINAL" ] || usage
 case " $TERMINAL_VALUES " in
   *" $TERMINAL "*) ;;
-  *) sed -n '2,36p' "$0"; exit 2 ;;
+  *) usage ;;
 esac
 
 # Overridable so tests can point the launch at a stub instead of a real
