@@ -67,6 +67,18 @@ if ! remote "set -e
   exit 5
 fi
 
+# The pack's swarm launcher ships with ARCHIVE_URL defaulting to upstream, so a
+# bare first run would silently fetch unclebob's scripts and drop this fork's
+# fixes (ADR 0001). Point the default at this fork; the sed address keeps the
+# edit scoped to the ARCHIVE_URL= line so it can't touch anything else the
+# file happens to say, and the ${SWARMFORGE_SCRIPTS_URL:-...} wrapper around
+# it is untouched since only the text inside the default is replaced.
+remote "if [ -f '$ROOT/swarm' ]; then
+  t=\$(mktemp)
+  sed '/^ARCHIVE_URL=/s#unclebob/swarm-forge#arlishansenn/swarm-forge#' '$ROOT/swarm' > \"\$t\"
+  mv \"\$t\" '$ROOT/swarm'
+fi"
+
 printf 'STATUS=ONBOARDED\n'
 remote "ls -1 '$ROOT'"
 printf 'next: run ./swarm in %s yourself — this script never starts a swarm\n' "$ROOT"
