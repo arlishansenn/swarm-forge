@@ -100,13 +100,27 @@ EOF
 chmod +x "$WORK/bin/cmux"
 
 # ssh stub: `cat` reads fixture; `-N -L` is a tunnel. Tunnel succeeds unless
-# $STUB/port-occupied-<local> exists (simulates ExitOnForwardFailure).
+# $STUB/port-occupied-<local> exists (simulates ExitOnForwardFailure). `cat
+# .../pack_web.pid` and `ps -wwp` are answered off the real fixture file /
+# $PSREG registry — see mk_pid below (issue #18 ownership check).
 cat > "$WORK/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 STUB=${STUB:?}
 if printf '%s\n' "$*" | grep -q "dashboard-url"; then
   cat "${DASHURL_FIXTURE:?}" 2>/dev/null && exit 0
   exit 1
+fi
+if printf '%s\n' "$*" | grep -q "pack_web.pid"; then
+  PIDFILE=$(printf '%s\n' "$*" | sed -n "s/.*cat '\(.*pack_web\.pid\)'.*/\1/p")
+  cat "$PIDFILE" 2>/dev/null && exit 0
+  exit 1
+fi
+if printf '%s\n' "$*" | grep -q 'ps -wwp'; then
+  PID=$(printf '%s\n' "$*" | sed -n "s/.*ps -wwp '\([0-9]*\)'.*/\1/p")
+  LINE=$(sed -n "s/^$PID //p" "${PSREG:?}" 2>/dev/null | tail -1)
+  [ -n "$LINE" ] || exit 1
+  printf '%s\n' "$LINE"
+  exit 0
 fi
 if printf '%s\n' "$*" | grep -q '\-N'; then
   LOCAL=$(printf '%s\n' "$*" | sed -n 's/.*-L \([0-9]*\):127.0.0.1:[0-9]*.*/\1/p')
@@ -138,6 +152,8 @@ reset_stub() {
 J
 }
 export STUB=$WORK/stub
+: > "$WORK/ps-registry"
+export PSREG=$WORK/ps-registry
 
 mk_fixture() { # <name> <url|->  (- = no file)
   local root=$WORK/fixtures/$1
@@ -145,9 +161,20 @@ mk_fixture() { # <name> <url|->  (- = no file)
   if [ "$2" != - ]; then printf '%s\n' "$2" > "$root/.swarmforge/dashboard-url"; fi
 }
 
+# pack_web.pid fixture + fake ps registry entry (issue #18 ownership check).
+# Omit the 3rd arg to write a pid file with no matching process (dead pid).
+mk_pid() { # <fixture> <pid> [served-root]
+  local root=$WORK/fixtures/$1
+  mkdir -p "$root/.swarmforge"
+  printf '%s\n' "$2" > "$root/.swarmforge/pack_web.pid"
+  if [ $# -ge 3 ]; then
+    printf '%s bb /path/to/swarmforge/scripts/pack_web.bb --serve %s 54870\n' "$2" "$3" >> "$WORK/ps-registry"
+  fi
+}
+
 run() { # <fixture> [extra args...]
   local fx=$1; shift
-  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB DASHURL_FIXTURE="$WORK/fixtures/$fx/.swarmforge/dashboard-url" \
+  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB PSREG=$PSREG DASHURL_FIXTURE="$WORK/fixtures/$fx/.swarmforge/dashboard-url" \
     bash "$SCRIPT" --root "$WORK/fixtures/$fx" "$@" 2>&1)
   RC=$?
 }
@@ -159,7 +186,16 @@ echo "== suite for open-dashboard.sh =="
 if [ ! -f "$SCRIPT" ]; then echo "script missing — RED confirmed"; exit 1; fi
 
 mk_fixture gov http://127.0.0.1:54870/
+mk_pid gov 501 "$WORK/fixtures/gov"    # --serve matches $ROOT: proceed as today
 mk_fixture dead -
+
+# issue #18: three port-ownership fixtures, distinct from gov so a bad
+# ownership check can't accidentally piggyback on gov's registration.
+mk_fixture squat http://127.0.0.1:54871/
+mk_pid squat 502 "$WORK/fixtures/other-project"   # --serve names a different root
+mk_fixture pidmissing http://127.0.0.1:54872/     # no pack_web.pid written at all
+mk_fixture piddead http://127.0.0.1:54873/
+mk_pid piddead 909090                              # pid file present, no live process
 
 # 1 stopped: no dashboard-url → exit 3, no cmux, no tunnel
 reset_stub
@@ -237,6 +273,31 @@ run gov
 check "legacy exit" 0 "$RC"
 check "legacy status" REUSED "$(val STATUS)"
 check "legacy browser repaired" "1" "$(python3 -c 'import json;s=json.load(open("'$STUB'/state.json"));print(sum(1 for x in s["surfaces"] if x["type"]=="browser"))')"
+
+# 8 port ownership mismatch (issue #18): pack_web.pid's process is alive but
+# serves a different root → exit 4 DRIFT, actual root in stdout, no cmux call
+reset_stub
+run squat
+check "squat exit" 4 "$RC"
+check "squat status" DRIFT "$(val STATUS)"
+printf '%s\n' "$OUT" | grep -qF "$WORK/fixtures/other-project" \
+  && ok "squat names actual root" || bad "squat names actual root" "$OUT"
+check "squat no cmux" 0 "$(grep -c '^cmux' "$STUB/calls.log" || true)"
+check "squat no workspace" 0 "$(mutcount)"
+
+# 9 pack_web.pid missing entirely → exit 3 STOPPED, not 4 (port answers fine)
+reset_stub
+run pidmissing
+check "pid-missing exit" 3 "$RC"
+check "pid-missing status" STOPPED "$(val STATUS)"
+check "pid-missing no cmux" 0 "$(grep -c '^cmux' "$STUB/calls.log" || true)"
+
+# 10 pack_web.pid present but the process is dead → exit 3 STOPPED, not 4
+reset_stub
+run piddead
+check "pid-dead exit" 3 "$RC"
+check "pid-dead status" STOPPED "$(val STATUS)"
+check "pid-dead no cmux" 0 "$(grep -c '^cmux' "$STUB/calls.log" || true)"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

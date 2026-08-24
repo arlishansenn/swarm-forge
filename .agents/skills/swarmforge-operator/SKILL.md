@@ -153,14 +153,25 @@ scripts/open-dashboard.sh --root "$ROOT" [--window <ref>] \
 
 It reads `$ROOT/.swarmforge/dashboard-url`, ensures an SSH local-forward
 tunnel to that port (reuses a working one; preferred port first, any free
-port on bind conflict), then opens or reuses one workspace named
+port on bind conflict), confirms the port is owned by *this* project's own
+`pack_web` (below), then opens or reuses one workspace named
 `Dashboard · <basename>` with a browser surface on the tunneled URL.
 
-Same hard rules and exit codes as `open swarm`: exit 3 STOPPED means
-dashboard-url is missing — never start `pack_web.sh --serve` yourself; exit
-4 DRIFT means multiple matching workspaces — cleanup needs user approval;
-exit 5 ERROR. `--local` expects the dashboard to already listen on this
-machine; no tunnel is created.
+Port ownership: HTTP 200 only proves something answers on the port, not
+that it is this project's dashboard — on a host running several managed
+projects with dynamic port allocation, a stale `dashboard-url` can collide
+with another project's `pack_web`. The script reads
+`$ROOT/.swarmforge/pack_web.pid` and confirms the process's `--serve`
+argument equals `$ROOT`, running that check against `$TARGET`/local
+directly (the tunnel carries HTTP only, no process identity). Same hard
+rules and exit codes as `open swarm`: exit 3 STOPPED means dashboard-url is
+missing, or `pack_web.pid` is missing/its process is dead — never start
+`pack_web.sh --serve` yourself; exit 4 DRIFT means either multiple matching
+workspaces, or the port is owned by another project's `pack_web` — in the
+ownership case, someone else's dashboard is squatting the recorded port and
+a human decides, the script never auto-repairs it; exit 5 ERROR. `--local`
+expects the dashboard to already listen on this machine and runs the same
+ownership check locally; no tunnel is created.
 
 ## Verb: `attach role`
 
@@ -429,7 +440,12 @@ other project daemons remain running.
 `scripts/test-open-swarm.sh` and `scripts/test-open-dashboard.sh` run the
 two flows against a stubbed cmux/ssh/curl, covering topology pairing, reuse,
 repair, stopped, drift, unparseable mutation output, tunnel reuse, and
-port-conflict fallback. `scripts/test-wake-talk.sh` runs `wake-role.sh` and
+port-conflict fallback. `test-open-dashboard.sh` additionally stubs `ps`
+(via the ssh stub, plus a fake `pack_web.pid`/process registry) to cover the
+port-ownership check: a live process whose `--serve` argument names a
+different root (exit 4 DRIFT, actual root in stdout, no cmux call at all),
+a missing `pack_web.pid`, and a `pack_web.pid` whose process is dead (both
+exit 3 STOPPED, not 4). `scripts/test-wake-talk.sh` runs `wake-role.sh` and
 `talk-role.sh` against a stubbed tmux, covering verified submit, a submit key
 that never lands, an unknown role, a dead socket, and that neither script
 ever submits with the symbolic `C-m`/`C-j`. `scripts/test-read-swarm.sh` runs

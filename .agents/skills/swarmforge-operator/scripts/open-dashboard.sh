@@ -70,6 +70,47 @@ else
   curl_200 "$RPORT" || die ERROR "dashboard-url says port $RPORT but it does not answer locally" 5
 fi
 
+# ---------- port ownership (issue #18) ----------
+# curl_200 only proves *something* answers on the port; on a host running
+# several managed projects with dynamic port allocation that could be
+# another project's pack_web squatting a stale dashboard-url. Confirm the
+# pid file's process is alive and its --serve argument is this $ROOT before
+# any cmux mutation. This must run against $TARGET/local directly, not
+# through the tunnel — the tunnel only forwards HTTP, it carries no process
+# identity for the remote host.
+PIDFILE="$ROOT/.swarmforge/pack_web.pid"
+if [ "$LOCAL" = 1 ]; then
+  [ -s "$PIDFILE" ] 2>/dev/null \
+    || die STOPPED "$PIDFILE missing — dashboard not owned by a live pack_web; refusing to start it" 3
+  PWPID=$(<"$PIDFILE")
+else
+  PWPID=$(ssh -i "$KEY" "$TARGET" "cat '$PIDFILE'" 2>/dev/null) \
+    || die STOPPED "$PIDFILE missing on $TARGET — dashboard not owned by a live pack_web; refusing to start it" 3
+fi
+PWPID=${PWPID%$'\n'}
+
+# -ww: BSD/macOS ps truncates the command column to terminal width unless
+# told not to, which would silently break parsing a long project path.
+if [ "$LOCAL" = 1 ]; then
+  CMDLINE=$(ps -wwp "$PWPID" -o command= 2>/dev/null) || true
+else
+  CMDLINE=$(ssh -i "$KEY" "$TARGET" "ps -wwp '$PWPID' -o command=" 2>/dev/null) || true
+fi
+[ -n "$CMDLINE" ] \
+  || die STOPPED "pack_web.pid ($PWPID) has no running process — dashboard not owned by a live pack_web; refusing to start it" 3
+
+# find the --serve token and take the NEXT token as the served root; a
+# substring check on the raw command line would false-match a nested
+# project path or a log-redirect argument that happens to contain $ROOT.
+SERVED_ROOT=$(python3 -c '
+import shlex, sys
+toks = shlex.split(sys.argv[1])
+i = toks.index("--serve") if "--serve" in toks else -1
+print(toks[i + 1] if 0 <= i < len(toks) - 1 else "")
+' "$CMDLINE")
+[ "$SERVED_ROOT" = "$ROOT" ] \
+  || die DRIFT "dashboard-url's port is served by pack_web for '$SERVED_ROOT', not '$ROOT' — another project's dashboard is squatting this dashboard-url" 4
+
 # ---------- cmux plumbing (contract: cmux skill) ----------
 cmux ping >/dev/null 2>&1 || die ERROR "cmux app not reachable (cmux ping failed)" 5
 j() { python3 -c "import json,sys; d=json.load(sys.stdin); $1" "${@:2}"; }
