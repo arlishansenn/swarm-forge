@@ -74,9 +74,10 @@ replaces itself with the target program. The exit code after that belongs to tha
 program, not to this contract.
 
 **Not every verb has a script yet.** `onboard project`, `open swarm`, `dashboard`,
-`wake role`, `talk role`, and `read swarm` are scripted and follow this contract
-today. The other verbs are shell steps in this file; run them as written and read
-their raw output. Bringing them under the contract is tracked in the issue tracker.
+`wake role`, `talk role`, `read swarm`, and `stop swarm` are scripted and follow
+this contract today. The other verbs are shell steps in this file; run them as
+written and read their raw output. Bringing them under the contract is tracked
+in the issue tracker.
 
 ## Verb: `onboard project`
 
@@ -323,15 +324,63 @@ Rules:
 
 ## Verb: `stop swarm`
 
-Use the project root with the official control checkout on the target host:
+Run the bundled script; it preflights before it stops anything (issue #11):
+`stop swarm` used to be a bare `close-swarm` call with no grace period and no
+check of role state or uncommitted work, equivalent to pulling the power
+instead of a shutdown. The script now reports what a stop would interrupt and
+requires a human decision before it touches tmux.
 
 ```sh
-"${SSH[@]}" "/Users/admin/project/swarm-forge/close-swarm '$ROOT'"
+scripts/stop-swarm.sh --root <project-root> \
+  [--target user@host] [--key <path>] [--local] [--force]
 ```
 
-If cleanup is incomplete, resolve this project's socket again, kill only that
-tmux server, and match `handoffd.bb` with the exact project root. Verify other
-project daemons remain running.
+It reads `sessions.tsv` and classifies each role's pane exactly the way `read
+swarm` does (same `BUSY`/`IDLE`/`UNKNOWN` judgment, same shared code — the two
+verbs must never disagree about a role's state), then reads `roles.tsv`'s
+worktree-path column and runs `git status --porcelain` against each one
+(deduplicated, since `master`/`none` rows both resolve to the project root).
+Only when every role reads `IDLE` and every worktree is clean does it run the
+same stop `close-swarm` has always done.
+
+Exit codes / STATUS line:
+
+- `0` `STOPPED` — every role was `IDLE` and every worktree was clean (or
+  `--force` was passed); the swarm was stopped the same way it is today.
+- `2` `USAGE` — missing `--root`.
+- `3` `STOPPED` — `sessions.tsv`/`roles.tsv`/`tmux-socket` missing, or the
+  socket has no tmux server; nothing to stop.
+- `5` `ERROR` — the verb itself failed to run.
+- `6` `UNSAFE` — a role read `BUSY` or `UNKNOWN`, or a worktree was dirty (or
+  its status could not be verified at all — treated as unsafe, never as
+  clean). **Nothing was changed**: no `kill-session`, no `close-swarm` call.
+  Report the `PREFLIGHT` block to the user and let a human decide whether to
+  wait or re-run with `--force`.
+
+On `6` `UNSAFE`, stdout carries a `PREFLIGHT` block after `STATUS=`, one line
+per unsafe condition found:
+
+```
+STATUS=UNSAFE
+PREFLIGHT
+BUSY=cleaner
+UNKNOWN=coder
+DIRTY=.worktrees/cleaner (12 files)
+```
+
+**`--force` skips the preflight gate entirely** — no state files read, no
+tmux reached for anything but the stop itself — reproducing today's
+unconditional behavior exactly. It is a human's explicit call to interrupt
+whatever is running; the script never assumes it.
+
+**Boundary:** this verb does not implement graceful per-agent shutdown — no
+`/exit` sent to any backend, no wait for it to wind down. It only surfaces
+state to a human before an irreversible `kill-session`. It also never commits
+on a role's behalf: a dirty worktree blocks the stop, but nothing here writes
+a commit — that stays a human decision. If cleanup is incomplete after a
+clean or forced stop, resolve this project's socket again, kill only that
+tmux server, and match `handoffd.bb` with the exact project root; verify
+other project daemons remain running.
 
 ## Testing
 
@@ -346,5 +395,10 @@ ever submits with the symbolic `C-m`/`C-j`. `scripts/test-read-swarm.sh` runs
 one run can give two roles different pane content), covering an explicit
 idle marker, an explicit busy marker, a blank pane (must read `UNKNOWN`,
 never `IDLE`), unrecognized error text (`UNKNOWN` with the raw text still
-attached), a dead socket, and that the script never calls `send-keys`. Run
-them after any change to the scripts or the stub contracts.
+attached), a dead socket, and that the script never calls `send-keys`.
+`scripts/test-stop-swarm.sh` runs `stop-swarm.sh` against a stubbed
+tmux/git/close-swarm, covering a `BUSY` role, an `UNKNOWN` role, a `DIRTY`
+worktree, `--force` bypassing the gate, an all-clean stop, and a dead socket
+— and asserts that on every blocked case neither `kill-session` nor
+`close-swarm` is ever called. Run them after any change to the scripts or the
+stub contracts.
