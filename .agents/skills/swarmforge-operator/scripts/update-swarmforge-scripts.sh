@@ -106,11 +106,23 @@ DIRTY=$(git -C "$SOURCE_ROOT" status --porcelain -- swarmforge/scripts)
 SOURCE_COMMIT=$(git -C "$SOURCE_ROOT" rev-parse HEAD)
 SOURCE_REPO=$(git -C "$SOURCE_ROOT" remote get-url origin 2>/dev/null || echo unknown)
 
-# ---------- stage: fresh local temp copy of SOURCE_SCRIPTS, bytes + exec
-# bits preserved (cp -R does both on macOS and Linux; verified empirically
-# while building this script). Staging always happens locally, even for a
-# remote --target: SOURCE_SCRIPTS is always local to the operator. ----------
-STAGED=$(mktemp -d)
+# ---------- stage: fresh copy of SOURCE_SCRIPTS, bytes + exec bits
+# preserved (cp -R does both on macOS and Linux; verified empirically while
+# building this script). Staging always happens locally, even for a remote
+# --target: SOURCE_SCRIPTS is always local to the operator.
+#
+# Staged under $ROOT/swarmforge/ itself (never mktemp -d's default
+# $TMPDIR/tmp, which is commonly a separate tmpfs mount on Linux) so the
+# swap `mv` below is guaranteed same-filesystem-as-destination and therefore
+# atomic — same guarantee the backup rename already has by construction. A
+# leading `.` keeps it out of naive directory listings; nothing in this
+# codebase iterates $ROOT/swarmforge/'s own contents (confirmed against
+# swarmforge.bb: its only dir listing is `fs/list-dir` on :script-dir, i.e.
+# $ROOT/swarmforge/scripts itself, a sibling of this staging dir, not its
+# parent). ----------
+STAGED="$ROOT/swarmforge/.stage.$$"
+rm -rf "$STAGED"
+mkdir -p "$ROOT/swarmforge"
 cp -R "$SOURCE_SCRIPTS/." "$STAGED/"
 
 # ---------- validate the STAGED copy (never the live source, never the
@@ -180,8 +192,16 @@ else
   # swap/manifest-write/launcher-rewrite/rollback sequence as ONE shell
   # script string (bash -c with %q-quoted positional args — same shape as
   # remote_scripts_digest's embedded snippet), so the critical section is
-  # one round trip, never a hand-interpolated $ROOT in a raw string. ----------
-  REMOTE_STAGE=/tmp/sf-update-stage.$$
+  # one round trip, never a hand-interpolated $ROOT in a raw string.
+  #
+  # Staged under $ROOT/swarmforge/ on the REMOTE host, same reasoning as the
+  # local branch above: /tmp is commonly a separate tmpfs mount on Linux, so
+  # a plain /tmp path would make the remote swap `mv` fall back to a
+  # non-atomic copy+delete. Named distinctly from the local $STAGED (a
+  # "-remote" infix, not just the same .stage.$$) so the two never collide
+  # by path even if $ROOT happens to name the same location on both the
+  # operator machine and $TARGET (e.g. a shared mount). ----------
+  REMOTE_STAGE="$ROOT/swarmforge/.stage-remote.$$"
 
   XFER_CMD=$(printf '%q' mkdir)$(printf ' %q' -p "$REMOTE_STAGE")
   XFER_CMD="$XFER_CMD && $(printf '%q' tar)$(printf ' %q' -C "$REMOTE_STAGE" -xf -)"

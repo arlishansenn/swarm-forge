@@ -342,5 +342,55 @@ TAR_CALLS=$(grep -c '^ssh .*tar -C' "$STUB/calls.log" || true)
 [ "${TAR_CALLS:-0}" -ge 1 ] && ok "remote: tar-over-ssh transfer actually invoked" \
   || bad "remote: tar-over-ssh transfer actually invoked" "$(cat "$STUB/calls.log")"
 
+# 12. default source resolution (no SF_SOURCE_ROOT set): every case above
+#     isolates via SF_SOURCE_ROOT, so the actual production fallback path —
+#     SOURCE_ROOT=${SF_SOURCE_ROOT:-$(cd "$HERE/../../../.." && pwd)}, the
+#     four-`..` arithmetic from the script's own on-disk location — is
+#     otherwise never exercised. This real worktree's own swarmforge/scripts
+#     IS what that arithmetic resolves to, and should be clean right now, so
+#     run against it directly instead of faking anything. Skip (not fail) if
+#     it's unexpectedly dirty at test time — that would prove nothing about
+#     the resolution arithmetic itself and isn't this suite's concern.
+reset_stub; reset_root; write_good_launcher
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain -- swarmforge/scripts)" ]; then
+  echo "  SKIP default source resolution -- $REPO_ROOT/swarmforge/scripts is dirty at test time"
+else
+  PATH="$WORK/bin:$PATH" STUB=$STUB TARGET=testhost KEY=/dev/null \
+    bash "$SCRIPT" --local --root "$ROOT" > "$OUTFILE" 2>&1
+  RC=$?
+  OUT=$(cat "$OUTFILE")
+  check "default source resolution exit" 0 "$RC"
+  check "default source resolution status" "STATUS=UPDATED" "$(status_line)"
+fi
+
+# 13. staging location (issue #29 review finding 1): STAGED/REMOTE_STAGE
+#     must live under $ROOT/swarmforge/, never mktemp -d's default $TMPDIR —
+#     which is commonly a separate filesystem/mount from $ROOT on Linux,
+#     making the swap `mv` fall back to a non-atomic copy+delete. Confirmed
+#     by tracing the script's own variable assignment via `bash -x`, not by
+#     inference from side effects.
+# 13a. local
+reset_stub; reset_root; write_good_launcher
+PATH="$WORK/bin:$PATH" STUB=$STUB SF_SOURCE_ROOT=$SRC_GOOD TARGET=testhost KEY=/dev/null \
+  bash -x "$SCRIPT" --local --root "$ROOT" > "$WORK/trace-out.txt" 2> "$WORK/trace-err.txt"
+TRACE_RC=$?
+check "staging location (local): run still succeeds under trace" 0 "$TRACE_RC"
+grep -qF "STAGED=$ROOT/swarmforge/.stage." "$WORK/trace-err.txt" \
+  && ok "staging location (local): STAGED under \$ROOT/swarmforge/, not system temp dir" \
+  || bad "staging location (local): STAGED under \$ROOT/swarmforge/, not system temp dir" \
+       "$(grep 'STAGED=' "$WORK/trace-err.txt" | head -3)"
+
+# 13b. remote
+reset_stub; reset_root; write_good_launcher
+PATH="$WORK/bin:$PATH" STUB=$STUB SF_SOURCE_ROOT=$SRC_GOOD TARGET=testhost KEY=/dev/null \
+  bash -x "$SCRIPT" --root "$ROOT" --target testhost --key /dev/null \
+  > "$WORK/trace-out.txt" 2> "$WORK/trace-err.txt"
+TRACE_RC=$?
+check "staging location (remote): run still succeeds under trace" 0 "$TRACE_RC"
+grep -qF "REMOTE_STAGE=$ROOT/swarmforge/.stage-remote." "$WORK/trace-err.txt" \
+  && ok "staging location (remote): REMOTE_STAGE under \$ROOT/swarmforge/, not /tmp" \
+  || bad "staging location (remote): REMOTE_STAGE under \$ROOT/swarmforge/, not /tmp" \
+       "$(grep 'REMOTE_STAGE=' "$WORK/trace-err.txt" | head -3)"
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
