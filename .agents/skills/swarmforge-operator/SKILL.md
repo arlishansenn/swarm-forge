@@ -73,10 +73,10 @@ is a warning that nobody reads.
 replaces itself with the target program. The exit code after that belongs to that
 program, not to this contract.
 
-**Not every verb has a script yet.** `onboard project`, `open swarm`, and `dashboard`
-are scripted and follow this contract today. The other verbs are shell steps in this
-file; run them as written and read their raw output. Bringing them under the contract
-is tracked in the issue tracker.
+**Not every verb has a script yet.** `onboard project`, `open swarm`, `dashboard`,
+`wake role`, and `talk role` are scripted and follow this contract today. The other
+verbs are shell steps in this file; run them as written and read their raw output.
+Bringing them under the contract is tracked in the issue tracker.
 
 ## Verb: `onboard project`
 
@@ -185,30 +185,55 @@ idle role means it needs `wake role`.
 
 ## Verb: `wake role`
 
-Look up both session and backend in `sessions.tsv`, type
-`ready_for_next.sh`, wait for the text to appear, then submit with the backend's
-key encoding:
+Run the bundled script; it resolves session and backend from `sessions.tsv`
+itself and verifies the wake actually landed instead of trusting a stale
+guess:
 
 ```sh
-tmux -S "$SOCK" send-keys -t "$SESSION" -l "ready_for_next.sh"
-# The submit key branches by backend: both send raw bytes. A symbolic key name
-# (C-m/C-j) passes through tmux's key-encoding layer, and a TUI that negotiated
-# extended keys does not receive a literal Enter.
-# claude: CSI-u Enter
-tmux -S "$SOCK" send-keys -t "$SESSION" -H 1b 5b 31 33 75
-# other backends (codex, grok...): raw carriage return
-tmux -S "$SOCK" send-keys -t "$SESSION" -H 0d
+scripts/wake-role.sh --root <project-root> --role <name> \
+  [--target user@host] [--key <path>] [--local]
 ```
 
-Run those tmux commands on the target host. Use only the branch matching the
-recorded backend.
+It types `ready_for_next.sh`, confirms the text reached the input line, submits
+with the backend's own key encoding (CSI-u Enter for `claude`, raw carriage
+return for every other backend — see submit-keys in `handoffd.bb`; a symbolic
+key name such as `C-m`/`C-j` is never used, since a TUI that negotiated
+extended keys does not receive a literal Enter through tmux's key-encoding
+layer), then confirms the input line no longer holds it.
+
+Exit codes / STATUS line:
+
+- `0` `WOKEN`
+- `2` `USAGE` — missing `--root` or `--role`
+- `3` — `sessions.tsv`/`tmux-socket` missing, or the socket has no tmux
+  server; the swarm is not running, never start it
+- `5` `ERROR` — the role is not in `sessions.tsv`, the text never reached the
+  input line, or it reached but was never submitted (the failure sentence
+  names the recorded backend — check it against the agent actually running
+  in that session, per issue #14)
+
+**Boundary:** `--role` never accepts a `--backend` override; the recorded
+backend in `sessions.tsv` is the only source, because a caller-supplied guess
+is exactly the silent-failure mode this script exists to catch.
 
 ## Verb: `talk role`
 
-Look up the role exactly as for `wake role`, send one behavior slice with
-`send-keys -l`, then use the same backend-specific submit key. New work enters
-through the `master` row from `roles.tsv`; no role name such as `specifier` or
-`coder` is universally the intake role.
+Run the bundled script; same send-then-verify contract as `wake role`, sending
+one behavior slice instead of `ready_for_next.sh`:
+
+```sh
+scripts/talk-role.sh --root <project-root> --role <name> --message <text> \
+  [--target user@host] [--key <path>] [--local]
+```
+
+Exit codes / STATUS line: same table as `wake role` (`0` `SENT`, `2` `USAGE`,
+`3`, `5` `ERROR`), with the same "text arrived but was never submitted" ERROR
+naming the backend for a mismatch.
+
+**Boundary:** a lost `talk role` message is a lost dispatch, not just a missed
+poke — the verified-submit step matters more here than for `wake role`. New
+work enters through the `master` row from `roles.tsv`; no role name such as
+`specifier` or `coder` is universally the intake role.
 
 ## Verb: `accept work`
 
@@ -273,5 +298,8 @@ project daemons remain running.
 `scripts/test-open-swarm.sh` and `scripts/test-open-dashboard.sh` run the
 two flows against a stubbed cmux/ssh/curl, covering topology pairing, reuse,
 repair, stopped, drift, unparseable mutation output, tunnel reuse, and
-port-conflict fallback. Run them after any change to the scripts or the stub
-contracts.
+port-conflict fallback. `scripts/test-wake-talk.sh` runs `wake-role.sh` and
+`talk-role.sh` against a stubbed tmux, covering verified submit, a submit key
+that never lands, an unknown role, a dead socket, and that neither script
+ever submits with the symbolic `C-m`/`C-j`. Run them after any change to the
+scripts or the stub contracts.
