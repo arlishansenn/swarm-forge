@@ -87,22 +87,25 @@ git_merge_base_ancestor() { # $1 = commit
 # same reasoning as tmux_remote's own comment: a launcher path or env value
 # is untrusted free text, never hand-interpolated.
 #
-# `</dev/null` on the backgrounded command is load-bearing, not decoration:
-# without it, a caller that itself captures this script's combined output
-# (`$(start-swarm.sh ... 2>&1)`, or an orchestrator's subprocess call with
-# stdout/stderr piped, both common ways a verb script gets driven) can block
-# waiting for that pipe to reach EOF for as long as the launched swarm keeps
-# running, because the child inherits a duplicate of the pipe's write end
-# through its own unredirected stdin. `</dev/null` closes that path.
+# `</dev/null` on the backgrounded command guards a DIFFERENT scenario than
+# the hang described below: it stops the detached child from ever reading a
+# caller's own stdin if start-swarm.sh itself is invoked with something
+# piped into it. Good hygiene, but a 4-variant empirical reproduction (done
+# while re-verifying this fix) confirmed `</dev/null` is NOT what fixes the
+# hang below — removing the subshell wrapper alone does.
 #
 # LOCAL never wraps the launch in a subshell or `bash -c` — `cd`/`nohup ...
 # &` run directly at this function's own top level, `cd`-ing back
-# afterward. That is not style: this session empirically found that ANY
-# extra shell layer between the caller and the final backgrounded command
-# (a `(...)` subshell, `bash -c '...'`, even `eval`) reintroduces the exact
-# same pipe-EOF block above even with `</dev/null` in place, on bash 3.2
-# (macOS's stock /bin/bash) — only running the redirected, nohup'd command
-# with nothing shell-level between it and the caller avoids it.
+# afterward. That IS load-bearing: this session empirically found that a
+# `(...)` subshell around the backgrounded command leaks an inherited
+# duplicate of a caller's `$(...)` pipe-write-end fd into the detached
+# child, on bash 3.2 (macOS's stock /bin/bash) — a caller capturing this
+# script's combined output via real command substitution
+# (`$(start-swarm.sh ... 2>&1)`) then blocks until that fd's last holder
+# (the detached child) closes it, i.e. for as long as the launched swarm
+# keeps running. Running the redirected, nohup'd command directly at this
+# function's own top level, with no subshell/`bash -c`/`eval` layer in
+# between, is what avoids that leak.
 run_detached() { # $1 = absolute log path, rest = argv to run detached
   local log=$1; shift
   if [ "$LOCAL" = 1 ]; then

@@ -22,6 +22,14 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 START=$HERE/start-swarm.sh
 WORK=$(mktemp -d /tmp/sf-start-swarm-test.XXXXXX)
+# Sibling test-*.sh files are inconsistent here (test-stop-swarm.sh/
+# test-open-swarm.sh/test-wake-talk.sh/test-read-swarm.sh/test-accept-work.sh
+# leave $WORK behind entirely; test-onboard-project.sh does an unconditional
+# `rm -rf "$WORK"` as its own last line) — neither is a real "clean up even
+# on early exit" convention, so a trap is used here instead: this script
+# already has an early `exit 1` path (missing start-swarm.sh) that a
+# bottom-of-file rm would never reach.
+trap 'rm -rf "$WORK"' EXIT
 PASS=0 FAIL=0
 
 ok()   { PASS=$((PASS+1)); echo "  PASS $1"; }
@@ -252,6 +260,33 @@ for _ in $(seq 1 $((DELAY * 4 + 10))); do [ -f "$STUB/marker" ] && break; sleep 
 [ -f "$STUB/marker" ] \
   && ok "remote: marker appeared after the stub ssh invocation itself had already returned" \
   || bad "remote: marker appeared after ssh returned" "never appeared — remote launch was NOT actually detached"
+
+# 10. REGRESSION (review round 1): T8/T9 above deliberately go through
+#     run()'s file-redirected OUTFILE, which sidesteps the exact failure
+#     mode of the #26 hang bug this session found and fixed in
+#     run_detached — a caller capturing start-swarm.sh's own combined
+#     stdout+stderr via REAL command substitution (`$(... 2>&1)`) would
+#     block on a leaked fd until the detached launcher itself exited,
+#     because the old implementation wrapped the background job in a
+#     subshell (`( cd ... && nohup ... & )`). Nothing above this point would
+#     catch a future regression that re-wraps run_detached in a subshell.
+#     This case exercises that literal seam: a real `$(...)` capture around
+#     start-swarm.sh itself, with a short bounded launcher delay, asserting
+#     the capture returns promptly rather than waiting out the delay.
+reset_stub
+DELAY=3
+SECONDS=0
+CAPTURED=$(PATH="$WORK/bin:$PATH" STUB=$STUB SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh \
+  SF_START_READY_TRIES=2 SF_START_READY_INTERVAL=0.2 SF_TEST_DELAY=$DELAY \
+  bash "$START" --local --root "$ROOT" --terminal none 2>&1)
+ELAPSED=$SECONDS
+[ "$ELAPSED" -lt "$DELAY" ] \
+  && ok "regression: \$(...)-captured run returned in ${ELAPSED}s, well before the ${DELAY}s launcher sleep (run_detached's fd isn't leaked into the child)" \
+  || bad "regression: \$(...)-captured run returned before launcher sleep" "took ${ELAPSED}s, launcher sleeps ${DELAY}s -- \$(...) blocked on a leaked fd, the exact #26 hang"
+for _ in $(seq 1 $((DELAY * 4 + 10))); do [ -f "$STUB/marker" ] && break; sleep 0.25; done
+[ -f "$STUB/marker" ] \
+  && ok "regression: marker appeared after the \$(...) capture had already returned — launcher genuinely kept running detached" \
+  || bad "regression: marker appeared after capture returned" "never appeared"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
