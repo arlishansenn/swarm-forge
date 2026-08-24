@@ -433,6 +433,24 @@ check "already-running-beats-force exit" 6 "$RC"
 ! launcher_ran && ok "already-running-beats-force: launcher never invoked" \
   || bad "already-running-beats-force: launcher never invoked" "$(cat "$STUB/calls.log")"
 
+# 18. REGRESSION (review round 2): scripts_digest must be immune to a
+#     trailing slash on its directory argument. The documented invariant is
+#     that only the tree's relative-path/content/executable-bit shape
+#     drives the digest — never how the caller happened to spell the path.
+#     Before this fix, `rel=${f#"$dir"/}` effectively became a
+#     double-slash strip when $dir already ended in `/`, so it silently
+#     failed to match find's single-slash output and the whole absolute
+#     path leaked into the digest line unstripped — start-swarm.sh's own
+#     call site never trips this (never passes a trailing slash), but
+#     compute_digest above is exactly the reusable primitive a future
+#     caller (e.g. `update SwarmForge scripts`, issue #29) is expected to
+#     call with differently-built paths, some of which may concatenate a
+#     trailing slash in. Proves the SAME tree digests identically with and
+#     without one.
+D_NO_SLASH=$(compute_digest "$ROOT/swarmforge/scripts")
+D_SLASH=$(compute_digest "$ROOT/swarmforge/scripts/")
+check "trailing-slash: same tree digests identically with/without a trailing slash" "$D_NO_SLASH" "$D_SLASH"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]

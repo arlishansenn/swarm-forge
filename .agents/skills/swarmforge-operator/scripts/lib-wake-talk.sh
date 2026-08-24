@@ -220,7 +220,10 @@ sha256_hex() {
 # path, concatenated and sha256'd again as a whole. Relative to $1 itself
 # (not the caller's absolute location) with `/` separators, so the digest
 # doesn't change between the operator's source checkout and a managed
-# project's install path. Timestamps and directory order never affect it.
+# project's install path. Timestamps, directory order, and a trailing `/`
+# on $1 itself never affect it — `dir=${dir%/}` strips one up front so the
+# `${f#"$dir"/}` prefix-strip below always matches find's single-slash
+# output, whether the caller passed ".../scripts" or ".../scripts/".
 # The trailing `|| true` neutralizes `set -o pipefail` turning a merely
 # EMPTY tree (find matches nothing, or the empty `while read` loop's own
 # exit status) into a spurious failure under this file's callers' `set -e`
@@ -228,6 +231,7 @@ sha256_hex() {
 # an error.
 scripts_digest() {
   local dir=$1 f rel x
+  dir=${dir%/}
   { find "$dir" -type f 2>/dev/null || true; } | LC_ALL=C sort | while IFS= read -r f; do
     rel=${f#"$dir"/}
     [ -x "$f" ] && x=x || x=-
@@ -254,10 +258,14 @@ remote_scripts_digest() {
     local snippet cmd
     snippet=$(cat <<'EOS'
 sha256_hex() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@" | awk '{print $1}'
-  else shasum -a 256 "$@" | awk '{print $1}'; fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$@" | awk '{print $1}'
+  else
+    shasum -a 256 "$@" | awk '{print $1}'
+  fi
 }
 dir=$1
+dir=${dir%/}
 { find "$dir" -type f 2>/dev/null || true; } | LC_ALL=C sort | while IFS= read -r f; do
   rel=${f#"$dir"/}
   [ -x "$f" ] && x=x || x=-
