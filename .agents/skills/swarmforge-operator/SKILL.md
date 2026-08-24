@@ -74,9 +74,9 @@ replaces itself with the target program. The exit code after that belongs to tha
 program, not to this contract.
 
 **Not every verb has a script yet.** `onboard project`, `open swarm`, `dashboard`,
-`wake role`, and `talk role` are scripted and follow this contract today. The other
-verbs are shell steps in this file; run them as written and read their raw output.
-Bringing them under the contract is tracked in the issue tracker.
+`wake role`, `talk role`, and `read swarm` are scripted and follow this contract
+today. The other verbs are shell steps in this file; run them as written and read
+their raw output. Bringing them under the contract is tracked in the issue tracker.
 
 ## Verb: `onboard project`
 
@@ -170,18 +170,58 @@ ssh -tt -i "$KEY" "$TARGET" "tmux -S '$SOCK' attach -t '$SESSION'"
 
 ## Verb: `read swarm`
 
-Iterate `sessions.tsv` in config order and capture each recorded session:
+Run the bundled script; it iterates `sessions.tsv` in config order, captures
+each recorded session's pane, and classifies it three ways instead of the old
+two-state guess:
 
 ```sh
-while IFS=$'\t' read -r index role session display agent; do
-  printf '%-16s | ' "$role"
-  "${SSH[@]}" "tmux -S '$SOCK' capture-pane -p -t '$session' -S -12" \
-    | grep -v '^$' | tail -1
-done <<< "$SESSIONS"
+scripts/read-swarm.sh --root <project-root> \
+  [--target user@host] [--key <path>] [--local]
 ```
 
-An empty prompt is idle. `Working` is busy. A visible handoff-mail notice on an
-idle role means it needs `wake role`.
+Output is one line per role: `STATUS=READ` first, then `<role> <STATE> |
+<pane text>` for every row in `sessions.tsv`, in config order:
+
+```
+STATUS=READ
+coder    BUSY     | Working (esc to interrupt)
+cleaner  UNKNOWN  | ⚠ rate limit reached, retrying in 43s
+```
+
+Exit codes / STATUS line:
+
+- `0` `READ` — the verb did its work. This includes runs where some or every
+  role reads `UNKNOWN`: reporting `UNKNOWN` accurately is success, not
+  failure, for a verb whose job is to report accurately.
+- `2` `USAGE` — missing `--root`.
+- `3` `STOPPED` — `sessions.tsv`/`tmux-socket` missing, or the socket has no
+  tmux server; the swarm is not running, never start it.
+- `5` `ERROR` — the verb itself failed to run (not "some role is UNKNOWN").
+
+`STATE` is one of:
+
+- `IDLE` — the pane's last non-empty line confidently matches a known idle
+  prompt (a bare `❯`/`>` with nothing after it, or a literal "ask me
+  anything" placeholder).
+- `BUSY` — it confidently matches a known busy marker (a codex-style
+  "esc to interrupt" banner, or a claude-style "participle + for Ns"
+  spinner line).
+- `UNKNOWN` — neither. This also covers a **blank pane** (no non-empty line
+  in the captured scrollback at all) — blank does not mean idle, since a role
+  stuck on an error, a rate limit, or a confirmation prompt can leave an
+  empty-looking last line too. `UNKNOWN` is the safe default, not a fallback
+  to guess away.
+
+**Boundary:** this verb does not try to enumerate every backend's error
+states — `codex`, `grok`, and `claude` each render differently and drift
+across versions, and chasing that is a losing race. Unrecognized output is
+`UNKNOWN` by design; every role's raw pane text is always attached (`IDLE` and
+`BUSY` included) so a human can check the read against the evidence. This is a
+report verb (`CONTEXT.md` "## Operator verbs"): it never calls `send-keys` or
+anything else that mutates tmux state, only `list-sessions` and
+`capture-pane`. A visible handoff-mail notice on an `IDLE` role means it needs
+`wake role` — that judgment is still the human's to make from the attached
+text, not something this verb classifies.
 
 ## Verb: `wake role`
 
@@ -301,5 +341,10 @@ repair, stopped, drift, unparseable mutation output, tunnel reuse, and
 port-conflict fallback. `scripts/test-wake-talk.sh` runs `wake-role.sh` and
 `talk-role.sh` against a stubbed tmux, covering verified submit, a submit key
 that never lands, an unknown role, a dead socket, and that neither script
-ever submits with the symbolic `C-m`/`C-j`. Run them after any change to the
-scripts or the stub contracts.
+ever submits with the symbolic `C-m`/`C-j`. `scripts/test-read-swarm.sh` runs
+`read-swarm.sh` against a stubbed tmux (capture-pane keyed per session, so
+one run can give two roles different pane content), covering an explicit
+idle marker, an explicit busy marker, a blank pane (must read `UNKNOWN`,
+never `IDLE`), unrecognized error text (`UNKNOWN` with the raw text still
+attached), a dead socket, and that the script never calls `send-keys`. Run
+them after any change to the scripts or the stub contracts.
