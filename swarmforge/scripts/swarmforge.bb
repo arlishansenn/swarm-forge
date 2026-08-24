@@ -337,8 +337,20 @@
              (fs/path worktree-path "swarmforge" "constitution.prompt")
              {:replace-existing true})))
 
+(defn executable-relative-paths [dir]
+  (let [root (fs/path dir)]
+    (->> (fs/glob root "**" {:hidden true})
+         (filter fs/regular-file?)
+         (filter fs/executable?)
+         (map #(str (fs/relativize root %)))
+         set)))
+
 (defn scripts-mirror-matches? [src dest]
-  (sh-ok? "diff" "-rq" (str src) (str dest)))
+  ;; diff -rq only compares file content; a file that is byte-identical but
+  ;; lost its +x bit during mirroring would pass diff and then fail to exec
+  ;; at launch, so executable-bit parity is checked separately.
+  (and (sh-ok? "diff" "-rq" (str src) (str dest))
+       (= (executable-relative-paths src) (executable-relative-paths dest))))
 
 (defn sync-worktree-scripts! [ctx]
   (doseq [row (:roles ctx)

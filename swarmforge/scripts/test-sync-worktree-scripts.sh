@@ -152,6 +152,23 @@ OUT=$(bb "$SWARMFORGE_BB" --test-scripts-mirror-matches "$MISMATCH_A" "$MISMATCH
 check "case6: differing trees -> exit code" 1 "$RC"
 check "case6: differing trees -> output" "MISMATCH" "$OUT"
 
+# case9: trees byte-identical in every file's CONTENT but one file's
+# executable bit differs — diff -rq alone would wrongly call this a MATCH,
+# which is exactly the class of bug this issue exists to catch (a helper
+# that loses +x during mirroring passes content diff, then fails to exec
+# at launch).
+EXECBIT_A=$WORK/mirror/execbit-a
+EXECBIT_B=$WORK/mirror/execbit-b
+mkdir -p "$EXECBIT_A" "$EXECBIT_B"
+printf '#!/bin/sh\necho hi\n' > "$EXECBIT_A/helper.sh"
+printf '#!/bin/sh\necho hi\n' > "$EXECBIT_B/helper.sh"
+chmod +x "$EXECBIT_A/helper.sh"
+chmod -x "$EXECBIT_B/helper.sh"
+
+OUT=$(bb "$SWARMFORGE_BB" --test-scripts-mirror-matches "$EXECBIT_A" "$EXECBIT_B"); RC=$?
+check "case9: identical content, differing exec bit -> exit code" 1 "$RC"
+check "case9: identical content, differing exec bit -> output" "MISMATCH" "$OUT"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
