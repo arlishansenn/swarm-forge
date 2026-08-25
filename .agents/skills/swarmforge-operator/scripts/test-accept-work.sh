@@ -106,27 +106,49 @@ mk_roles() {
   done
 }
 
-# mk_completed <worktree|-> <filename> <task> <commit> <age-seconds-or-ts> [type]
+# mk_completed <worktree|-> <filename> <task> <commit> <age-seconds-or-ts>
+#              [type] [from] [to] [non-forwarding]
 # 5th arg is either a bare integer (seconds ago, passed through ts()) or an
 # already-formatted ISO8601 timestamp (contains "T") for callers that need
 # an exact string (e.g. a real fractional-second fixture, or a forced tie).
 # 6th arg (issue #39) is the record's `type:` header, defaulting to
 # git_handoff — the only type the terminal-handoff report now accepts.
+#
+# 7th/8th/9th (issue #39 terminal criterion): every real handoff carries
+# from:/to:, and the report uses them to tell a terminal return from an
+# intermediate hop the master merged and closed. `from` defaults to a sender
+# that is deliberately NOT a pack role, and `to` then defaults to every role in
+# roles.tsv — a terminal shape, which is what nearly every case here is
+# fixturing. Pass from/to explicitly to build a non-terminal record.
+#
+# `non-forwarding` is emitted last on purpose: handoffd.bb's render-message
+# does not list it in its `preferred` key order, so on a real delivered file it
+# sorts after completed_at. A fixture that put it early would not exercise the
+# same read path the live artifact needs.
 mk_completed() {
   local dir=$ROOT/.swarmforge/handoffs/inbox/completed
   [ "$1" = - ] || { dir=$ROOT/.worktrees/$1/.swarmforge/handoffs/inbox/completed; mkdir -p "$dir"; }
   local when=$5
   case $when in *T*) : ;; *) when=$(ts "$when") ;; esac
   local type=${6:-git_handoff}
+  local from=${7:-outside-sender}
+  local to=${8:-}
+  local nonfwd=${9:-}
+  if [ -z "$to" ]; then
+    to=$(awk -F'\t' 'NF { print $1 }' "$ROOT/.swarmforge/roles.tsv" \
+      | grep -vxF "$from" | paste -sd, - || true)
+  fi
   cat > "$dir/$2" <<EOF
 id: x
+from: $from
+to: $to
 type: $type
 task: $3
 commit: $4
 completed_at: $when
-
-body
 EOF
+  [ -n "$nonfwd" ] && printf 'non-forwarding: %s\n' "$nonfwd" >> "$dir/$2"
+  printf '\nbody\n' >> "$dir/$2"
 }
 # mk_completed_raw <worktree|-> <filename> <raw-content> — for missing-field
 # WARN fixtures where mk_completed's fixed field set can't express "commit
@@ -517,6 +539,124 @@ printf '%s\n' "$OUT" | grep -q '^WARN=1 handoffs are stuck in inbox/new in clean
 printf '%s\n' "$OUT" | grep -q '^commit: 4444444409$' \
   && ok "coexist: master completed record still reported" \
   || bad "coexist: master completed record still reported" "$OUT"
+
+# 20. the core regression the terminal criterion exists for (issue #39, after
+#     docs/research/upstream-task-completion-protocol.md corrected the ticket's
+#     own premise): the master completes NON-terminal inbound handoffs too.
+#     They carry task/commit/completed_at and sit in the same
+#     inbox/completed/, so the old three-field test called them delivery
+#     records. Here `architect → coder` is one hop of a four-pack chain: `to:`
+#     names one role but NOT every other role, and there is no non-forwarding
+#     stamp. It must not be reported, while the real terminal return in the
+#     same directory still is.
+reset_fixture; reset_stub
+mk_roles coder master "$ROOT" \
+  architect architect "$ROOT/.worktrees/architect" \
+  cleaner cleaner "$ROOT/.worktrees/cleaner"
+mk_completed - 00_hop.handoff hop-task 9999999901 100 git_handoff architect coder
+mk_completed - 01_terminal.handoff term-task 8888888802 50 git_handoff cleaner "architect,coder"
+run
+check "non-terminal exit" 0 "$RC"
+! printf '%s\n' "$OUT" | grep -q '9999999901' \
+  && ok "non-terminal: master's own intermediate hop NOT reported" \
+  || bad "non-terminal: master's own intermediate hop NOT reported" "$OUT"
+printf '%s\n' "$OUT" | grep -q '^commit: 8888888802$' \
+  && ok "non-terminal: the real terminal return still reported" \
+  || bad "non-terminal: the real terminal return still reported" "$OUT"
+! printf '%s\n' "$OUT" | grep -q '^WARN=.*00_hop' \
+  && ok "non-terminal: skipped quietly, not WARNed as malformed" \
+  || bad "non-terminal: skipped quietly, not WARNed as malformed" "$OUT"
+
+# 21. terminal signal 1 — the non-forwarding stamp. `to:` here names a single
+#     role and is NOT the full every-other-role set, so the legacy path below
+#     would reject it; only the stamp can make this terminal. Proves the two
+#     signals are independent, and that the stamp is still read even though
+#     render-message emits it after completed_at.
+reset_fixture; reset_stub
+mk_roles coder master "$ROOT" \
+  architect architect "$ROOT/.worktrees/architect" \
+  cleaner cleaner "$ROOT/.worktrees/cleaner"
+mk_completed - 00_stamped.handoff stamped-task 7777777703 50 git_handoff cleaner coder true
+run
+check "non-forwarding exit" 0 "$RC"
+printf '%s\n' "$OUT" | grep -q '^commit: 7777777703$' \
+  && ok "non-forwarding: stamped record reported even without the full to: set" \
+  || bad "non-forwarding: stamped record reported even without the full to: set" "$OUT"
+
+# 22. terminal signal 2 — the legacy compatibility path, on the shape that
+#     makes it matter: a two-pack `cleaner → coder`. "Every role except
+#     cleaner" is just `coder`, so the terminal return has exactly ONE
+#     recipient. A count-based check ("more than one recipient means
+#     terminal") reports nothing here; set equality reports it. This is the
+#     difference the ticket calls out, so it gets its own case.
+reset_fixture; reset_stub
+mk_roles coder master "$ROOT" cleaner cleaner "$ROOT/.worktrees/cleaner"
+mk_completed - 00_legacy.handoff legacy-task 6666666604 50 git_handoff cleaner coder
+run
+check "legacy set-equality exit" 0 "$RC"
+printf '%s\n' "$OUT" | grep -q '^commit: 6666666604$' \
+  && ok "legacy path: single-recipient two-pack return is terminal by set equality" \
+  || bad "legacy path: single-recipient two-pack return is terminal by set equality" "$OUT"
+
+# mk_board <task> <lane> [<task> <lane> ...] — .swarmforge/board/tasks.tsv in
+# pack_board.bb's shape: name, lane, created_at, updated_at.
+mk_board() {
+  mkdir -p "$ROOT/.swarmforge/board"
+  : > "$ROOT/.swarmforge/board/tasks.tsv"
+  while [ $# -gt 0 ]; do
+    printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(ts 999)" "$(ts 10)" \
+      >> "$ROOT/.swarmforge/board/tasks.tsv"
+    shift 2
+  done
+}
+
+# 23. Board cross-check, agreeing: the card is in done, so the report stays
+#     quiet. A WARN that fires on the healthy path is a WARN nobody reads.
+reset_fixture; reset_stub
+mk_roles coder master "$ROOT" cleaner cleaner "$ROOT/.worktrees/cleaner"
+mk_board board-task done
+mk_completed - 00_t.handoff board-task 5555555511 50 git_handoff cleaner coder
+run
+check "board agree exit" 0 "$RC"
+printf '%s\n' "$OUT" | grep -q '^commit: 5555555511$' \
+  && ok "board agree: record reported" || bad "board agree: record reported" "$OUT"
+! printf '%s\n' "$OUT" | grep -q '^WARN=board-task' \
+  && ok "board agree: no WARN on the healthy path" \
+  || bad "board agree: no WARN on the healthy path" "$OUT"
+
+# 24. Board cross-check, disagreeing: the handoff is terminal but the card is
+#     still in a role lane. That is worth saying out loud — and it must NOT
+#     suppress the record, because the Board is corroboration, not the judge
+#     (handoffd writes `done` at delivery time, before the master processes it).
+reset_fixture; reset_stub
+mk_roles coder master "$ROOT" cleaner cleaner "$ROOT/.worktrees/cleaner"
+mk_board board-task coder
+mk_completed - 00_t.handoff board-task 5555555512 50 git_handoff cleaner coder
+run
+check "board disagree exit" 0 "$RC"
+printf '%s\n' "$OUT" | grep -q '^WARN=board-task is in Board lane coder, not done' \
+  && ok "board disagree: WARNs about the lane" \
+  || bad "board disagree: WARNs about the lane" "$OUT"
+printf '%s\n' "$OUT" | grep -q '^commit: 5555555512$' \
+  && ok "board disagree: record still reported, WARN does not suppress it" \
+  || bad "board disagree: record still reported, WARN does not suppress it" "$OUT"
+
+# 25. no Board at all (legacy/non-dashboard intake): still reportable, but the
+#     report says so rather than pretending the cross-check happened. Also
+#     covers the multi-card case the ticket calls out — handoffd's
+#     terminal-task-names can mark several cards done in one delivery, so each
+#     reported task is looked up on its own, never assumed one-per-delivery.
+reset_fixture; reset_stub
+mk_roles coder master "$ROOT" cleaner cleaner "$ROOT/.worktrees/cleaner"
+mk_completed - 00_a.handoff no-board-a 5555555513 60 git_handoff cleaner coder
+mk_completed - 00_b.handoff no-board-b 5555555514 50 git_handoff cleaner coder
+run
+check "no-board exit" 0 "$RC"
+printf '%s\n' "$OUT" | grep -q '^WARN=no Board at ' \
+  && ok "no-board: report says the cross-check did not happen" \
+  || bad "no-board: report says the cross-check did not happen" "$OUT"
+N=$(printf '%s\n' "$OUT" | grep -c '^task: no-board-')
+check "no-board: both tasks still reported" 2 "$N"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

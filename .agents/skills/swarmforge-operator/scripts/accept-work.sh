@@ -124,9 +124,17 @@ list_headers() { # $1 = completed|new|in_process
 # second call site touching that shared function's signature/behavior would
 # risk that unrelated scan for a change that has nothing to do with it. A
 # thin sibling function is the smaller, safer diff.
+#
+# Reads the whole header block (up to the blank line) rather than list_headers'
+# fixed first 15 lines. `non-forwarding` is not in render-message's `preferred`
+# key order in handoffd.bb, so it is emitted after completed_at — on a delivered
+# git_handoff that lands on line 15 exactly, with zero margin. One more header
+# sorting before it (`remaining` is sorted alphabetically) would push it out of
+# a 15-line window and the terminal check below would silently read false,
+# dropping the very delivery record this verb exists to report.
 list_master_completed() {
   local cmd
-  cmd="find '$MASTER_PATH/.swarmforge/handoffs/inbox/completed' -name '*.handoff' 2>/dev/null | sort | while IFS= read -r f; do printf '===FILE %s===\n' \"\$f\"; sed -n '1,15p' \"\$f\"; done"
+  cmd="find '$MASTER_PATH/.swarmforge/handoffs/inbox/completed' -name '*.handoff' 2>/dev/null | sort | while IFS= read -r f; do printf '===FILE %s===\n' \"\$f\"; sed -n '/^\$/q;p' \"\$f\"; done"
   run_remote "$cmd" || true
 }
 
@@ -160,13 +168,14 @@ parse_handoff_blocks() {
         split(rest, parts, "/")
         wt = parts[1]
       }
-      print wt, cur, task, commit, completed_at, enqueued_at, dequeued_at, type
+      print wt, cur, task, commit, completed_at, enqueued_at, dequeued_at, type, from, to, nonfwd
     }
     /^===FILE / {
       flush()
       cur = $0
       sub(/^===FILE /, "", cur); sub(/===$/, "", cur)
       task=""; commit=""; completed_at=""; enqueued_at=""; dequeued_at=""; type=""
+      from=""; to=""; nonfwd=""
       next
     }
     cur == "" { next }
@@ -176,6 +185,9 @@ parse_handoff_blocks() {
     /^enqueued_at:/  { sub(/^enqueued_at:[ \t]*/, "");  enqueued_at=$0;  next }
     /^dequeued_at:/  { sub(/^dequeued_at:[ \t]*/, "");  dequeued_at=$0;  next }
     /^type:/         { sub(/^type:[ \t]*/, "");         type=$0;         next }
+    /^from:/         { sub(/^from:[ \t]*/, "");         from=$0;         next }
+    /^to:/           { sub(/^to:[ \t]*/, "");           to=$0;           next }
+    /^non-forwarding:/ { sub(/^non-forwarding:[ \t]*/, ""); nonfwd=$0;   next }
     END { flush() }
   '
 }
@@ -232,6 +244,41 @@ INPROCESS_WARN=$(stale_counts in_process 7 "$STALE_INPROCESS_SECONDS" "claimed b
 # separate, preserved concern.
 COMPLETED_ROWS=$(list_master_completed | parse_handoff_blocks)
 
+# ---------- terminal criterion (issue #39, corrected by
+# docs/research/upstream-task-completion-protocol.md) ----------
+# task/commit/completed_at only prove "this recipient merged the work and
+# closed its queue item". The master completes non-terminal inbound handoffs
+# too, and those carry all three fields and sit in the same inbox/completed/.
+# Terminal is a property of the SENDING event, and there are two signals:
+#
+#   1. non-forwarding: true — swarm_handoff.bb stamps it when the sender is the
+#      pack's last role. It is also enforced: holding a stamped inbound handoff
+#      makes swarm_handoff.sh refuse to send another git_handoff.
+#   2. the `to:` recipient SET equals every role except the sender — the
+#      compatibility path for records written before the stamp existed.
+#
+# (2) is set equality, NOT a recipient count. In a two-pack "every role except
+# cleaner" is just `coder`, so a terminal return looks like a single recipient
+# and a count-based check would miss it — that is the bug this replaces.
+ALL_ROLES=$(printf '%s\n' "$ROLES" | awk -F'\t' 'NF { print $1 }' | grep -v '^$' || true)
+
+# Sorted, de-duplicated, comma-joined — so the two sides compare as sets and
+# not as whatever order the sender happened to write `to:` in.
+as_role_set() {
+  printf '%s\n' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+    | grep -v '^$' | sort -u | paste -sd, - || true
+}
+
+terminal_handoff() { # $1=from $2=to $3=non-forwarding
+  local from=$1 to=$2 nonfwd=$3 expected actual
+  if [ "$nonfwd" = true ]; then return 0; fi
+  if [ -z "$from" ] || [ -z "$to" ]; then return 1; fi
+  expected=$(as_role_set "$(printf '%s\n' "$ALL_ROLES" | grep -vxF "$from" || true)")
+  actual=$(as_role_set "$to")
+  if [ -z "$expected" ] || [ -z "$actual" ]; then return 1; fi
+  [ "$expected" = "$actual" ]
+}
+
 # Field validation (issue #39): a record must be `type: git_handoff` with
 # non-empty task/commit/completed_at to be a delivery-record candidate.
 # Anything short of that is reported via WARN= naming the missing field(s),
@@ -244,7 +291,7 @@ COMPLETED_ROWS=$(list_master_completed | parse_handoff_blocks)
 # dedup, without a second list_master_completed/parse_handoff_blocks call.
 FILTERED=$(
   [ -n "$COMPLETED_ROWS" ] || exit 0
-  while IFS=$'\x1f' read -r wt file task commit completed_at _enq _deq type; do
+  while IFS=$'\x1f' read -r wt file task commit completed_at _enq _deq type from to nonfwd; do
     [ -n "$file" ] || continue
     missing=""
     [ "$type" = git_handoff ] || missing="${missing}type: git_handoff, "
@@ -253,6 +300,14 @@ FILTERED=$(
     [ -n "$completed_at" ] || missing="${missing}completed_at, "
     if [ -n "$missing" ]; then
       printf 'WARN=%s missing %s — not reported as a delivery record\n' "$file" "${missing%, }"
+      continue
+    fi
+    # A well-formed non-terminal record is not uncertain, it is simply an
+    # intermediate hop the master merged and closed. Skipping it quietly is
+    # deliberate: WARNing here would print a line on every ordinary run, and a
+    # warning that is always true gets ignored. The WARN= lines above stay
+    # reserved for records that are malformed.
+    if ! terminal_handoff "$from" "$to" "$nonfwd"; then
       continue
     fi
     printf 'ROW\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$wt" "$file" "$task" "$commit" "$completed_at" "$type"
@@ -315,10 +370,33 @@ if [ -n "$VALID_ROWS" ]; then
   ' | LC_ALL=C sort)
 fi
 
+# ---------- Board cross-check (issue #39) ----------
+# The Board is corroboration, never the judge. handoffd writes a card to `done`
+# at the moment it DELIVERS a terminal-shaped handoff — before any recipient has
+# touched it — so `done` proves "the daemon read this delivery as terminal", not
+# "the master processed it". The same principle handoff-reconciliation-standards
+# already settled: a file moving between queue directories is the authoritative
+# confirmation, a Board lane is not. So a disagreement here WARNs and the record
+# is still reported; it never suppresses one.
+#
+# Nothing here assumes one delivery maps to one task name: handoffd's
+# terminal-task-names can mark several cards done in a single delivery, so each
+# reported task is looked up on its own.
+BOARD_FILE="$ROOT/.swarmforge/board/tasks.tsv"
+BOARD=$(run_remote "cat '$BOARD_FILE' 2>/dev/null" || true)
+
+board_lane() { # $1 = task name -> its lane, or empty if the card is absent
+  printf '%s\n' "$BOARD" | awk -F'\t' -v t="$1" '$1 == t { print $2; exit }'
+}
+
 printf 'STATUS=REPORTED\n'
 [ -n "$NEW_WARN" ] && printf '%s\n' "$NEW_WARN"
 [ -n "$INPROCESS_WARN" ] && printf '%s\n' "$INPROCESS_WARN"
 [ -n "$FIELD_WARN" ] && printf '%s\n' "$FIELD_WARN"
+if [ -z "$BOARD" ] && [ -n "$DEDUPED" ]; then
+  printf 'WARN=no Board at %s — reporting from terminal handoffs alone (legacy/non-dashboard intake)\n' \
+    "$BOARD_FILE"
+fi
 
 if [ -n "$DEDUPED" ]; then
   while IFS=$'\x1f' read -r _wt _file task commit completed_at _type; do
@@ -331,6 +409,14 @@ if [ -n "$DEDUPED" ]; then
     # never silently drop a task because the ancestor check itself failed.
     if [ -n "$commit" ] && git_merge_base_ancestor "$commit" >/dev/null 2>&1; then
       continue
+    fi
+    if [ -n "$BOARD" ]; then
+      lane=$(board_lane "$task")
+      if [ -z "$lane" ]; then
+        printf 'WARN=%s has no Board card — reported from its terminal handoff alone\n' "$task"
+      elif [ "$lane" != done ]; then
+        printf 'WARN=%s is in Board lane %s, not done, but its handoff is terminal\n' "$task" "$lane"
+      fi
     fi
     printf 'task: %s\ncommit: %s\ncompleted_at: %s\n\n' "$task" "$commit" "$completed_at"
   done <<< "$DEDUPED"

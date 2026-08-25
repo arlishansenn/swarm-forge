@@ -467,6 +467,28 @@ file there too, and reporting that one as the result named the wrong
 on master differs per pack (`coder` in two-pack, `specifier` in four-pack).
 It requires exactly one such row and refuses to guess.
 
+Being in master's `completed/` is necessary but not sufficient. The master also
+completes **non-terminal** inbound handoffs — an intermediate hop it merged and
+closed carries `task`/`commit`/`completed_at` too, and sits in the same
+directory. Terminal is a property of the sending event, and the script accepts
+either signal:
+
+- `non-forwarding: true` — stamped by `swarm_handoff.bb` when the sender is the
+  pack's last role, and enforced there too: holding a stamped inbound handoff
+  makes `swarm_handoff.sh` refuse to send another `git_handoff`.
+- the `to:` recipient **set** equals every role but the sender — the
+  compatibility path for records written before the stamp existed.
+
+That second one is set equality, not a recipient count. A two-pack's terminal
+`cleaner → coder` return has exactly one recipient, because "every role except
+cleaner" is just `coder`; counting recipients misses it.
+
+The Board is cross-checked but never decides. `handoffd` moves a card to `done`
+when it **delivers** a terminal-shaped handoff, before any recipient has
+processed it, so a lane disagreement is reported as a `WARN=` and the record is
+still printed. With no Board at all the report says so and falls back to the
+handoffs alone.
+
 Run the bundled script; it reports the terminal handoff per task from the
 master worktree, and also closes a real gap (issue #17): a handoff stuck
 in `inbox/new` — delivered but never claimed, the chain is broken — used to
