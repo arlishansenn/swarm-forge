@@ -73,10 +73,20 @@ fi
 # edit scoped to the ARCHIVE_URL= line so it can't touch anything else the
 # file happens to say, and the ${SWARMFORGE_SCRIPTS_URL:-...} wrapper around
 # it is untouched since only the text inside the default is replaced.
+#
+# cat into the existing inode, not `mv`, so the launcher's mode and owner
+# survive the rewrite. `mv` from mktemp carries the temp file's 0600 across and
+# leaves an unexecutable launcher while STATUS=ONBOARDED still says success
+# (issue #33; update-swarmforge-scripts.sh already writes it this way).
+#
+# ADR-0002 makes this whole rewrite obsolete: the fork's Pack branch will ship a
+# launcher already pointing here, and onboard will install the archive as-is.
+# Delete this block with issue #38, not before.
 remote "if [ -f '$ROOT/swarm' ]; then
   t=\$(mktemp)
   sed '/^ARCHIVE_URL=/s#unclebob/swarm-forge#arlishansenn/swarm-forge#' '$ROOT/swarm' > \"\$t\"
-  mv \"\$t\" '$ROOT/swarm'
+  cat \"\$t\" > '$ROOT/swarm'
+  rm -f \"\$t\"
 fi"
 
 printf 'STATUS=ONBOARDED\n'

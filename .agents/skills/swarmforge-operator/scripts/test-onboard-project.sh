@@ -21,6 +21,9 @@ cat > "$WORK/src/pack-root/swarm" <<'EOF'
 MAIN_BRANCH="${SWARMFORGE_SCRIPTS_BRANCH:-main}"
 ARCHIVE_URL="${SWARMFORGE_SCRIPTS_URL:-https://github.com/unclebob/swarm-forge/archive/refs/heads/${MAIN_BRANCH}.tar.gz}"
 EOF
+# The real pack ships the launcher executable. Without this chmod the mode
+# assertion below would pass against a 0644 fixture and prove nothing.
+chmod 755 "$WORK/src/pack-root/swarm"
 echo 'roles' > "$WORK/src/pack-root/swarmforge/roles.txt"
 tar -czf "$WORK/pack.tgz" -C "$WORK/src" pack-root
 
@@ -50,6 +53,14 @@ check "ARCHIVE_URL rewritten to fork, override structure intact" \
 check "MAIN_BRANCH line untouched" \
   'MAIN_BRANCH="${SWARMFORGE_SCRIPTS_BRANCH:-main}"' \
   "$(grep '^MAIN_BRANCH=' "$T/swarm")"
+# The rewrite must edit the launcher in place. Replacing it with a mktemp file
+# carries 0600 across, and STATUS=ONBOARDED then reports success over a launcher
+# nobody can run (issue #33).
+[ -x "$T/swarm" ] && ok "launcher still executable after rewrite" \
+  || bad "launcher still executable after rewrite" \
+    "$(stat -f '%Lp' "$T/swarm" 2>/dev/null || stat -c '%a' "$T/swarm")"
+check "launcher mode preserved" "755" \
+  "$(stat -f '%Lp' "$T/swarm" 2>/dev/null || stat -c '%a' "$T/swarm")"
 check "stdout has no WARN" "no" "$(echo "$out" | grep -q '^WARN=' && echo yes || echo no)"
 
 # 2. main is refused
