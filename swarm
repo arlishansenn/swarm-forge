@@ -1,29 +1,115 @@
 #!/usr/bin/env bash
+# swarm — this Pack's launcher. Owns first-run Script snapshot bootstrap
+# (issue #35) and then hands off to the installed swarmforge.sh.
+#
+# The snapshot comes from THIS fork, not upstream (ADR 0001): the fork's
+# handoffd fixes — level reconciliation for unclaimed handoffs, the wake retry
+# ladder, alert-on-exhausted-cap, and resolving inboxes from roles.tsv instead
+# of the process cwd — live only here. A project bootstrapped from upstream
+# gets a snapshot whose handoff chain stalls silently.
+#
+# Nothing rewrites this file after extraction any more (issue #38). It ships
+# already pointing at the fork, so its executable mode survives onboarding.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_BRANCH="${SWARMFORGE_SCRIPTS_BRANCH:-main}"
-ARCHIVE_URL="${SWARMFORGE_SCRIPTS_URL:-https://github.com/unclebob/swarm-forge/archive/refs/heads/${MAIN_BRANCH}.tar.gz}"
-TMP_DIR=""
+ARCHIVE_URL="${SWARMFORGE_SCRIPTS_URL:-https://github.com/arlishansenn/swarm-forge/archive/refs/heads/${MAIN_BRANCH}.tar.gz}"
 
+FORGE_DIR="$SCRIPT_DIR/swarmforge"
+SCRIPTS_DIR="$FORGE_DIR/scripts"
+STATE_DIR="$SCRIPT_DIR/.swarmforge"
+MANIFEST="$STATE_DIR/scripts-manifest"
+
+TMP_DIR=""
+STAGING=""
+DISPLACED=""
+
+# Bootstrap must be all-or-nothing (issue #35). Upstream's launcher did
+# `rm -rf` on the destination and then `cp -R` into it, so a kill in the middle
+# left a genuinely half-installed tree that the next run would treat as
+# present. Everything below is built in a staging directory that is a SIBLING
+# of the destination — same filesystem, so the swap is a rename, not a copy —
+# and this trap removes the staging tree and puts back the displaced one if we
+# do not reach the end.
 cleanup() {
-  if [[ -n "$TMP_DIR" ]]; then
-    rm -rf "$TMP_DIR"
+  local rc=$?
+  [ -n "$TMP_DIR" ] && rm -rf "$TMP_DIR"
+  [ -n "$STAGING" ] && [ -d "$STAGING" ] && rm -rf "$STAGING"
+  if [ "$rc" != 0 ] && [ -n "$DISPLACED" ] && [ -d "$DISPLACED" ]; then
+    rm -rf "$SCRIPTS_DIR"
+    mv "$DISPLACED" "$SCRIPTS_DIR"
   fi
+  [ -n "$DISPLACED" ] && [ -d "$DISPLACED" ] && rm -rf "$DISPLACED"
+  return $rc
 }
 trap cleanup EXIT
 
-if [[ ! -d "$SCRIPT_DIR/swarmforge/scripts" || ! -d "$SCRIPT_DIR/swarmforge/scripts/shared-articles" ]]; then
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$@" | awk '{print $1}'
+  else
+    shasum -a 256 "$@" | awk '{print $1}'
+  fi
+}
+
+# Byte-for-byte the same digest `start swarm` recomputes (scripts_digest in
+# the operator skill's lib-wake-talk.sh): one "<relative-path> <x-or-dash>
+# <sha256>" line per regular file, sorted, hashed as a whole. This is a second,
+# from-scratch implementation of that function, not shared code — the launcher
+# ships inside Pack branches and is fetched by curl, so it cannot source the
+# operator skill. If one side ever changes, the first `start swarm` after a
+# bootstrap reports DRIFT; that is the symptom to look for.
+scripts_digest() {
+  local dir=${1%/} f rel x
+  { find "$dir" -type f 2>/dev/null || true; } | LC_ALL=C sort | while IFS= read -r f; do
+    rel=${f#"$dir"/}
+    [ -x "$f" ] && x=x || x=-
+    printf '%s %s %s\n' "$rel" "$x" "$(sha256_hex "$f")"
+  done | sha256_hex || true
+}
+
+if [[ ! -d "$SCRIPTS_DIR" || ! -d "$SCRIPTS_DIR/shared-articles" || ! -f "$MANIFEST" ]]; then
   TMP_DIR="$(mktemp -d)"
-  mkdir -p "$SCRIPT_DIR/swarmforge"
-  curl -L "$ARCHIVE_URL" | tar -xz --strip-components=1 -C "$TMP_DIR"
-  if [[ ! -d "$SCRIPT_DIR/swarmforge/scripts" ]]; then
-    cp -R "$TMP_DIR/swarmforge/scripts" "$SCRIPT_DIR/swarmforge/scripts"
+  mkdir -p "$FORGE_DIR"
+  curl -fL "$ARCHIVE_URL" | tar -xz --strip-components=1 -C "$TMP_DIR"
+
+  if [ ! -d "$TMP_DIR/swarmforge/scripts" ]; then
+    echo "swarm: downloaded archive has no swarmforge/scripts — refusing to install" >&2
+    exit 1
   fi
-  if [[ -d "$TMP_DIR/swarmforge/constitution/articles" ]]; then
-    mkdir -p "$SCRIPT_DIR/swarmforge/scripts/shared-articles"
-    cp -R "$TMP_DIR/swarmforge/constitution/articles/." "$SCRIPT_DIR/swarmforge/scripts/shared-articles/"
+
+  # Assemble the complete launch-ready tree in staging: helpers and terminal
+  # adapters from the archive, plus the shared constitution articles the roles
+  # read. Only a tree that has everything ever becomes the destination.
+  STAGING="$FORGE_DIR/.scripts.staging.$$"
+  rm -rf "$STAGING"
+  cp -R "$TMP_DIR/swarmforge/scripts" "$STAGING"
+  if [ -d "$TMP_DIR/swarmforge/constitution/articles" ]; then
+    mkdir -p "$STAGING/shared-articles"
+    cp -R "$TMP_DIR/swarmforge/constitution/articles/." "$STAGING/shared-articles/"
   fi
+
+  # Swap. The destination usually does not exist on a first run, but it can:
+  # the trigger above also fires when scripts/ is present yet shared-articles/
+  # or the manifest is missing. A directory cannot be replaced in one rename
+  # when something is already there, so the old tree is moved aside first and
+  # only deleted once the new one is in place.
+  if [ -d "$SCRIPTS_DIR" ]; then
+    DISPLACED="$FORGE_DIR/.scripts.displaced.$$"
+    rm -rf "$DISPLACED"
+    mv "$SCRIPTS_DIR" "$DISPLACED"
+  fi
+  mv "$STAGING" "$SCRIPTS_DIR"
+  STAGING=""
+
+  # Manifest last, never interleaved with the install. A crash can then only
+  # produce "snapshot fully installed, manifest not yet written" — the
+  # Incomplete state `start swarm` already reports as DRIFT — and never a torn
+  # tree that looks complete.
+  mkdir -p "$STATE_DIR"
+  printf 'SOURCE_COMMIT=%s\nSOURCE_REPO=%s\nDIGEST=%s\n' \
+    unknown "$ARCHIVE_URL" "$(scripts_digest "$SCRIPTS_DIR")" > "$MANIFEST"
 fi
 
-exec "$SCRIPT_DIR/swarmforge/scripts/swarmforge.sh" "$@"
+exec "$SCRIPTS_DIR/swarmforge.sh" "$@"
