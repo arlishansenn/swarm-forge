@@ -76,6 +76,31 @@ run_remote() {
 run_remote "test -d '$ROOT/.swarmforge/handoffs'" \
   || die ERROR "$ROOT/.swarmforge/handoffs not found — check --root/--target/--local" 5
 
+# Resolve the master worktree (issue #39): the terminal-handoff report must
+# read ONLY the master Role's own inbox/completed/, never infer delivery
+# from another worktree's copy of a handoff. roles.tsv's 7 tab-separated
+# columns are role, worktree-name, worktree-path, session, display-name,
+# agent, receive-mode (write-roles-file! in swarmforge.bb) — master is
+# whichever row has worktree-name (column 2) literally "master", never the
+# role name itself (role names differ per pack: coder/specifier/...), same
+# $2=="master" judgment open-swarm.sh already uses for its own MASTER_N/
+# MASTER_SESSION lookup. swarmforge.bb's require-master-worktree! guarantees
+# exactly one master row at launch time, but that's a launch-time guarantee
+# over parsed config — this script reads the already-on-disk roles.tsv, a
+# separate artifact, so it re-validates rather than assuming the guarantee
+# still holds.
+ROLES=$(read_file .swarmforge/roles.tsv 2>/dev/null) \
+  || die ERROR "$ROOT/.swarmforge/roles.tsv not found — cannot resolve the master worktree" 5
+MASTER_N=$(printf '%s\n' "$ROLES" | awk -F'\t' '$2 == "master"' | wc -l | tr -d ' ')
+[ "$MASTER_N" = 1 ] || die ERROR \
+  "$ROOT/.swarmforge/roles.tsv has $MASTER_N rows with worktree-name == master (need exactly 1) — refusing to guess" 5
+# Column 3 (worktree-path): for the literal "master" worktree-name,
+# swarmforge.bb's special-worktree? logic always resolves this to the
+# project root itself, but that mapping lives in swarmforge.bb, not here —
+# use whatever column 3 says rather than special-casing "master path ==
+# $ROOT" a second time in this script.
+MASTER_PATH=$(printf '%s\n' "$ROLES" | awk -F'\t' '$2 == "master" {print $3}')
+
 # list_headers <subdir> — finds every *.handoff file under the project-root
 # inbox and every worktree inbox for that subdir (completed|new|in_process),
 # same glob the existing manual command used (no roles.tsv lookup: a
@@ -90,16 +115,36 @@ list_headers() { # $1 = completed|new|in_process
   run_remote "$cmd" || true
 }
 
+# list_master_completed — same header-streaming shape as list_headers, but
+# scoped to exactly $MASTER_PATH's own inbox/completed (issue #39). Kept as
+# a separate function rather than adding a "single directory" parameter to
+# list_headers: stale_counts below still needs list_headers' broad
+# every-worktree glob for its inbox/new and inbox/in_process WARN scan
+# (issue #17, explicitly preserved by this change — see file header), and a
+# second call site touching that shared function's signature/behavior would
+# risk that unrelated scan for a change that has nothing to do with it. A
+# thin sibling function is the smaller, safer diff.
+list_master_completed() {
+  local cmd
+  cmd="find '$MASTER_PATH/.swarmforge/handoffs/inbox/completed' -name '*.handoff' 2>/dev/null | sort | while IFS= read -r f; do printf '===FILE %s===\n' \"\$f\"; sed -n '1,15p' \"\$f\"; done"
+  run_remote "$cmd" || true
+}
+
 # parse_handoff_blocks — reads list_headers' `===FILE ...===` stream on stdin
 # and prints one row per file: worktree, file, task, commit, completed_at,
-# enqueued_at, dequeued_at (missing headers print empty), joined with ASCII
-# unit separator (0x1F) rather than a tab. Several of these fields are
-# routinely empty (a "new" row has no commit/completed_at/dequeued_at at
+# enqueued_at, dequeued_at, type (missing headers print empty), joined with
+# ASCII unit separator (0x1F) rather than a tab. Several of these fields are
+# routinely empty (a "new" row has no commit/completed_at/dequeued_at/type at
 # all), and bash's `read` collapses RUNS of consecutive delimiters whenever
 # the delimiter is tab/space/newline regardless of what IFS is set to — empty
 # fields would silently disappear and shift every later column left. Unit
 # separator isn't in that "IFS whitespace" special class, so `read` splits on
 # it literally, one delimiter per field, same as awk's -F already does.
+# `type` (issue #39: the terminal-handoff report now only accepts
+# `type: git_handoff` records) is appended as the LAST field rather than
+# inserted alongside task/commit — stale_counts below reads this same row
+# shape by fixed column NUMBER (6 or 7, for enqueued_at/dequeued_at), and
+# appending keeps those positions unchanged instead of shifting them.
 # worktree is the directory basename under .worktrees/, or "master" for the
 # project root's own inbox — the same worktree-naming the pre-existing
 # completed-handoff command already relied on implicitly by listing the root
@@ -115,13 +160,13 @@ parse_handoff_blocks() {
         split(rest, parts, "/")
         wt = parts[1]
       }
-      print wt, cur, task, commit, completed_at, enqueued_at, dequeued_at
+      print wt, cur, task, commit, completed_at, enqueued_at, dequeued_at, type
     }
     /^===FILE / {
       flush()
       cur = $0
       sub(/^===FILE /, "", cur); sub(/===$/, "", cur)
-      task=""; commit=""; completed_at=""; enqueued_at=""; dequeued_at=""
+      task=""; commit=""; completed_at=""; enqueued_at=""; dequeued_at=""; type=""
       next
     }
     cur == "" { next }
@@ -130,6 +175,7 @@ parse_handoff_blocks() {
     /^completed_at:/ { sub(/^completed_at:[ \t]*/, ""); completed_at=$0; next }
     /^enqueued_at:/  { sub(/^enqueued_at:[ \t]*/, "");  enqueued_at=$0;  next }
     /^dequeued_at:/  { sub(/^dequeued_at:[ \t]*/, "");  dequeued_at=$0;  next }
+    /^type:/         { sub(/^type:[ \t]*/, "");         type=$0;         next }
     END { flush() }
   '
 }
@@ -154,7 +200,12 @@ stale_counts() {
   local rows w ts ep age stale=''
   rows=$(list_headers "$subdir" | parse_handoff_blocks)
   [ -n "$rows" ] || return 0
-  while IFS=$'\x1f' read -r f1 f2 f3 f4 f5 f6 f7; do
+  # 8 read vars, not 7: parse_handoff_blocks' row now ends with a type
+  # field (issue #39). Without an f8 to catch it, bash's `read` would fold
+  # the extra field (and its leading unit-separator byte) into f7 — the very
+  # column this loop reads as the timestamp for inbox/in_process — silently
+  # corrupting to_epoch's input. f8 itself is unused here.
+  while IFS=$'\x1f' read -r f1 f2 f3 f4 f5 f6 f7 f8; do
     [ -n "$f1" ] || continue
     w=$f1
     case $col in 6) ts=$f6 ;; 7) ts=$f7 ;; esac
@@ -171,28 +222,91 @@ stale_counts() {
 NEW_WARN=$(stale_counts new 6 "$STALE_NEW_SECONDS" "the chain is not moving")
 INPROCESS_WARN=$(stale_counts in_process 7 "$STALE_INPROCESS_SECONDS" "claimed but not finishing")
 
-# ---------- terminal-handoff report (the pre-existing manual logic) ----------
-# Newest-per-(worktree,task) dedup: list_headers already returns files in
-# sorted (chronological, since the filename leads with priority+timestamp)
-# order, so a plain "last write wins" awk fold keeps only the terminal
-# handoff for a task — the same "keep only the newest completed file for a
-# given task: per worktree" rule SKILL.md has always documented. The original
-# manual command piped through `tail` on top of `sort`, but that was a
-# human's quick-glance truncation to the last 10 lines, not part of the
-# dedup/exclusion logic itself — keeping it here would silently drop
-# not-yet-accepted tasks once more than 10 terminal handoffs exist, which is
-# exactly the kind of report gap this ticket exists to close.
-COMPLETED_ROWS=$(list_headers completed | parse_handoff_blocks)
-DEDUPED=$(printf '%s\n' "$COMPLETED_ROWS" \
-  | awk -v FS=$'\x1f' -v US=$'\x1f' '$1 != "" && $3 != "" {a[$1 US $3] = $0} END {for (k in a) print a[k]}' \
-  | sort)
+# ---------- terminal-handoff report (issue #39: master-only, not inferred
+# across worktrees) ----------
+# Only the master worktree's own inbox/completed/ is a delivery record — see
+# the file header and issue #39 for why scanning every worktree's completed/
+# to infer the terminal hop was the bug (an intermediate chain hop got
+# reported as the final result). stale_counts above is UNCHANGED and still
+# scans every worktree via list_headers — that WARN scan (issue #17) is a
+# separate, preserved concern.
+COMPLETED_ROWS=$(list_master_completed | parse_handoff_blocks)
+
+# Field validation (issue #39): a record must be `type: git_handoff` with
+# non-empty task/commit/completed_at to be a delivery-record candidate.
+# Anything short of that is reported via WARN= naming the missing field(s),
+# never silently dropped — the same "uncertain, so report it" philosophy
+# git_merge_base_ancestor's own comment documents for a failed ancestor
+# check (an error there means "not confirmed shipped", not "shipped"; here
+# it means "not confirmed a delivery record", not "not worth mentioning").
+# Emits one FILTERED line per completed file, tagged ROW or WARN so a single
+# pass can be split into the WARN= lines to print and the rows that go on to
+# dedup, without a second list_master_completed/parse_handoff_blocks call.
+FILTERED=$(
+  [ -n "$COMPLETED_ROWS" ] || exit 0
+  while IFS=$'\x1f' read -r wt file task commit completed_at _enq _deq type; do
+    [ -n "$file" ] || continue
+    missing=""
+    [ "$type" = git_handoff ] || missing="${missing}type: git_handoff, "
+    [ -n "$task" ] || missing="${missing}task, "
+    [ -n "$commit" ] || missing="${missing}commit, "
+    [ -n "$completed_at" ] || missing="${missing}completed_at, "
+    if [ -n "$missing" ]; then
+      printf 'WARN=%s missing %s — not reported as a delivery record\n' "$file" "${missing%, }"
+      continue
+    fi
+    printf 'ROW\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$wt" "$file" "$task" "$commit" "$completed_at" "$type"
+  done <<< "$COMPLETED_ROWS"
+)
+# `|| true` on both: under `set -o pipefail`, grep matching nothing (no
+# WARN lines, or no ROW lines — both normal, common outcomes) makes the
+# pipeline's exit status non-zero even though every other stage in it
+# succeeded, which would otherwise abort this whole `set -e` script.
+FIELD_WARN=$(printf '%s\n' "$FILTERED" | grep '^WARN=' || true)
+VALID_ROWS=$(printf '%s\n' "$FILTERED" | { grep '^ROW' || true; } | cut -d $'\x1f' -f2-)
+
+# Newest-per-task selection (issue #39). Primary judge is completed_at's RAW
+# STRING, not an epoch conversion: to_epoch() (still used unmodified by
+# stale_counts above) cannot parse this system's real fractional-second
+# timestamps on this exact platform (GNU `date -d` doesn't exist on BSD/
+# macOS; BSD `date -j -f '%Y-%m-%dT%H:%M:%SZ'` rejects the decimal point —
+# empirically reproduced here with the issue's own
+# `2026-08-24T17:26:56.932911Z`). Rather than patch a truncate-then-parse
+# epoch helper into this path, this sidesteps date parsing entirely: these
+# are fixed-width ISO8601 UTC strings from one producer (Instant/now()), so
+# byte-lexical order already equals chronological order, fractional seconds
+# included, with no epoch arithmetic needed at all — the "epoch only when
+# something needs arithmetic with another time" case never arises here.
+# ponytail: this assumes every completed_at being compared shares the same
+# width (all-fractional or all-whole) — true for this producer's real output
+# but not a general ISO8601 guarantee; pad/normalize widths if a producer
+# with mixed-width timestamps ever appears.
+# Only when two rows' completed_at strings are BYTE-IDENTICAL (the same
+# second, two terminal returns in a fast cleaner->coder loop) does this fall
+# back to filename lexical order — an explicit, declared LAST-RESORT
+# tie-break (filenames already carry a priority+timestamp prefix, this
+# codebase's existing convention for ordering same-second files), never the
+# primary judge.
+DEDUPED=""
+if [ -n "$VALID_ROWS" ]; then
+  DEDUPED=$(printf '%s\n' "$VALID_ROWS" | LC_ALL=C awk -v FS=$'\x1f' -v OFS=$'\x1f' '
+    $3 != "" {
+      k = $3
+      if (!(k in seen) || $5 > best[k] || ($5 == best[k] && $2 > bestfile[k])) {
+        seen[k] = 1; best[k] = $5; bestfile[k] = $2; row[k] = $0
+      }
+    }
+    END { for (k in row) print row[k] }
+  ' | LC_ALL=C sort)
+fi
 
 printf 'STATUS=REPORTED\n'
 [ -n "$NEW_WARN" ] && printf '%s\n' "$NEW_WARN"
 [ -n "$INPROCESS_WARN" ] && printf '%s\n' "$INPROCESS_WARN"
+[ -n "$FIELD_WARN" ] && printf '%s\n' "$FIELD_WARN"
 
 if [ -n "$DEDUPED" ]; then
-  while IFS=$'\x1f' read -r _wt _file task commit completed_at _enq _deq; do
+  while IFS=$'\x1f' read -r _wt _file task commit completed_at _type; do
     [ -n "$task" ] || continue
     # Exclude already-shipped tasks: a completed handoff whose commit is
     # already an ancestor of the MANAGED PROJECT's own origin/main (not

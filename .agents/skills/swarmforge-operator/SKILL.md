@@ -448,16 +448,27 @@ naming the backend for a mismatch.
 **Boundary:** a lost `talk role` message is a lost dispatch, not just a missed
 poke — the verified-submit step matters more here than for `wake role`. New
 work enters through the `master` row from `roles.tsv`; no role name such as
-`specifier` or `coder` is universally the intake role.
+`specifier` or `coder` is universally the intake role. Normal task intake is
+Dashboard New Task, not `talk role`: New Task creates the Board card and
+carries the stable task name all the way to the terminal handoff `accept
+work` reports (issue #39). `talk role` sends a behavior message to a running
+role — it never creates a Board task, and is not a substitute for New Task.
 
 ## Verb: `accept work`
 
-Human acceptance after the swarm finishes a task. The chain ends when the
-last recipient completes its inbound handoff; that completed file is the
-delivery record.
+Human acceptance after the swarm finishes a task. The chain ends when it
+returns to the **master** Role; the file in the master worktree's own
+`inbox/completed/` is the delivery record, and it is the only one (issue
+#39). Every other worktree's `completed/` holds intermediate hops of the same
+task — a chain passing through `cleaner` on its way back leaves a completed
+file there too, and reporting that one as the result named the wrong
+`commit:`. The script resolves master from `.swarmforge/roles.tsv` by
+**worktree-name (column 2) `== master`**, never by role name: which role sits
+on master differs per pack (`coder` in two-pack, `specifier` in four-pack).
+It requires exactly one such row and refuses to guess.
 
-Run the bundled script; it reports the terminal handoff per task the same way
-this verb always has, and also closes a real gap (issue #17): a handoff stuck
+Run the bundled script; it reports the terminal handoff per task from the
+master worktree, and also closes a real gap (issue #17): a handoff stuck
 in `inbox/new` — delivered but never claimed, the chain is broken — used to
 read identically to "no work finished yet," because the old manual command
 only ever looked at `inbox/completed`. Those two situations call for opposite
@@ -485,14 +496,30 @@ Exit codes / STATUS line:
   reported, not a verb failure.
 - `2` `USAGE` — missing `--root`.
 - `5` `ERROR` — `$ROOT/.swarmforge/handoffs` could not be found (wrong
-  `--root`/`--target`/`--local`, or the target is unreachable).
+  `--root`/`--target`/`--local`, or the target is unreachable); or
+  `$ROOT/.swarmforge/roles.tsv` is missing or does not have exactly one
+  `master` worktree row (the message carries the actual match count).
 
-**`WARN=` lines** report a backlog stuck long enough that it is not just
-normal in-transit delay, one line per affected worktree:
+**`WARN=` lines** come from two independent scans, and neither changes the
+exit code.
+
+A **stuck backlog**, one line per affected worktree — long enough that it is
+not just normal in-transit delay (issue #17; this scan still covers *every*
+worktree, unaffected by the master-only rule above, since a chain can stall
+at any hop):
 
 ```
 WARN=3 handoffs are stuck in inbox/new in cleaner — the chain is not moving
 WARN=1 handoffs are stuck in inbox/in_process in coder — claimed but not finishing
+```
+
+A **malformed completed record** in the master worktree — a delivery record
+must be `type: git_handoff` with non-empty `task`, `commit` and
+`completed_at`. A record short of that is named, not silently dropped (same
+"uncertain, so say so" rule the already-shipped check follows):
+
+```
+WARN=<file> missing commit — not reported as a delivery record
 ```
 
 Staleness is judged by each handoff's own header timestamp
@@ -515,9 +542,16 @@ Rules (unchanged from the manual command this replaces):
   git repository at `$ROOT` — not swarm-forge's — the same way `stop swarm`'s
   `git status` check runs against the project's own worktrees. A check that
   cannot be confirmed (bad commit, no `origin/main`) is treated as "not
-  shipped," never silently dropped. Also skip intermediate chain records (a
-  task appears once per hop); keep only the terminal handoff — the newest
-  completed file for a given `task:` per worktree.
+  shipped," never silently dropped.
+- **One record per task, the newest one on master.** Intermediate hops are
+  already excluded by reading only the master worktree; when master itself
+  holds several terminal returns for one `task:` (a re-run, a fast
+  `cleaner → coder` loop), the newest `completed_at:` wins. Ordering compares
+  the raw ISO8601 UTC string, so fractional seconds
+  (`2026-08-24T17:26:56.932911Z`) order correctly — `date` on macOS cannot
+  parse that shape at all. Byte-identical `completed_at:` falls back to
+  filename lexical order, a declared last-resort tie-break, so the result is
+  never undefined.
 - The handoff points at the commit only. The code itself is in git; verify
   with `git show --stat <commit>` or tests before opening the PR.
 - When opening the PR, carry the `task:` → issue mapping into the PR body

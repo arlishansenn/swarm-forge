@@ -345,7 +345,7 @@ If the backend cannot open sessions at all, set both capability functions to `re
 | `wake <role>` | 唤醒：注入 `ready_for_next.sh`，按 backend 编码提交后**验证真的被消费**，没提交成功报错并点名 backend 不匹配 |
 | `talk <role>` | 给指定角色发一条行为切片，同样验证送达且被提交，不是发了就算 |
 | `onboard project` | 把 upstream 的 two-pack/four-pack/six-pack 装进一个项目目录；拒绝 `main`，目标非空时零写入拒绝；改写 `ARCHIVE_URL` 默认值指向本 fork，装完不启动 |
-| `accept work` | 人工验收：读终端 handoff 报 `task`/`commit`；同时扫 `inbox/new`/`inbox/in_process` 的滞留，卡链了会 `WARN=` 报出来，不再跟"没活干"读起来一样 |
+| `accept work` | 人工验收：**只读 master worktree**（按 `roles.tsv` 第 2 列 `worktree-name == master` 定位，不认 role 名，不是恰好一条就报错）的终端 handoff 报 `task`/`commit`，别的 worktree 的中间跳不再被当成结果；缺字段的记录 `WARN=` 点名而不静默丢弃；同时扫 `inbox/new`/`inbox/in_process` 的滞留，卡链了会 `WARN=` 报出来，不再跟"没活干"读起来一样 |
 | `stop swarm` | 停机前先 preflight：有角色 `BUSY`/`UNKNOWN` 或 worktree 有未提交改动就拒绝停机（退出 6），全干净才走 `close-swarm`；`--force` 跳过 preflight 复现今天的裸停机 |
 
 默认远端是 `admin@100.64.0.4`，可用 `--target`/`--key` 覆盖；`--local` 改走本地文件系统。
