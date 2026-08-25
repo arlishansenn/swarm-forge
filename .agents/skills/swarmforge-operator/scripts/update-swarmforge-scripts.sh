@@ -89,7 +89,14 @@ if SOCK=$(read_file .swarmforge/tmux-socket 2>/dev/null); then
 fi
 
 # ---------- lock: exclude a concurrent start (issue #29) ----------
-if ! acquire_lock update; then
+# `|| LOCK_RC=$?` rather than a bare call: acquire_lock reports contention (1)
+# and a filesystem failure (2) through its exit status, and under `set -e` a
+# bare non-zero call would abort the script before the status could be read.
+LOCK_RC=0; acquire_lock update || LOCK_RC=$?
+if [ "$LOCK_RC" = 2 ]; then
+  die ERROR "cannot create $ROOT/.swarmforge to take the project lock — check the path and its permissions" 5
+fi
+if [ "$LOCK_RC" != 0 ]; then
   if [ "$FORCE" != 1 ]; then
     die UNSAFE "project lock held by '$LOCK_HOLDER' — wait, or re-run with --force to break a lock left by a dead process" 6
   fi
