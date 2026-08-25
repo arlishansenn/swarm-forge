@@ -350,6 +350,8 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 默认远端是 `admin@100.64.0.4`，可用 `--target`/`--key` 覆盖；`--local` 改走本地文件系统。
 
+`onboard project`/`start swarm`/`update SwarmForge scripts`/`accept work` 这四个 verb 正在按 issue #35、#38、#39 重构 fresh-bootstrap、drift-repair 与 delivery-report 三条路径，架构图见 [Onboard, Start, and Repair](https://claude.ai/code/artifact/f45abf63-064e-428d-918b-02ba10be0f6c)。
+
 ### `open swarm` 契约
 
 ```sh
