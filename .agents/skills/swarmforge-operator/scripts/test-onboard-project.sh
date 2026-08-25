@@ -25,6 +25,8 @@ cat > "$WORK/src/pack-root/swarm" <<'EOF'
 MAIN_BRANCH="${SWARMFORGE_SCRIPTS_BRANCH:-main}"
 ARCHIVE_URL="${SWARMFORGE_SCRIPTS_URL:-https://github.com/arlishansenn/swarm-forge/archive/refs/heads/${MAIN_BRANCH}.tar.gz}"
 EOF
+# The real pack ships the launcher executable. Without this chmod the mode
+# assertion below would pass against a 0644 fixture and prove nothing.
 chmod 755 "$WORK/src/pack-root/swarm"
 echo 'roles' > "$WORK/src/pack-root/swarmforge/roles.txt"
 tar -czf "$WORK/pack.tgz" -C "$WORK/src" pack-root

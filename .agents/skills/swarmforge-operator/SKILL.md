@@ -197,14 +197,34 @@ scripts` on the same managed project — a lock already held by that verb is
 `6` `UNSAFE`, naming the holder. Then, unless `--force` is given, it
 recomputes a deterministic digest of the managed project's installed
 `swarmforge/scripts/` and compares it against `$ROOT/.swarmforge/
-scripts-manifest`: a missing manifest or a digest mismatch is `4` `DRIFT`,
-and the launcher is never invoked — this is exactly the failure mode that
-let a running swarm reach handoff with scripts its own launcher didn't
-recognize as required. `--force` overrides both the lock contention and the
-drift check (never the already-running check above, which has no
-override): it steals a held lock and skips the digest comparison entirely.
-The lock is held through the rest of this script, including launch and the
-readiness poll, and is released on every exit path.
+scripts-manifest`. Which of the two identity artifacts exist decides what
+happens (issue #35):
+
+- **Fresh** — snapshot and manifest both absent. This is a project that was
+  onboarded and left stopped, and the Pack's own launcher owns first-run
+  bootstrap, so `start swarm` hands off to it rather than refusing. Fresh does
+  not mean "ignore a mismatch": it is the single exact state where both are
+  absent.
+- **Managed** — both present. The digest is verified before launch, and so
+  before any role-worktree mirroring can propagate the top-level tree. Issue
+  #29's per-role fidelity check only proves a role's copy matches its source,
+  so a corrupt top-level tree has to be caught here or not at all.
+- **Incomplete** — exactly one present. A torn install; `4` `DRIFT`, never a
+  guess about which side is right.
+
+A digest mismatch is likewise `4` `DRIFT`, and the launcher is never invoked —
+this is exactly the failure mode that let a running swarm reach handoff with
+scripts its own launcher didn't recognize as required. `--force` overrides both
+the lock contention and the drift check (never the already-running check above,
+which has no override): it steals a held lock and skips the digest comparison
+entirely. The lock is held through the rest of this script, including launch
+and the readiness poll, and is released on every exit path — **except one**: a
+readiness timeout on the fresh-bootstrap path leaves it deliberately held. The
+readiness budget is sized for launching an already-installed snapshot, while a
+first run also downloads one, which is unbounded; timing out there does not
+prove the launcher stopped, and releasing would let a retry or a concurrent
+`update SwarmForge scripts` become a second writer against an install still in
+progress. Clearing it is then an explicit `--force`.
 
 The launch itself runs detached, local or remote: `SWARMFORGE_TERMINAL=
 <value> nohup ./swarm >log 2>&1 &` (or without the env var, for `auto`),
@@ -457,16 +477,49 @@ naming the backend for a mismatch.
 **Boundary:** a lost `talk role` message is a lost dispatch, not just a missed
 poke — the verified-submit step matters more here than for `wake role`. New
 work enters through the `master` row from `roles.tsv`; no role name such as
-`specifier` or `coder` is universally the intake role.
+`specifier` or `coder` is universally the intake role. Normal task intake is
+Dashboard New Task, not `talk role`: New Task creates the Board card and
+carries the stable task name all the way to the terminal handoff `accept
+work` reports (issue #39). `talk role` sends a behavior message to a running
+role — it never creates a Board task, and is not a substitute for New Task.
 
 ## Verb: `accept work`
 
-Human acceptance after the swarm finishes a task. The chain ends when the
-last recipient completes its inbound handoff; that completed file is the
-delivery record.
+Human acceptance after the swarm finishes a task. The chain ends when it
+returns to the **master** Role; the file in the master worktree's own
+`inbox/completed/` is the delivery record, and it is the only one (issue
+#39). Every other worktree's `completed/` holds intermediate hops of the same
+task — a chain passing through `cleaner` on its way back leaves a completed
+file there too, and reporting that one as the result named the wrong
+`commit:`. The script resolves master from `.swarmforge/roles.tsv` by
+**worktree-name (column 2) `== master`**, never by role name: which role sits
+on master differs per pack (`coder` in two-pack, `specifier` in four-pack).
+It requires exactly one such row and refuses to guess.
 
-Run the bundled script; it reports the terminal handoff per task the same way
-this verb always has, and also closes a real gap (issue #17): a handoff stuck
+Being in master's `completed/` is necessary but not sufficient. The master also
+completes **non-terminal** inbound handoffs — an intermediate hop it merged and
+closed carries `task`/`commit`/`completed_at` too, and sits in the same
+directory. Terminal is a property of the sending event, and the script accepts
+either signal:
+
+- `non-forwarding: true` — stamped by `swarm_handoff.bb` when the sender is the
+  pack's last role, and enforced there too: holding a stamped inbound handoff
+  makes `swarm_handoff.sh` refuse to send another `git_handoff`.
+- the `to:` recipient **set** equals every role but the sender — the
+  compatibility path for records written before the stamp existed.
+
+That second one is set equality, not a recipient count. A two-pack's terminal
+`cleaner → coder` return has exactly one recipient, because "every role except
+cleaner" is just `coder`; counting recipients misses it.
+
+The Board is cross-checked but never decides. `handoffd` moves a card to `done`
+when it **delivers** a terminal-shaped handoff, before any recipient has
+processed it, so a lane disagreement is reported as a `WARN=` and the record is
+still printed. With no Board at all the report says so and falls back to the
+handoffs alone.
+
+Run the bundled script; it reports the terminal handoff per task from the
+master worktree, and also closes a real gap (issue #17): a handoff stuck
 in `inbox/new` — delivered but never claimed, the chain is broken — used to
 read identically to "no work finished yet," because the old manual command
 only ever looked at `inbox/completed`. Those two situations call for opposite
@@ -494,14 +547,30 @@ Exit codes / STATUS line:
   reported, not a verb failure.
 - `2` `USAGE` — missing `--root`.
 - `5` `ERROR` — `$ROOT/.swarmforge/handoffs` could not be found (wrong
-  `--root`/`--target`/`--local`, or the target is unreachable).
+  `--root`/`--target`/`--local`, or the target is unreachable); or
+  `$ROOT/.swarmforge/roles.tsv` is missing or does not have exactly one
+  `master` worktree row (the message carries the actual match count).
 
-**`WARN=` lines** report a backlog stuck long enough that it is not just
-normal in-transit delay, one line per affected worktree:
+**`WARN=` lines** come from two independent scans, and neither changes the
+exit code.
+
+A **stuck backlog**, one line per affected worktree — long enough that it is
+not just normal in-transit delay (issue #17; this scan still covers *every*
+worktree, unaffected by the master-only rule above, since a chain can stall
+at any hop):
 
 ```
 WARN=3 handoffs are stuck in inbox/new in cleaner — the chain is not moving
 WARN=1 handoffs are stuck in inbox/in_process in coder — claimed but not finishing
+```
+
+A **malformed completed record** in the master worktree — a delivery record
+must be `type: git_handoff` with non-empty `task`, `commit` and
+`completed_at`. A record short of that is named, not silently dropped (same
+"uncertain, so say so" rule the already-shipped check follows):
+
+```
+WARN=<file> missing commit — not reported as a delivery record
 ```
 
 Staleness is judged by each handoff's own header timestamp
@@ -524,9 +593,19 @@ Rules (unchanged from the manual command this replaces):
   git repository at `$ROOT` — not swarm-forge's — the same way `stop swarm`'s
   `git status` check runs against the project's own worktrees. A check that
   cannot be confirmed (bad commit, no `origin/main`) is treated as "not
-  shipped," never silently dropped. Also skip intermediate chain records (a
-  task appears once per hop); keep only the terminal handoff — the newest
-  completed file for a given `task:` per worktree.
+  shipped," never silently dropped.
+- **One record per task, the newest one on master.** Intermediate hops are
+  already excluded by reading only the master worktree; when master itself
+  holds several terminal returns for one `task:` (a re-run, a fast
+  `cleaner → coder` loop), the newest `completed_at:` wins. Ordering compares
+  the ISO8601 UTC string with its fractional part padded to a fixed 9 digits
+  first — the producer drops the fraction entirely on an exact second
+  boundary, so `...:55Z` and `...:55.000001Z` both occur and only the padded
+  form orders them correctly. No `date` parsing is involved; `date` on macOS
+  cannot parse the fractional shape at all. The report still prints the
+  recorded `completed_at:` verbatim. Equal padded timestamps fall back to
+  filename lexical order, a declared last-resort tie-break, so the result is
+  never undefined.
 - The handoff points at the commit only. The code itself is in git; verify
   with `git show --stat <commit>` or tests before opening the PR.
 - When opening the PR, carry the `task:` → issue mapping into the PR body
