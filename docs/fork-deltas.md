@@ -203,11 +203,21 @@ onboard project、update SwarmForge scripts 等动词，及其 `test-*.sh` 测�
 onboard 出来的项目会静默拿到一份 handoff 会卡死的 snapshot（D-1 与 D-5 的修复都不在
 upstream）。
 
-**钉子：** `test-onboard-project.sh` 的 `ARCHIVE_URL rewritten to fork, override
-structure intact`。
+**钉子：** `test-onboard-project.sh` 的三条——`ARCHIVE_URL rewritten to fork, override
+structure intact`、`launcher still executable after rewrite`、`launcher mode preserved`。
+
+后两条是 issue #33 补的。改写必须**写回原 inode**（`cat "$t" > "$ROOT/swarm"`），不能用
+`mv`：`mv` 会把 mktemp 的 `0600` 一起搬过来，launcher 丢掉可执行位，而
+`STATUS=ONBOARDED` 照常报成功。podsum 上真实中过一次
+（`SWARM_EXECUTABLE=NO`、`MODE=-rw-------`）。`update-swarmforge-scripts.sh` 的两处
+早就是这个写法。
 
 **代价：** upstream 对 `swarmforge/scripts/` 的更新不再自动到达 managed project，需要
 人主动同步进本 fork 的 `main`——**也就是本文档描述的这件事**。
+
+**这条差异有寿命。** `docs/adr/0002-fork-owns-the-complete-pack-artifact.md` 取代了
+ADR 0001 的实现手段：fork 的 Pack 分支自带指向本 fork 的 launcher，onboard 原样安装、
+不再改写。issue #38 落地后，onboard 里那段改写整体删除，本条连同它的钉子一起从表里移走。
 
 ---
 
