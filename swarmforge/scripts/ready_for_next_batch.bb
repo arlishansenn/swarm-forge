@@ -91,6 +91,8 @@
       (System/exit 2))
     (println "BATCH:" (str batch-dir))
     (println "COUNT:" (count files))
+    (when-let [name (header-field (first files) "task")]
+      (println "TASK_NAME:" name))
     (println "PRIORITY:" (header-value (first files) "priority" "50"))
     (doseq [[index file] (map-indexed vector files)]
       (println)

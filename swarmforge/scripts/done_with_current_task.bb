@@ -60,8 +60,8 @@
       (println line)))
   (System/exit status))
 
-(defn run-ready! []
-  (process/exec (str (fs/path script-dir "ready_for_next_task.sh"))))
+(defn finish-done! []
+  (process/exec "bb" (str (fs/path script-dir "handoff_lib.bb")) "finish-done"))
 
 (defn -main []
   (let [inbox (hl/inbox-dir)
@@ -88,7 +88,7 @@
           (fail! 2 (str "AMBIGUOUS_TASK_STATE: completed file already exists: " target-file)))
         (fs/move source-file target-file)
         (println "COMPLETED:" (str target-file))
-        (run-ready!)))))
+        (finish-done!)))))
 
 (try
   (-main)

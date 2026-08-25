@@ -277,9 +277,31 @@
           (is (str/includes? content "task: task-1-cave-setup\n"))
           (is (str/includes? content (str "commit: " commit "\n")))
           (is (str/includes? content "artifacts: README.md\n"))
-          (is (str/includes? content (str "merge_and_process sender " commit)))
+          (is (str/includes? content (str "merge_and_process.sh sender " commit)))
           (is (fs/exists? queued))
           (is (not (fs/exists? draft))))))))
+
+(deftest ready-for-next-prints-note-task-name-and-body
+  ;; Given a (New Task) note in the receiver inbox
+  ;; When ready_for_next runs
+  ;; Then it prints TASK_NAME and the card body
+  (let [root (tmp-dir)]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (make-queued-handoff! root "50_20260615T000001Z_000001_from_New_Task_to_receiver.handoff"
+                          {:id "20260615T000001Z_000001_from_New_Task"
+                           :from "(New Task)"
+                           :type "note"
+                           :task "Holy Hand Grenade"
+                           :body "The grenade is placed at setup.\n"})
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"}}
+                      (script "ready_for_next.sh"))
+          out (:out result)]
+      (is (zero? (:exit result)))
+      (is (str/includes? out "FROM: (New Task)"))
+      (is (str/includes? out "TYPE: note"))
+      (is (str/includes? out "TASK_NAME: Holy Hand Grenade"))
+      (is (str/includes? out "The grenade is placed at setup.")))))
 
 (deftest ready-for-next-task-accepts-and-resumes-single-tasks
   (let [root (tmp-dir)]
@@ -328,10 +350,19 @@
       (is (str/includes? out "TASK_NAME: task-a"))
       (is (str/includes? out "TASK_NAME: task-b"))
       (is (not (str/includes? out "TASK_NAME: task-c")))
+      (let [lines (str/split-lines out)
+            batch-i (first (keep-indexed (fn [i line] (when (str/starts-with? line "BATCH:") i)) lines))
+            name-i (first (keep-indexed (fn [i line] (when (str/starts-with? line "TASK_NAME:") i)) lines))
+            item-i (first (keep-indexed (fn [i line] (when (str/starts-with? line "BATCH_ITEM:") i)) lines))]
+        (is (< batch-i name-i item-i))
+        (is (= "TASK_NAME: task-a" (nth lines name-i))))
       (is (= 2 (count (fs/glob batch-dir "*.handoff"))))
       (is (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/20_20260615T000003Z_000003_from_sender_to_receiver.handoff"))))))
 
-(deftest done-with-current-task-completes-and-accepts-next-task
+(deftest done-with-current-task-completes-without-accepting-next
+  ;; Given a current task and more mail in the inbox
+  ;; When done_with_current runs
+  ;; Then it completes the current task, leaves the next item queued, and prints MAIL_WAITING
   (let [root (tmp-dir)]
     (init-repo! root)
     (setup-project! root {"receiver" "task"})
@@ -346,13 +377,18 @@
     (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"}}
                       (script "done_with_current.sh"))
           completed (fs/path root ".swarmforge/handoffs/inbox/completed/50_20260615T000001Z_000001_from_sender_to_receiver.handoff")
-          next-file (fs/path root ".swarmforge/handoffs/inbox/in_process/50_20260615T000002Z_000002_from_sender_to_receiver.handoff")]
+          next-file (fs/path root ".swarmforge/handoffs/inbox/new/50_20260615T000002Z_000002_from_sender_to_receiver.handoff")]
       (is (str/includes? (:out result) "COMPLETED:"))
-      (is (str/includes? (:out result) "TASK_NAME: task-next"))
+      (is (str/includes? (:out result) "MAIL_WAITING"))
+      (is (not (str/includes? (:out result) "TASK_NAME: task-next")))
       (is (some? (header completed "completed_at")))
-      (is (some? (header next-file "dequeued_at"))))))
+      (is (fs/exists? next-file))
+      (is (nil? (header next-file "dequeued_at"))))))
 
-(deftest done-with-current-batch-completes-and-accepts-next-batch
+(deftest done-with-current-batch-completes-without-accepting-next
+  ;; Given a current batch and more mail in the inbox
+  ;; When done_with_current runs
+  ;; Then it completes the batch, leaves the next item queued, and prints MAIL_WAITING
   (let [root (tmp-dir)
         batch (fs/path root ".swarmforge/handoffs/inbox/in_process/batch_20260615T000001Z_000001")]
     (init-repo! root)
@@ -374,12 +410,15 @@
                            :task "task-c"})
     (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"}}
                       (script "done_with_current.sh"))
-          completed-batch (fs/path root ".swarmforge/handoffs/inbox/completed/batch_20260615T000001Z_000001")]
+          completed-batch (fs/path root ".swarmforge/handoffs/inbox/completed/batch_20260615T000001Z_000001")
+          next-file (fs/path root ".swarmforge/handoffs/inbox/new/20_20260615T000003Z_000003_from_sender_to_receiver.handoff")]
       (is (str/includes? (:out result) "COMPLETED_BATCH:"))
-      (is (str/includes? (:out result) "TASK_NAME: task-c"))
+      (is (str/includes? (:out result) "MAIL_WAITING"))
+      (is (not (str/includes? (:out result) "TASK_NAME: task-c")))
       (is (= 2 (count (fs/glob completed-batch "*.handoff"))))
       (is (every? #(some? (header % "completed_at"))
-                  (fs/glob completed-batch "*.handoff"))))))
+                  (fs/glob completed-batch "*.handoff")))
+      (is (fs/exists? next-file)))))
 
 (deftest stop-handoff-daemon-stops-running-process-and-removes-pid-file
   (let [root (tmp-dir)]
@@ -422,7 +461,7 @@
       (is (not (str/includes? content "artifacts: none"))))))
 
 (deftest swarm-handoff-refuses-a-merge-with-no-changed-files
-  ;; Given HEAD is a merge whose diff-tree is empty
+  ;; Given HEAD is a merge whose first-parent diff is empty
   ;; When swarm_handoff queues a git_handoff
   ;; Then it refuses and does not write artifacts: none
   (let [root (tmp-dir)
@@ -433,10 +472,7 @@
         _ (run {:dir root} "git" "add" "side.md")
         _ (run {:dir root} "git" "commit" "-q" "-m" "Side")
         _ (run {:dir root} "git" "checkout" "-q" "master")
-        _ (write-file (fs/path root "main.md") "main\n")
-        _ (run {:dir root} "git" "add" "main.md")
-        _ (run {:dir root} "git" "commit" "-q" "-m" "Main")
-        _ (run {:dir root} "git" "merge" "-q" "--no-edit" "side")
+        _ (run {:dir root} "git" "merge" "-q" "--no-ff" "-s" "ours" "-m" "Ours" "side")
         draft (fs/path root "tmp" "merge.handoff")]
     (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: merge-empty\n")
     (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
@@ -478,7 +514,8 @@
       (is (zero? (:exit ready)))
       (is (str/includes? (:out ready) "TASK_NAME: task-inferred"))
       (is (zero? (:exit done)))
-      (is (str/includes? (:out done) "COMPLETED:")))))
+      (is (str/includes? (:out done) "COMPLETED:"))
+      (is (str/includes? (:out done) "NO_TASK")))))
 
 (deftest merge-and-process-merges-the-inbound-commit
   ;; Given a receiver worktree behind a sender commit
@@ -571,6 +608,256 @@
                           (script "swarm_handoff.sh") (str draft))]
           (is (zero? (:exit result)))
           (is (str/includes? (:out result) "HANDOFF QUEUED:")))))))
+
+(deftest swarm-handoff-fills-missing-or-invalid-priority
+  ;; Given a git_handoff draft that omits priority, or writes priority: normal
+  ;; When swarm_handoff queues it
+  ;; Then the queued file has priority: 50
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")]
+    (testing "omitted priority becomes 50"
+      (let [draft (fs/path root "tmp" "no-priority.handoff")]
+        (write-file draft "type: git_handoff\nto: receiver\ntask: fill-priority\n")
+        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                          (script "swarm_handoff.sh") (str draft))
+              queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+              content (when (zero? (:exit result)) (read-file queued))]
+          (is (zero? (:exit result)))
+          (is (str/includes? (str content) "priority: 50\n")))))
+    (testing "priority: normal becomes 50"
+      (let [draft (fs/path root "tmp" "word-priority.handoff")]
+        (write-file draft "type: git_handoff\nto: receiver\npriority: normal\ntask: fill-priority-word\n")
+        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                          (script "swarm_handoff.sh") (str draft))
+              queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+              content (when (zero? (:exit result)) (read-file queued))]
+          (is (zero? (:exit result)))
+          (is (str/includes? (str content) "priority: 50\n"))
+          (is (not (str/includes? (str content) "priority: normal\n"))))))
+    (testing "valid two-digit priority is kept"
+      (let [draft (fs/path root "tmp" "keep-priority.handoff")]
+        (write-file draft "type: git_handoff\nto: receiver\npriority: 00\ntask: keep-priority\n")
+        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                          (script "swarm_handoff.sh") (str draft))
+              queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+              content (when (zero? (:exit result)) (read-file queued))]
+          (is (zero? (:exit result)))
+          (is (str/includes? (str content) "priority: 00\n")))))))
+
+(deftest swarm-handoff-strips-extra-draft-payload
+  ;; Given a git_handoff draft with prose after the headers
+  ;; When swarm_handoff queues it
+  ;; Then it is valid and the queued body is the helper payload, not the prose
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        sha (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+        draft (fs/path root "tmp" "with-payload.handoff")]
+    (write-file draft (str "type: git_handoff\nto: receiver\npriority: 50\ntask: strip-payload\n\n"
+                           "Please merge this and run the tests.\n"))
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str content) (str "merge_and_process.sh sender " sha)))
+      (is (not (str/includes? (str content) "Please merge this and run the tests."))))))
+
+(deftest swarm-handoff-last-role-tags-git-handoff-non-forwarding
+  ;; Given receiver is the last pack role
+  ;; When it queues a git_handoff
+  ;; Then the queued file has non-forwarding: true
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        draft (fs/path root "tmp" "last-role.handoff")]
+    (write-file draft "type: git_handoff\nto: sender\npriority: 00\ntask: HTW\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str content) "non-forwarding: true\n")))))
+
+(deftest swarm-handoff-non-last-role-does-not-tag-non-forwarding
+  ;; Given sender is not the last pack role
+  ;; When it queues a git_handoff
+  ;; Then the queued file has no non-forwarding header
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        draft (fs/path root "tmp" "mid-role.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: HTW\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (not (str/includes? (str content) "non-forwarding:"))))))
+
+(deftest swarm-handoff-refuses-git-handoff-when-inbound-is-non-forwarding
+  ;; Given an in-process inbound git_handoff tagged non-forwarding
+  ;; When swarm_handoff queues another git_handoff
+  ;; Then it refuses
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        inbound (fs/path root ".swarmforge/handoffs/inbox/in_process/00_from_architect.handoff")
+        draft (fs/path root "tmp" "forward.handoff")]
+    (write-file inbound (str "from: architect\nto: sender\npriority: 00\ntype: git_handoff\n"
+                             "task: HTW\nnon-forwarding: true\n\nmerge\n"))
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: HTW\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))]
+      (is (not (zero? (:exit result))))
+      (is (str/includes? (str (:err result) (:out result)) "non-forwarding"))
+      (is (fs/exists? draft)))))
+
+(deftest swarm-handoff-keeps-draft-task-that-names-a-lane-card
+  ;; Given Command syntax and Holy Hand Grenade cards in the sender lane
+  ;; When swarm_handoff queues a git_handoff with task: Holy Hand Grenade
+  ;; Then the queued file keeps that task name
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root ".swarmforge" "board" "tasks.tsv")
+                      (str "Command syntax\tsender\t2026-06-15T00:00:00Z\t2026-06-15T00:00:00Z\n"
+                           "Holy Hand Grenade\tsender\t2026-06-15T00:00:01Z\t2026-06-15T00:00:01Z\n"))
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        draft (fs/path root "tmp" "hhg.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: Holy Hand Grenade\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str content) "task: Holy Hand Grenade\n"))
+      (is (not (str/includes? (str content) "task: Command syntax\n"))))))
+
+(deftest swarm-handoff-from-worktree-uses-master-outbox-when-roles-copied
+  ;; Given a sender worktree with a copied roles.tsv
+  ;; When swarm_handoff queues a git_handoff there
+  ;; Then the file is on the master project outbox
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        wt (add-worktree! root "sender")
+        _ (setup-project! root {"sender" "task" "receiver" "task"})
+        roles (format "sender\tsender\t%s\tsession\tSender\tcodex\ttask\nreceiver\treceiver\t%s\tsession\tReceiver\tcodex\ttask\n"
+                      wt root)
+        _ (write-file (fs/path root ".swarmforge" "roles.tsv") roles)
+        _ (write-file (fs/path wt ".swarmforge" "roles.tsv") roles)
+        _ (write-file (fs/path wt "slice.md") "from the worktree\n")
+        _ (run {:dir wt} "git" "add" "slice.md")
+        _ (run {:dir wt} "git" "commit" "-q" "-m" "Worktree slice")
+        draft (fs/path wt "tmp" "copied-roles.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: copied-roles\n")
+    (let [result (run {:dir wt :env {"SWARMFORGE_ROLE" "sender"}}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))]
+      (is (zero? (:exit result)))
+      (is (str/starts-with? (str (fs/canonicalize queued))
+                           (str (fs/canonicalize (fs/path root ".swarmforge" "handoffs" "outbox")))))
+      (is (not (str/includes? queued "/.worktrees/"))))))
+
+(deftest swarm-handoff-queues-a-merge-with-first-parent-files
+  ;; Given HEAD is a merge that added a file versus the first parent
+  ;; When swarm_handoff queues a git_handoff
+  ;; Then it succeeds and artifacts lists that file
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (run {:dir root} "git" "checkout" "-q" "-b" "side")
+        _ (write-file (fs/path root "side.md") "side\n")
+        _ (run {:dir root} "git" "add" "side.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Side")
+        _ (run {:dir root} "git" "checkout" "-q" "master")
+        _ (write-file (fs/path root "main.md") "main\n")
+        _ (run {:dir root} "git" "add" "main.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Main")
+        _ (run {:dir root} "git" "merge" "-q" "--no-edit" "side")
+        draft (fs/path root "tmp" "merge-files.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: merge-files\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str content) "artifacts:"))
+      (is (str/includes? (str content) "side.md")))))
+
+(deftest done-with-current-archives-the-completing-role-pane
+  ;; Given a current task and a pane stub
+  ;; When done_with_current runs
+  ;; Then the completing role's session pane is archived
+  (let [root (tmp-dir)]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (put-handoff! root "in_process" "50_20260615T000001Z_000001_from_sender_to_receiver.handoff"
+                  {:id "20260615T000001Z_000001_from_sender"
+                   :from "sender" :to "receiver" :recipient "receiver"
+                   :priority "50" :type "git_handoff" :task "task-current"
+                   :commit (head-sha root)})
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"
+                                       "SWARMFORGE_PANE_STUB" "receiver pane\n"}}
+                      (script "done_with_current.sh"))
+          pane (fs/path root ".swarmforge/sessions/receiver/pane.txt")]
+      (is (zero? (:exit result)))
+      (is (fs/exists? pane))
+      (is (= "receiver pane\n" (read-file pane))))))
+
+(deftest swarm-handoff-uses-top-in-process-batch-task-name
+  ;; Given an in-process batch whose first item is Command syntax, and HTW still in the sender lane
+  ;; When swarm_handoff queues a git_handoff drafted as HTW
+  ;; Then the queued file uses Command syntax
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root {"sender" "batch" "receiver" "task"})
+        batch (fs/path root ".swarmforge/handoffs/inbox/in_process/batch_20260824T182225Z_000001")
+        _ (fs/create-dirs batch)
+        _ (write-file (fs/path batch "50_20260824T181141Z_000002_from_coder_to_sender.handoff")
+                      (handoff {:id "20260824T181141Z_000002_from_coder"
+                                :from "coder" :to "sender" :recipient "sender"
+                                :priority "50" :type "git_handoff" :task "Command syntax"
+                                :commit (head-sha root)}))
+        _ (write-file (fs/path batch "50_20260824T181302Z_000003_from_coder_to_sender.handoff")
+                      (handoff {:id "20260824T181302Z_000003_from_coder"
+                                :from "coder" :to "sender" :recipient "sender"
+                                :priority "50" :type "git_handoff" :task "validate"
+                                :commit (head-sha root)}))
+        _ (write-file (fs/path root ".swarmforge" "board" "tasks.tsv")
+                      (str "HTW\tsender\t2026-08-24T18:05:33Z\t2026-08-24T18:05:33Z\n"
+                           "Command syntax\tsender\t2026-08-24T18:06:05Z\t2026-08-24T18:06:05Z\n"
+                           "validate\tsender\t2026-08-24T18:06:45Z\t2026-08-24T18:06:45Z\n"))
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        draft (fs/path root "tmp" "htw.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 00\ntask: HTW\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str content) "task: Command syntax\n"))
+      (is (not (str/includes? (str content) "task: HTW\n"))))))
 
 (deftest helpers-refuse-wrong-current-work-shape
   (let [root (tmp-dir)
@@ -932,6 +1219,35 @@
       (is (= 0 (count (fs/glob (fs/path wt ".swarmforge/handoffs/inbox/new") "*.handoff")))
           "the role's queued file is claimed, not left sitting where the daemon put it")
       (is (= 1 (count (fs/glob (fs/path wt ".swarmforge/handoffs/inbox/in_process") "*.handoff")))))))
+
+(deftest swarm-handoff-reads-the-non-forwarding-gate-from-the-role-worktree
+  ;; Given a sender whose worktree is not the project root, holding a
+  ;; non-forwarding inbound handoff there
+  ;; When swarm_handoff runs from the project root and queues a git_handoff
+  ;; Then the outbound gate still refuses: the inbox belongs to the role in
+  ;; roles.tsv, not to the directory the process happens to start in. Resolving
+  ;; it from the process cwd is the same two-sources-of-truth bug that stopped a
+  ;; live swarm for a day, and it lets a terminal handoff be forwarded onward.
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        wt (add-worktree! root "sender")
+        _ (setup-project! root)
+        _ (write-file (fs/path root ".swarmforge" "roles.tsv")
+                      (format "sender\tsender\t%s\tsession\tSender\tcodex\ttask\nreceiver\treceiver\t%s\tsession\tReceiver\tcodex\ttask\n"
+                              wt root))
+        _ (write-file (fs/path wt "slice.md") "work\n")
+        _ (run {:dir wt} "git" "add" "slice.md")
+        _ (run {:dir wt} "git" "commit" "-q" "-m" "Add slice")
+        inbound (fs/path wt ".swarmforge/handoffs/inbox/in_process/00_from_architect.handoff")
+        draft (fs/path wt "tmp" "forward.handoff")]
+    (write-file inbound (str "from: architect\nto: sender\npriority: 00\ntype: git_handoff\n"
+                             "task: HTW\nnon-forwarding: true\n\nmerge\n"))
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: HTW\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))]
+      (is (not (zero? (:exit result)))
+          "the gate must see the inbound handoff in the role's worktree, not in cwd")
+      (is (str/includes? (str (:err result) (:out result)) "non-forwarding")))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.handoff-test)]

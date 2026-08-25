@@ -1,4 +1,12 @@
+---
+status: accepted; 实现手段由 ADR-0002 取代
+---
+
 # Managed project 的 script snapshot 跟随本 fork，不跟随 upstream
+
+> **本条的决定仍然有效**，但下面写的实现手段（onboard 解压后改写 `ARCHIVE_URL`）已被
+> [ADR-0002](./0002-fork-owns-the-complete-pack-artifact.md) 取代：fork Pack 分支自带
+> 指向本 fork 的 launcher，onboard 原样安装、不再改写。改动 onboard 前先读 ADR-0002。
 
 一个 managed project 的 `swarm launcher` 首跑时下载 script snapshot，而 upstream 的
 pack 分支把下载地址硬编码成 `unclebob/swarm-forge` 的 `main`。本 fork 的
