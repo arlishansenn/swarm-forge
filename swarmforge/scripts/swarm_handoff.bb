@@ -16,14 +16,16 @@
        "to: <role>[,<role>...]\n"
        "priority: NN\n"
        "task: <short-stable-task-name>\n\n"
-       "The helper fills commit and artifacts from the sender worktree HEAD.\n"
-       "Do not type a SHA. Extra headers (coverage, CRAP) are invalid.\n\n"
+       "The helper fills priority 50, commit, and artifacts from the sender worktree HEAD.\n"
+       "Do not type a SHA. Extra headers (coverage, CRAP) are invalid.\n"
+       "Extra lines after the headers are ignored.\n\n"
        "type: note\n"
        "to: <role>[,<role>...]\n"
        "priority: NN\n"
        "message: <one line, max 80 chars>"))
 
-(def reserved-fields #{"id" "from" "role" "recipient" "created_at" "enqueued_at" "dequeued_at" "completed_at"})
+(def reserved-fields #{"id" "from" "role" "recipient" "created_at" "enqueued_at"
+                       "dequeued_at" "completed_at" "non-forwarding"})
 (def allowed-fields #{"type" "to" "priority" "task" "commit" "message"})
 (def allowed-types #{"git_handoff" "note"})
 
@@ -55,17 +57,16 @@
           (str (fs/path path))
           (str (fs/absolutize path)))))))
 
+(defn roles-at? [root]
+  (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))))
+
 (defn project-root []
-  (if-let [root (git-root)]
-    (if (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))
-      root
-      (if-let [common (git-common-dir)]
-        (let [candidate (str (fs/parent common))]
-          (if (fs/exists? (fs/path candidate ".swarmforge" "roles.tsv"))
-            candidate
-            (exit! 1 "Cannot find SwarmForge project root")))
-        (exit! 1 "Cannot find SwarmForge project root")))
-    (exit! 1 "Cannot find SwarmForge project root")))
+  (or (let [common (git-common-dir)
+            parent (when common (str (fs/parent common)))]
+        (when (roles-at? parent) parent))
+      (when (roles-at? (git-root)) (git-root))
+      (when (roles-at? (fs/cwd)) (str (fs/cwd)))
+      (exit! 1 "Cannot find SwarmForge project root")))
 
 (defn roles-file []
   (fs/path (project-root) ".swarmforge" "roles.tsv"))
@@ -96,6 +97,16 @@
       (infer-role-from-worktree)
       (exit! 1 "Set SWARMFORGE_ROLE.")))
 
+(defn board-cards-in-lane [lane]
+  (let [file (fs/path (project-root) ".swarmforge" "board" "tasks.tsv")]
+    (if (fs/exists? file)
+      (into []
+            (keep (fn [line]
+                    (let [[name task-lane] (str/split line #"\t")]
+                      (when (= lane task-lane) name))))
+            (str/split-lines (slurp (str file))))
+      [])))
+
 (defn role-worktree [role]
   (some (fn [line]
           (let [cols (str/split line #"\t")]
@@ -107,6 +118,81 @@
   (or (not-empty (role-worktree (sender-role)))
       (git-root)
       "."))
+
+;; The inbox is the sender's own, resolved from its worktree column in
+;; roles.tsv rather than from the process working directory. handoffd delivers
+;; using that same column, so reading the inbox any other way gives the two
+;; sides different answers and the chain stops with neither one reporting it.
+(defn in-process-dir []
+  (fs/path (git-cwd) ".swarmforge" "handoffs" "inbox" "in_process"))
+
+(defn handoff-files [dir]
+  (if (fs/exists? dir)
+    (->> (fs/list-dir dir)
+         (filter #(and (fs/regular-file? %) (str/ends-with? (fs/file-name %) ".handoff")))
+         (sort-by #(fs/file-name %))
+         vec)
+    []))
+
+(defn batch-dirs [dir]
+  (if (fs/exists? dir)
+    (->> (fs/list-dir dir)
+         (filter #(and (fs/directory? %) (str/starts-with? (fs/file-name %) "batch_")))
+         (sort-by #(fs/file-name %))
+         vec)
+    []))
+
+(defn header-field [file field]
+  (let [prefix (str field ": ")]
+    (some (fn [line]
+            (when (str/starts-with? line prefix)
+              (subs line (count prefix))))
+          (take-while (complement str/blank?) (str/split-lines (slurp (str file)))))))
+
+(defn top-batch-task []
+  (let [batches (batch-dirs (in-process-dir))]
+    (when (= 1 (count batches))
+      (when-let [file (first (handoff-files (first batches)))]
+        (header-field file "task")))))
+
+(defn with-lane-task [headers sender]
+  (let [cards (board-cards-in-lane sender)
+        drafted (get headers "task")]
+    (cond
+      (some #{drafted} cards) headers
+      (= 1 (count cards)) (assoc headers "task" (first cards))
+      :else headers)))
+
+(defn with-board-task [headers sender]
+  (if-not (= "git_handoff" (get headers "type"))
+    headers
+    (if-let [batch-task (not-empty (top-batch-task))]
+      (assoc headers "task" batch-task)
+      (with-lane-task headers sender))))
+
+(defn pack-role-names []
+  (->> (str/split-lines (slurp (str (roles-file))))
+       (remove str/blank?)
+       (map #(first (str/split % #"\t")))
+       vec))
+
+(defn last-pack-role? [role]
+  (= role (last (pack-role-names))))
+
+(defn with-non-forwarding [headers sender]
+  (if (and (= "git_handoff" (get headers "type"))
+           (last-pack-role? sender))
+    (assoc headers "non-forwarding" "true")
+    headers))
+
+(defn inbound-handoffs []
+  (let [dir (in-process-dir)]
+    (into (handoff-files dir)
+          (mapcat handoff-files (batch-dirs dir)))))
+
+(defn inbound-non-forwarding? []
+  (boolean (some #(= "true" (header-field % "non-forwarding"))
+                 (inbound-handoffs))))
 
 (defn worktree-head []
   (let [result (command (git-cwd) "git" "rev-parse" "--short=10" "HEAD")]
@@ -131,18 +217,20 @@
 (defn commit-on-sender-branch? [sha]
   (zero? (:exit (command (git-cwd) "git" "merge-base" "--is-ancestor" sha "HEAD"))))
 
-(defn commit-artifacts [sha]
-  (->> (command (git-cwd) "git" "diff-tree" "--root" "--no-commit-id" "--name-only" "-r" sha)
-       :out
+(defn named-files [result]
+  (->> (:out result)
        str/split-lines
        (remove str/blank?)
+       distinct
        vec))
 
-;; Project-level on purpose, unlike the per-role inbox: a sender running inside
-;; its worktree still queues onto the project, and swarm-handoff-queues-on-the-
-;; project-from-a-worktree asserts exactly that. The daemon reads one project
-;; outbox and fans out into per-role inboxes, so the two sides are asymmetric by
-;; design - do not "unify" this with the inbox rule.
+(defn commit-artifacts [sha]
+  (let [against-parent (command (git-cwd) "git" "diff" "--name-only" (str sha "^") sha)]
+    (if (zero? (:exit against-parent))
+      (named-files against-parent)
+      (named-files (command (git-cwd) "git" "diff-tree" "--root"
+                            "--no-commit-id" "--name-only" "-r" sha)))))
+
 (defn state-dir []
   (fs/path (project-root) ".swarmforge" "handoffs"))
 
@@ -155,7 +243,29 @@
            (.atZone (java.time.Instant/now) java.time.ZoneOffset/UTC)))
 
 (defn valid-priority? [priority]
-  (boolean (re-matches #"[0-9][0-9]" priority)))
+  (boolean (and priority (re-matches #"[0-9][0-9]" priority))))
+
+(defn fill-commit [headers]
+  (if (= "git_handoff" (get headers "type"))
+    (assoc headers "commit" (worktree-head))
+    headers))
+
+(defn fill-priority [headers]
+  (if (valid-priority? (get headers "priority"))
+    headers
+    (assoc headers "priority" "50")))
+
+(defn prepare-headers [headers sender]
+  (-> headers
+      fill-commit
+      (with-board-task sender)
+      (with-non-forwarding sender)
+      fill-priority))
+
+(defn ensure-field [ordered field]
+  (if (some #{field} ordered)
+    ordered
+    (conj (vec ordered) field)))
 
 (defn parse-draft [draft]
   (loop [lines (str/split-lines (slurp (str draft)))
@@ -167,18 +277,8 @@
     (if-let [line (first lines)]
       (let [line-no (inc line-no)]
         (cond
-          body-seen?
-          (recur (next lines) line-no body-seen? headers ordered
-                 (cond-> errors
-                   (not (str/blank? line))
-                   (conj (format "Line %d: draft handoffs may contain headers only; payloads are generated by swarm_handoff.sh." line-no))))
-
-          (str/blank? line)
+          (or body-seen? (str/blank? line) (not (str/includes? line ": ")))
           (recur (next lines) line-no true headers ordered errors)
-
-          (not (str/includes? line ": "))
-          (recur (next lines) line-no body-seen? headers ordered
-                 (conj errors (format "Line %d: expected 'field: value'." line-no)))
 
           :else
           (let [[field value] (str/split line #": " 2)]
@@ -333,7 +433,7 @@
 
 (defn body [type sender canonical-commit note-message]
   (case type
-    "git_handoff" (str "Re-read your role and constitution.\n\nmerge_and_process " sender " " canonical-commit)
+    "git_handoff" (str "Re-read your role and constitution.\n\nmerge_and_process.sh " sender " " canonical-commit)
     "note" (str "Re-read your role and constitution.\n\n" note-message)))
 
 (defn write-handoff! [{:keys [headers recipients canonical-commit artifacts sender]}]
@@ -360,6 +460,8 @@
                       (str "task: " (get headers "task"))
                       (str "commit: " canonical-commit)
                       (str "artifacts: " artifacts))
+                (= "true" (get headers "non-forwarding"))
+                (conj "non-forwarding: true")
                 (= "note" type)
                 (conj (str "message: " (get headers "message")))
                 true
@@ -400,14 +502,15 @@
         (exit! 1 (str "Unknown sender role: " sender)))
       (require-worktree-tmp-draft! draft)
       (let [{:keys [headers ordered errors]} (parse-draft draft)
-            headers (cond-> headers
-                      (= "git_handoff" (get headers "type"))
-                      (assoc "commit" (worktree-head)))
-            ordered (if (and (= "git_handoff" (get headers "type"))
-                             (not (some #{"commit"} ordered)))
-                      (conj (vec ordered) "commit")
-                      ordered)
+            headers (prepare-headers headers sender)
+            ordered (-> ordered
+                        (ensure-field "priority")
+                        (cond-> (= "git_handoff" (get headers "type"))
+                          (ensure-field "commit")))
             sha (get headers "commit")]
+        (when (and (= "git_handoff" (get headers "type"))
+                   (inbound-non-forwarding?))
+          (exit! 1 "Current inbound handoff is non-forwarding; do not send a git_handoff."))
         (when (and (= "git_handoff" (get headers "type"))
                    (not (commit-on-sender-branch? sha)))
           (exit! 1 (str "Result commit " sha " is not reachable from sender worktree")))

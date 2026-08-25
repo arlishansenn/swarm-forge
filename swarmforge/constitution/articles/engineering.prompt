@@ -11,8 +11,9 @@
 
 ## Language Defaults
 - For Clojure projects, prefer Babashka where possible.
-- For Clojure projects, prefer Speclj for unit and behavior tests.
-- For Clojure or Babashka projects using Speclj, use `github.com/unclebob/speclj-structure-check` to validate test syntax. If a Speclj spec file changed, run the structure check before executing the relevant test command.
+- For Clojure or Babashka projects, write Speclj specs, not `clojure.test`.
+- Install Speclj with `swarm_tool.sh require speclj`. If missing, `swarm_tool.sh ensure speclj`.
+- If a Speclj spec file changed, run `swarm_tool.sh require speclj-structure-check` (ensure if missing) and check the spec file before running tests.
 - For Java projects, avoid using Maven to run tests; build dedicated test runners and run those instead.
 
 ## Design And Testability
@@ -38,11 +39,16 @@
 
 ## Verification
 - Before running language, build, or test commands, prefer project-local cache/configuration paths inside the assigned worktree. Avoid default cache locations that write outside the project and may trigger sandbox or permission restrictions.
+- Run constitution tools one at a time. Do not run CRAP, DRY, coverage, language mutation, Gherkin mutation, or structure-check concurrently.
+- Tools that take a worker limit must use `--max-workers 4` or `--workers 4`.
+- Function mutation is differential against the source manifest. Do not pass `--mutate-all`.
+- Gherkin mutation is differential against the feature manifest (`--level hard`). Do not pass `--level full`.
 - Run acceptance generation and acceptance tests sequentially.
 - Avoid running whole-suite language test commands concurrently with acceptance generation.
 - Run the relevant local verification command before handoff whenever the project has one.
 
 ## Guardrails
+- Do not invent project-local CRAP, DRY, mutation, or coverage proxies. Install and run the constitution tools (`crap4clj` with cloverage, `dry4clj`, `clj-mutate`, speclj, or the language table). Do not treat a homegrown `bb crap` / `bb coverage` / `bb mutation-count` task as those tools.
 - Do not edit mutation testing or Gherkin acceptance mutation manifests by hand; allow approved mutation tools to update those manifests as part of their normal runs.
 - Do not commit unrelated local changes or generated artifacts unless required for the task.
 - Before relying on an unfamiliar command, inspect local help or project documentation.

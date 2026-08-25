@@ -7,6 +7,7 @@
 
 (def session-prefix "swarmforge")
 (def agent-window "swarm")
+(def pane-history-limit 10000)
 (def red "\u001b[0;31m")
 (def green "\u001b[0;32m")
 (def yellow "\u001b[1;33m")
@@ -261,7 +262,8 @@
    "swarm-cleanup.sh" "swarm-window-watchdog.sh" "swarm-window-watchdog.bb"
    "swarm-terminal-adapter.sh" "swarmforge.sh" "swarmforge.bb"
    "pack_board.sh" "pack_board.bb"
-   "pack_web.sh" "pack_web.bb"])
+   "pack_web.sh" "pack_web.bb"
+   "pack_dashboard_request.sh" "pack_dashboard_request.bb"])
 
 (def terminal-helpers
   ["terminal-app.sh" "iterm2.sh" "ghostty.sh" "windows-terminal.sh" "none.sh"])
@@ -377,6 +379,7 @@
 
 (defn create-role-session! [ctx session title]
   (sh "tmux" "-S" (:tmux-socket ctx) "new-session" "-d" "-s" session "-n" agent-window)
+  (sh "tmux" "-S" (:tmux-socket ctx) "set-option" "-t" session "history-limit" (str pane-history-limit))
   (sh "tmux" "-S" (:tmux-socket ctx) "rename-window" "-t" (str session ":" agent-window) title)
   (sh "tmux" "-S" (:tmux-socket ctx) "set-window-option" "-t" (str session ":" title) "allow-rename" "off"))
 
@@ -405,21 +408,46 @@
        (when (some #{"ir-dry-checker"} tools)
          "- Dry-check with the two-arg form: `ir-dry-checker <ir> ./tmp/<stem>.dry.json`\n")))
 
-(defn tool-startup-section [role]
+(defn tool-startup-section [role last-role?]
   (let [tools (get role-required-tools role [])]
     (str "## Tool Startup\n\n"
          "- Do not search `$HOME` or run `find` for APS tools.\n"
          (require-ensure-lines tools)
          (parse-dry-check-lines tools)
          "- Write scratch files and handoff drafts in `./tmp/` in the assigned worktree.\n"
-         "- Do not use `/tmp` or `.swarmforge/handoffs/outbox/tmp/` as scratch.\n")))
+         "- Do not use `/tmp` or `.swarmforge/handoffs/outbox/tmp/` as scratch.\n"
+         "- Receive with `ready_for_next.sh`. Send with `swarm_handoff.sh ./tmp/<draft>`.\n"
+         "- Do not search the tree or `$HOME` for those scripts.\n"
+         "- Do not invoke helpers as `./swarmforge/scripts/...`. They are already on PATH.\n"
+         "- Board cards live in `.swarmforge/board/tasks.tsv`. Use that card name as `task:`.\n"
+         "- Do not search the worktree for `.swarmforge/board/tasks.tsv`. That file is on the project (master).\n"
+         "- Use TASK_NAME from `ready_for_next.sh` or the inbound `task:` header. For a batch, that name is the top item. The helper fills `task:` from the in-process batch, else the sender-lane card.\n"
+         "- Do not invent a name or hunt `sessions.tsv`.\n"
+         "- Constitution tools: `swarm_tool.sh require crap4clj` (also dry4clj, clj-mutate, cloverage, speclj, speclj-structure-check, APS, or the language table). If missing, `swarm_tool.sh ensure <tool>`. Do not invent project `bb` proxies.\n"
+         "- Run constitution tools one at a time. Worker-limited tools use `--max-workers 4` or `--workers 4`. Mutation is differential: no `--mutate-all`, no `--level full`.\n"
+         "- Do not clone those repos into `./tmp`.\n"
+         "- If merge_and_process.sh or ready_for_next reports a merge conflict, resolve the conflicted files, git add, and commit. Do not invent git merge. Parallel cards on one tree will conflict; that is expected.\n"
+         "- Operator follow-ups arrive as `[id] text` in this pane. Answer with `pack_dashboard_request.sh answer <id> ./tmp/answer.txt`.\n"
+         "- Ask the operator with `pack_dashboard_request.sh clarify ./tmp/question.txt`. Do not ask in the pane.\n"
+         "- Do not ask for approval in the pane. Queue `git_handoff`; the operator uses Attention.\n"
+         (when last-role?
+           (str "- You are the last role in this pack. After this pack step, one git_handoff to every other role. Recipients merge only. The card goes to Done. Do not also send a git_handoff to a single next role.\n"))
+         (when (= role "specifier")
+           (str "- Specify from the board card and the current product tree. Do not import behavior from sibling projects.\n"
+                "- Do not ask the operator what new feature to specify or what the card already states.\n"
+                "- Finish the assigned TASK_NAME and payload (the whole card), then one git_handoff. Do not hand off after the first feature in a folder.\n"))
+         (when (= role "QA")
+           (str "- One commit is one git_handoff. Do not send two git_handoffs of the same SHA.\n")))))
 
-(defn write-agent-instruction-file! [role prompt-file]
+(defn last-pack-role? [ctx role]
+  (= role (:role (last (:roles ctx)))))
+
+(defn write-agent-instruction-file! [role prompt-file last-role?]
   (spit (str prompt-file)
         (str "Read swarmforge/constitution.prompt, then read every file it refers to recursively, and obey all of those instructions.\n"
              "Read swarmforge/roles/" role ".prompt, then read every file it refers to recursively, and follow all of those instructions.\n"
              "\n"
-             (tool-startup-section role))))
+             (tool-startup-section role last-role?))))
 
 (defn extra-args-prefix [row]
   (let [args (:extra-args row)]
@@ -438,6 +466,18 @@
 (defn grok-permission-prefix [row]
   "--permission-mode bypassPermissions ")
 
+(defn alt-screen-env [agent row]
+  (if (and (= agent "claude")
+           (not (extra-has? row "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN")))
+    "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 "
+    ""))
+
+(defn no-alt-screen-flag [agent row]
+  (if (and (#{"codex" "copilot"} agent)
+           (not (extra-has? row "--no-alt-screen")))
+    "--no-alt-screen "
+    ""))
+
 (defn launch-command [ctx index row]
   (let [role (:role row)
         agent (:agent row)
@@ -452,13 +492,13 @@
                   " && export PATH=" (sq (str tool-bin)) ":" (sq (str role-script-dir)) ":$PATH"
                   " && cd " (sq (str role-worktree))
                   " && ")]
-    (write-agent-instruction-file! role prompt-file)
+    (write-agent-instruction-file! role prompt-file (last-pack-role? ctx role))
     (cond-> (str base
                 (case agent
-                  "claude" (str "claude --append-system-prompt-file " (sq (str prompt-file)) " " (yolo-flag agent row) "-n " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
-                  "codex" (str "codex -C " (sq (str role-worktree)) " " (yolo-flag agent row) (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
-                  "copilot" (str "copilot -C " (sq (str role-worktree)) " --name " (sq (str "SwarmForge " display)) " " (yolo-flag agent row) (extra-args-prefix row) "-i \"$(cat " (sq (str prompt-file)) ")\"")
-                  "grok" (str "grok --cwd " (sq (str role-worktree)) " " (grok-permission-prefix row) (extra-args-prefix row) "--rules \"$(cat " (sq (str prompt-file)) ")\" --verbatim \"$(cat " (sq (str prompt-file)) ")\"")))
+                  "claude" (str (alt-screen-env agent row) "claude --append-system-prompt-file " (sq (str prompt-file)) " " (yolo-flag agent row) "-n " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
+                  "codex" (str "codex -C " (sq (str role-worktree)) " " (no-alt-screen-flag agent row) (yolo-flag agent row) (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
+                  "copilot" (str "copilot -C " (sq (str role-worktree)) " " (no-alt-screen-flag agent row) "--name " (sq (str "SwarmForge " display)) " " (yolo-flag agent row) (extra-args-prefix row) "-i \"$(cat " (sq (str prompt-file)) ")\"")
+                  "grok" (str "grok --cwd " (sq (str role-worktree)) " " (grok-permission-prefix row) (extra-args-prefix row) "--minimal --rules \"$(cat " (sq (str prompt-file)) ")\" --verbatim \"$(cat " (sq (str prompt-file)) ")\"")))
       (= index 0)
       (str "; exit_code=$?; SWARMFORGE_TERMINAL_BACKEND=" (sq (:terminal-backend ctx))
            " nohup " (sq (str (fs/path (:script-dir ctx) "swarm-cleanup.sh")))
@@ -467,10 +507,31 @@
            (apply str (map #(str " " (sq (:session %))) (:roles ctx)))
            " >/dev/null 2>&1 &!; exit $exit_code"))))
 
+(defn codex-home []
+  (or (not-empty (System/getenv "CODEX_HOME"))
+      (str (fs/path (System/getProperty "user.home") ".codex"))))
+
+(defn project-table-header [dir]
+  (str "[projects." (pr-str (str (fs/absolutize dir))) "]"))
+
+(defn ensure-codex-trust! [dir]
+  (when-not (str/blank? (str dir))
+    (let [home (codex-home)
+          cfg (fs/path home "config.toml")
+          header (project-table-header dir)
+          text (if (fs/exists? cfg) (slurp (str cfg)) "")]
+      (when-not (str/includes? text header)
+        (fs/create-dirs home)
+        (spit (str cfg)
+              (str (if (or (str/blank? text) (str/ends-with? text "\n")) text (str text "\n"))
+                   "\n" header "\ntrust_level = \"trusted\"\n")
+              :append true)))))
+
 (defn launch-role! [ctx index row]
+  (when (= "codex" (:agent row))
+    (ensure-codex-trust! (:worktree-path row)))
   (let [session (:session row)
         display (:display-name row)
-        prompt-file (fs/path (:prompts-dir ctx) (str (:role row) ".md"))
         command (launch-command ctx index row)]
     (sh "tmux" "-S" (:tmux-socket ctx) "send-keys" "-t"
         (tmux-agent-target display (:tmux-pane-base-index ctx) session)
@@ -714,6 +775,11 @@
   (doseq [line (launch-plan-lines (prepare-ctx (context root)))]
     (println line)))
 
+(defn test-start-order! [_root]
+  (println "pack_web start")
+  (println "start-agents")
+  (println "open-terminals"))
+
 (defn run-main! [root]
   (check-dependency! "tmux")
   (check-dependency! "git")
@@ -744,6 +810,7 @@
         (write-tmux-env-file! ctx)
         (sync-worktree-scripts! ctx)
         (start-handoff-daemon! ctx)
+        (start-pack-web! ctx)
         (println (str green "Starting agents..." reset))
         (let [delay-ms (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500)]
           (doseq [[index row] (map-indexed vector (:roles ctx))]
@@ -766,7 +833,6 @@
         (println (str green "Tip: Write a handoff draft and run swarm_handoff.sh while the swarm is running." reset))
         (println (str green "Tip: Reattach manually with 'tmux -S " (:tmux-socket ctx) " attach-session -t <session-name>' if needed." reset))
         (println)
-        (start-pack-web! ctx)
         (open-terminal-surfaces! ctx)))))
 
 (defn test-terminal-bridge! [root backend]
@@ -779,6 +845,10 @@
   (let [ctx (detect-tmux-base-indexes {:tmux-socket tmux-socket
                                         :tmux-socket-dir (str (fs/parent (fs/path tmux-socket)))})]
     (println (:tmux-window-base-index ctx) (:tmux-pane-base-index ctx))))
+
+(defn test-create-role-session! [tmux-socket session]
+  (create-role-session! {:tmux-socket tmux-socket} session "Specifier")
+  (println (sh-out "tmux" "-S" tmux-socket "show-options" "-t" session "-qv" "history-limit")))
 
 (defn test-launch-command! [root agent & [extra-args]]
   (let [ctx (assoc (context root) :terminal-backend "none")
@@ -793,13 +863,6 @@
     (fs/create-dirs (:prompts-dir ctx))
     (println (launch-command ctx 1 row))))
 
-(defn test-instruction-file! [root role]
-  (let [ctx (assoc (context root) :terminal-backend "none")
-        prompt-file (fs/path (:prompts-dir ctx) (str role ".md"))]
-    (fs/create-dirs (:prompts-dir ctx))
-    (write-agent-instruction-file! role prompt-file)
-    (print (slurp (str prompt-file)))))
-
 (defn test-install-hooks! [root]
   (let [ctx (context root)]
     (install-commit-msg-hook! ctx)
@@ -807,6 +870,9 @@
 
 (defn test-sleep-inhibitor-prefix! []
   (println (str/join " " (or (sleep-inhibitor-prefix) []))))
+
+(defn test-ensure-codex-trust! [dir]
+  (ensure-codex-trust! dir))
 
 (defn test-sync-worktree-scripts! [root]
   (let [ctx (prepare-ctx (context root))]
@@ -823,17 +889,19 @@
     "--test-parse" (test-parse! (or (second args) (System/getProperty "user.dir")))
     "--test-required-helpers" (test-required-helpers!)
     "--test-launch-plan" (test-launch-plan! (or (second args) (System/getProperty "user.dir")))
+    "--test-start-order" (test-start-order! (or (second args) (System/getProperty "user.dir")))
     "--test-terminal-bridge" (test-terminal-bridge! (or (second args) (System/getProperty "user.dir")) (nth args 2))
     "--test-launch-command" (apply test-launch-command!
                                      (or (second args) (System/getProperty "user.dir"))
                                      (drop 2 args))
-    "--test-instruction-file" (test-instruction-file! (second args) (nth args 2))
     "--test-install-hooks" (test-install-hooks! (second args))
     "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
     "--test-sleep-inhibitor-prefix" (test-sleep-inhibitor-prefix!)
-    "--test-tmux-base-indexes" (test-tmux-base-indexes! (second args))
+    "--test-ensure-codex-trust" (test-ensure-codex-trust! (second args))
     "--test-sync-worktree-scripts" (test-sync-worktree-scripts! (or (second args) (System/getProperty "user.dir")))
     "--test-scripts-mirror-matches" (test-scripts-mirror-matches! (second args) (nth args 2))
+    "--test-tmux-base-indexes" (test-tmux-base-indexes! (second args))
+    "--test-create-role-session" (test-create-role-session! (second args) (nth args 2))
     (run-main! (or (first args) (System/getProperty "user.dir")))))
 
 (apply -main *command-line-args*)

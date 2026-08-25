@@ -223,29 +223,21 @@
            (remove str/blank?)
            seq))
 
+(defn board-file []
+  (fs/path project-root ".swarmforge" "board" "tasks.tsv"))
+
 (defn pack-board! [& args]
   (let [script (str (fs/path script-dir "pack_board.sh"))
         result (apply sh (concat [script] args ["--root" (str project-root)]))]
     (when-not (zero? (:exit result))
-      (log! "pack-board-failed" args (:err result) (:out result)))))
-
-(defn update-board! [headers]
-  (let [task (get headers "task")
-        recipients (recipient-list headers)]
-    (when (and (= "git_handoff" (get headers "type"))
-               (not (str/blank? task))
-               recipients)
-      (if (next recipients)
-        (pack-board! "done" "--name" task)
-        (pack-board! "move" "--name" task "--lane" (first recipients))))))
+      (log! "pack-board-failed" args (:err result) (:out result))
+      (throw (ex-info (str/trim (str (:err result) "\n" (:out result))) result)))))
 
 (defn archive-sender! [headers]
-  (let [from (get headers "from")
-        task (get headers "task")]
-    (when (and (= "git_handoff" (get headers "type"))
-               (not (str/blank? from))
-               (not (str/blank? task)))
-      (pack-board! "archive" "--role" from "--name" task))))
+  (let [from (get headers "from")]
+    (when (and (not (str/blank? from))
+               (not (re-matches #"\(.+\)" from)))
+      (pack-board! "archive" "--role" from))))
 
 (defn master-role-name [roles]
   (some (fn [[role info]]
@@ -258,6 +250,86 @@
 
 (defn from-master? [roles headers]
   (= (get headers "from") (master-role-name roles)))
+
+(defn other-roles [roles from]
+  (->> (keys roles)
+       (remove #(= % from))
+       set))
+
+(defn terminal-broadcast? [roles headers]
+  (let [from (get headers "from")
+        rec (set (recipient-list headers))
+        others (other-roles roles from)]
+    (boolean
+     (and (not (from-master? roles headers))
+          (seq rec)
+          (= rec others)))))
+
+(defn non-forwarding? [headers]
+  (= "true" (get headers "non-forwarding")))
+
+(defn terminal-handoff? [roles headers]
+  (or (non-forwarding? headers)
+      (terminal-broadcast? roles headers)))
+
+(defn listed-handoffs [dir]
+  (if (fs/directory? dir)
+    (->> (fs/list-dir dir)
+         (filter #(and (fs/regular-file? %)
+                       (str/ends-with? (fs/file-name %) ".handoff")))
+         vec)
+    []))
+
+(defn listed-batches [dir]
+  (if (fs/directory? dir)
+    (->> (fs/list-dir dir)
+         (filter #(and (fs/directory? %)
+                       (str/starts-with? (fs/file-name %) "batch_")))
+         vec)
+    []))
+
+(defn inbox-handoffs [role-info state]
+  (let [dir (fs/path (:worktree-path role-info)
+                     ".swarmforge" "handoffs" "inbox" state)]
+    (into (listed-handoffs dir)
+          (mapcat listed-handoffs (listed-batches dir)))))
+
+(defn finished-task-names [role-info]
+  (if-not role-info
+    #{}
+    (->> (concat (inbox-handoffs role-info "completed")
+                 (inbox-handoffs role-info "in_process"))
+         (map #(get (:headers (parse-message %)) "task"))
+         (remove str/blank?)
+         set)))
+
+(defn names-in-lane [lane]
+  (->> (read-lines (board-file))
+       (remove str/blank?)
+       (map #(str/split % #"\t"))
+       (filter #(= lane (second %)))
+       (map first)))
+
+(defn terminal-task-names [roles headers]
+  (let [from (get headers "from")
+        named (get headers "task")
+        finished (finished-task-names (get roles from))
+        in-lane (set (names-in-lane from))]
+    (->> (cons named (filter finished in-lane))
+         (remove str/blank?)
+         distinct
+         vec)))
+
+(defn update-board! [roles headers]
+  (when (and (fs/exists? (board-file))
+             (= "git_handoff" (get headers "type"))
+             (seq (recipient-list headers)))
+    (if (terminal-handoff? roles headers)
+      (doseq [name (terminal-task-names roles headers)]
+        (pack-board! "done" "--name" name))
+      (let [task (get headers "task")]
+        (when-not (str/blank? task)
+          (pack-board! "move" "--name" task "--lane" (first (recipient-list headers))))))))
 
 (defn single-recipient? [headers]
   (let [recipients (recipient-list headers)]
@@ -280,6 +352,15 @@
   (move-with-collision path (pending-dir))
   (log! "held" (str path)))
 
+(defn phantom-sender? [from]
+  (boolean (re-matches #"\(.+\)" (or from ""))))
+
+(defn sent-dir [roles sender-role]
+  (if (phantom-sender? sender-role)
+    (fs/path project-root ".swarmforge" "handoffs" "sent")
+    (fs/path (get-in roles [sender-role :worktree-path])
+             ".swarmforge" "handoffs" "sent")))
+
 (defn deliver! [roles socket sender-role path]
   (let [filename (fs/file-name path)
         message (parse-message path)
@@ -288,6 +369,7 @@
     (if-not recipients
       (fail! path "missing to header")
       (do
+        (update-board! roles headers)
         (doseq [recipient recipients]
           (let [role-info (get roles recipient)]
             (when-not role-info
@@ -298,10 +380,7 @@
               (when-not (fs/exists? target)
                 (spit (str target) (render-message (:headers delivered) (:body delivered))))
               (notify! socket (:session role-info) (:agent role-info)))))
-        (move-with-collision path
-                             (fs/path (get-in roles [sender-role :worktree-path])
-                                      ".swarmforge" "handoffs" "sent"))
-        (update-board! headers)
+        (move-with-collision path (sent-dir roles sender-role))
         (archive-sender! headers)
         (log! "delivered" (str path))))))
 
