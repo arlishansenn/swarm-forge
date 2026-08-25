@@ -1,7 +1,7 @@
 # Project Rules
 
 ## Project Shape
-- This project is configured for SwarmForge with one persistent Codex-backed squad leader agent.
+- This project is configured for SwarmForge with one persistent Grok-backed squad leader agent.
 - Transient agents are planned but not implemented in the first slice.
 - Project language: Babashka.
 
