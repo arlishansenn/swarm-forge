@@ -42,7 +42,11 @@ case $PACK in
      exit 2 ;;
 esac
 
-URL=https://github.com/unclebob/swarm-forge/tarball/$PACK
+# This fork's Pack branches, not upstream's (issue #38, ADR-0002). The fork
+# owns the complete artifact it installs: each Pack branch already carries its
+# final config and a launcher pointing at this fork's `main`, so the archive is
+# installed exactly as it comes out of the tarball.
+URL=https://github.com/arlishansenn/swarm-forge/tarball/$PACK
 
 remote() {
   if [ "$LOCAL" = 1 ]; then bash -c "$1"; else ssh -i "$KEY" "$TARGET" "$1"; fi
@@ -67,28 +71,18 @@ if ! remote "set -e
   exit 5
 fi
 
-# The pack's swarm launcher ships with ARCHIVE_URL defaulting to upstream, so a
-# bare first run would silently fetch unclebob's scripts and drop this fork's
-# fixes (ADR 0001). Point the default at this fork; the sed address keeps the
-# edit scoped to the ARCHIVE_URL= line so it can't touch anything else the
-# file happens to say, and the ${SWARMFORGE_SCRIPTS_URL:-...} wrapper around
-# it is untouched since only the text inside the default is replaced.
+# No post-extraction patching (issue #38). The launcher used to be rewritten
+# here to repoint its ARCHIVE_URL at this fork; the fork's Pack branches now
+# ship it that way already, so the extracted archive is immutable input. That
+# rewrite is also what destroyed the launcher's executable mode (issue #33):
+# not touching the file at all is what makes its bytes and mode survive, rather
+# than a more careful way of writing it back.
 #
-# cat into the existing inode, not `mv`, so the launcher's mode and owner
-# survive the rewrite. `mv` from mktemp carries the temp file's 0600 across and
-# leaves an unexecutable launcher while STATUS=ONBOARDED still says success
-# (issue #33; update-swarmforge-scripts.sh already writes it this way).
-#
-# ADR-0002 makes this whole rewrite obsolete: the fork's Pack branch will ship a
-# launcher already pointing here, and onboard will install the archive as-is.
-# Delete this block with issue #38, not before.
-remote "if [ -f '$ROOT/swarm' ]; then
-  t=\$(mktemp)
-  sed '/^ARCHIVE_URL=/s#unclebob/swarm-forge#arlishansenn/swarm-forge#' '$ROOT/swarm' > \"\$t\"
-  cat \"\$t\" > '$ROOT/swarm'
-  rm -f \"\$t\"
-fi"
-
+# `update SwarmForge scripts` keeps its own, separate ARCHIVE_URL rewrite. That
+# one is deliberately retained as a legacy-repair path for projects onboarded
+# BEFORE this change, whose launcher may still point at upstream — a shrinking
+# but real population. It is not merged with this (now removed) step, and not
+# deleted.
 printf 'STATUS=ONBOARDED\n'
 remote "ls -1 '$ROOT'"
 printf 'next: run ./swarm in %s yourself — this script never starts a swarm\n' "$ROOT"

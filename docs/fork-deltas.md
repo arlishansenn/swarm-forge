@@ -196,28 +196,41 @@ onboard project、update SwarmForge scripts 等动词，及其 `test-*.sh` 测�
 
 ### D-9 managed project 的 script snapshot 指向本 fork
 
-**差异：** `onboard project` 装完 pack 后改写目标项目 `swarm` 里的 `ARCHIVE_URL` 默认值，
-从 `unclebob/swarm-forge` 改为 `arlishansenn/swarm-forge`。
+**差异：** fork 的 Pack 分支（`two-pack`/`four-pack`/`six-pack`）自带一个默认指向
+`arlishansenn/swarm-forge` 的 `swarm` launcher，并且那个 launcher 的 first-run bootstrap
+是 staged-then-atomic-rename 安装、装完写 `.swarmforge/scripts-manifest`。`onboard project`
+从 fork 的 Pack 分支下载，原样安装，**不做任何解压后改写**。
 
-**为什么：** 见 `docs/adr/0001-script-snapshot-follows-this-fork.md`。照 upstream 流程
-onboard 出来的项目会静默拿到一份 handoff 会卡死的 snapshot（D-1 与 D-5 的修复都不在
-upstream）。
+**为什么：** 见 `docs/adr/0001-script-snapshot-follows-this-fork.md` 与
+`docs/adr/0002-fork-owns-the-complete-pack-artifact.md`。照 upstream 流程 onboard 出来的
+项目会静默拿到一份 handoff 会卡死的 snapshot（D-1 与 D-5 的修复都不在 upstream）。
 
-**钉子：** `test-onboard-project.sh` 的三条——`ARCHIVE_URL rewritten to fork, override
-structure intact`、`launcher still executable after rewrite`、`launcher mode preserved`。
+ADR 0001 原来的实现手段是「onboard 解压后改写 `ARCHIVE_URL`」，已被 ADR-0002 取代：那次
+改写正是 issue #33 里毁掉 launcher 可执行位的来源（`mv` 把 mktemp 的 `0600` 搬了过去，而
+`STATUS=ONBOARDED` 照常报成功，podsum 上真实中过）。**不碰这个文件**才是保住字节与 mode
+的办法，而不是更小心地把它写回去。
 
-后两条是 issue #33 补的。改写必须**写回原 inode**（`cat "$t" > "$ROOT/swarm"`），不能用
-`mv`：`mv` 会把 mktemp 的 `0600` 一起搬过来，launcher 丢掉可执行位，而
-`STATUS=ONBOARDED` 照常报成功。podsum 上真实中过一次
-（`SWARM_EXECUTABLE=NO`、`MODE=-rw-------`）。`update-swarmforge-scripts.sh` 的两处
-早就是这个写法。
+upstream 的 bootstrap 是 `rm -rf` 目标再 `cp -R`，不是崩溃安全的；fork 的 launcher 改成
+先在同级 staging 装好再 rename 换入，manifest 一定写在原子安装之后。
+
+**钉子：**
+- `test-onboard-project.sh`：`launcher bytes preserved from the archive, not patched`、
+  `launcher still executable after onboarding`、`launcher mode preserved from the archive`、
+  `onboard downloads the pack from the fork`、`no upstream URL left in onboard-project.sh`
+- 各 Pack 分支的 `test-swarm-launcher.sh`（29 条）：manifest digest 与
+  `start swarm` 的 `scripts_digest` 一致、安装中途被 kill 目标树不受影响、
+  失败不留半装 snapshot 或 manifest。
+
+**注意 digest 是两份独立实现。** launcher 随 Pack 分支发布、由 curl 取回，够不到 operator
+skill，所以它自己抄了一份 `scripts_digest`。两边一旦漂移，症状是 bootstrap 之后第一次
+`start swarm` 报 DRIFT。`test-swarm-launcher.sh` 里那份参考实现就是钉这个的。
 
 **代价：** upstream 对 `swarmforge/scripts/` 的更新不再自动到达 managed project，需要
 人主动同步进本 fork 的 `main`——**也就是本文档描述的这件事**。
 
-**这条差异有寿命。** `docs/adr/0002-fork-owns-the-complete-pack-artifact.md` 取代了
-ADR 0001 的实现手段：fork 的 Pack 分支自带指向本 fork 的 launcher，onboard 原样安装、
-不再改写。issue #38 落地后，onboard 里那段改写整体删除，本条连同它的钉子一起从表里移走。
+**遗留：** `update SwarmForge scripts` 保留它自己那份 `ARCHIVE_URL` 改写与回滚逻辑，
+**有意不删**：那是给本次改动之前 onboard 的项目用的 legacy 修复路径，那批项目的 launcher
+可能还指着 upstream。它不与已删除的 onboard 改写合并。
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: swarmforge-operator
-description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, stopping the swarm, or installing an upstream pack (two-pack, four-pack, six-pack) into a new or existing project directory before the swarm has ever run."
+description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, stopping the swarm, or installing a fork pack (two-pack, four-pack, six-pack) into a new or existing project directory before the swarm has ever run."
 ---
 
 # SwarmForge Operator
@@ -82,7 +82,7 @@ Bringing them under the contract is tracked in the issue tracker.
 
 ## Verb: `onboard project`
 
-Install one upstream pack into a managed project directory. This is the
+Install one fork pack into a managed project directory. This is the
 skill's only creative verb: it lands files and stops.
 
 ```sh
@@ -96,6 +96,15 @@ Exit codes / STATUS line:
   upstream's documentary branch and never a pack)
 - `4` `OCCUPIED` — target already has `swarm` or `swarmforge/`; zero writes
 - `5` `ERROR` — download or extract failed; target unchanged
+
+The pack comes from `arlishansenn/swarm-forge`, and the extracted archive is
+**immutable input** (issue #38, ADR-0002). Each fork Pack branch already ships
+its final config and a launcher pointing at this fork's `main`, so there is no
+post-install patch step any more. That step is what used to destroy the
+launcher's executable mode (issue #33): not touching the file is what keeps its
+bytes and mode intact, not a more careful way of writing it back. `update
+SwarmForge scripts` keeps its own separate ARCHIVE_URL rewrite as a
+legacy-repair path for projects onboarded before this change.
 
 **Boundary:** do not run `./swarm` for the user after onboarding. The three
 hard prohibitions stand unchanged: never start, never clean up, never decide
