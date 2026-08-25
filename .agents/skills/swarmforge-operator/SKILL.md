@@ -188,14 +188,34 @@ scripts` on the same managed project — a lock already held by that verb is
 `6` `UNSAFE`, naming the holder. Then, unless `--force` is given, it
 recomputes a deterministic digest of the managed project's installed
 `swarmforge/scripts/` and compares it against `$ROOT/.swarmforge/
-scripts-manifest`: a missing manifest or a digest mismatch is `4` `DRIFT`,
-and the launcher is never invoked — this is exactly the failure mode that
-let a running swarm reach handoff with scripts its own launcher didn't
-recognize as required. `--force` overrides both the lock contention and the
-drift check (never the already-running check above, which has no
-override): it steals a held lock and skips the digest comparison entirely.
-The lock is held through the rest of this script, including launch and the
-readiness poll, and is released on every exit path.
+scripts-manifest`. Which of the two identity artifacts exist decides what
+happens (issue #35):
+
+- **Fresh** — snapshot and manifest both absent. This is a project that was
+  onboarded and left stopped, and the Pack's own launcher owns first-run
+  bootstrap, so `start swarm` hands off to it rather than refusing. Fresh does
+  not mean "ignore a mismatch": it is the single exact state where both are
+  absent.
+- **Managed** — both present. The digest is verified before launch, and so
+  before any role-worktree mirroring can propagate the top-level tree. Issue
+  #29's per-role fidelity check only proves a role's copy matches its source,
+  so a corrupt top-level tree has to be caught here or not at all.
+- **Incomplete** — exactly one present. A torn install; `4` `DRIFT`, never a
+  guess about which side is right.
+
+A digest mismatch is likewise `4` `DRIFT`, and the launcher is never invoked —
+this is exactly the failure mode that let a running swarm reach handoff with
+scripts its own launcher didn't recognize as required. `--force` overrides both
+the lock contention and the drift check (never the already-running check above,
+which has no override): it steals a held lock and skips the digest comparison
+entirely. The lock is held through the rest of this script, including launch
+and the readiness poll, and is released on every exit path — **except one**: a
+readiness timeout on the fresh-bootstrap path leaves it deliberately held. The
+readiness budget is sized for launching an already-installed snapshot, while a
+first run also downloads one, which is unbounded; timing out there does not
+prove the launcher stopped, and releasing would let a retry or a concurrent
+`update SwarmForge scripts` become a second writer against an install still in
+progress. Clearing it is then an explicit `--force`.
 
 The launch itself runs detached, local or remote: `SWARMFORGE_TERMINAL=
 <value> nohup ./swarm >log 2>&1 &` (or without the env var, for `auto`),

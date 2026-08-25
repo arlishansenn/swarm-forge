@@ -151,15 +151,27 @@ LOCKDIR=.swarmforge/update-lock
 # exists with its holder file written, and this returns 0. On an
 # already-held lock, returns 1 and sets LOCK_HOLDER to the existing holder
 # file's contents, for the caller to name in its own UNSAFE message.
+# Returns 2 when the runtime parent could not be created at all — a
+# filesystem or permission failure, which the caller reports as ERROR/5.
 # Stealing a held lock (removing it and re-acquiring) is the CALLER's job
 # via release_lock + a retry, driven by --force — this function only ever
 # reports contention, never clears it itself. Same LOCAL/remote dual-mode
 # shape as tmux_remote/git_status: LOCAL runs mkdir directly (no shell in
 # the middle), remote builds one %q-quoted command string and ships it in a
 # single ssh call — never hand-interpolating $ROOT into a raw ssh string.
+#
+# The parent is created first, and deliberately with `mkdir -p` while the
+# lock dir itself stays a bare `mkdir` (issue #35). A freshly onboarded
+# project has no `.swarmforge/` at all yet — onboarding installs the Pack and
+# stops. Without this, the bare mkdir failed for a missing parent, the holder
+# read then found nothing, and a genuinely fresh project was reported as
+# contention with an EMPTY holder name: "lock held by ''". The lock dir keeps
+# its bare mkdir because that failure-when-it-exists IS the atomic test; only
+# the parent is made idempotently.
 acquire_lock() {
   local holder=$1
   if [ "$LOCAL" = 1 ]; then
+    mkdir -p "$ROOT/.swarmforge" 2>/dev/null || return 2
     if mkdir "$ROOT/$LOCKDIR" 2>/dev/null; then
       printf '%s\n' "$holder" > "$ROOT/$LOCKDIR/holder"
       return 0
@@ -167,11 +179,16 @@ acquire_lock() {
     LOCK_HOLDER=$(cat "$ROOT/$LOCKDIR/holder" 2>/dev/null)
     return 1
   else
-    local cmd out
-    cmd="if mkdir $(printf '%q' "$ROOT/$LOCKDIR") 2>/dev/null; then printf '%s\n' $(printf '%q' "$holder") > $(printf '%q' "$ROOT/$LOCKDIR/holder"); else cat $(printf '%q' "$ROOT/$LOCKDIR/holder") 2>/dev/null; exit 1; fi"
+    local cmd out rc
+    # exit 3 distinguishes "could not make the parent" from mkdir's own
+    # "already exists" contention path, so the two do not collapse into one
+    # indistinguishable non-zero status after the ssh hop.
+    cmd="mkdir -p $(printf '%q' "$ROOT/.swarmforge") 2>/dev/null || exit 3; if mkdir $(printf '%q' "$ROOT/$LOCKDIR") 2>/dev/null; then printf '%s\n' $(printf '%q' "$holder") > $(printf '%q' "$ROOT/$LOCKDIR/holder"); else cat $(printf '%q' "$ROOT/$LOCKDIR/holder") 2>/dev/null; exit 1; fi"
     if out=$(ssh -n -i "$KEY" "$TARGET" "$cmd"); then
       return 0
     fi
+    rc=$?
+    [ "$rc" = 3 ] && return 2
     LOCK_HOLDER=$out
     return 1
   fi

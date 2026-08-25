@@ -454,6 +454,94 @@ D_NO_SLASH=$(compute_digest "$ROOT/swarmforge/scripts")
 D_SLASH=$(compute_digest "$ROOT/swarmforge/scripts/")
 check "trailing-slash: same tree digests identically with/without a trailing slash" "$D_NO_SLASH" "$D_SLASH"
 
+# ---------- issue #35: fresh / managed / incomplete snapshot states ----------
+
+# fresh_project — a project as `onboard project` leaves it: the Pack is
+# installed and the Swarm is stopped, so there is no swarmforge/scripts/ and no
+# .swarmforge/ at all. Deliberately removes the whole .swarmforge directory,
+# not just its contents: the lock's missing-parent bug only reproduces when the
+# parent itself is absent.
+fresh_project() {
+  rm -rf "$ROOT/.swarmforge" "$ROOT/swarmforge"
+}
+
+# 19. FRESH: snapshot and manifest both absent -> this is the state the Pack
+#     launcher's own first-run bootstrap exists for, so start swarm must reach
+#     the launcher instead of refusing. Before issue #35 this returned DRIFT
+#     and the launcher never ran, so a freshly onboarded project could not be
+#     started at all without a manual workaround.
+reset_stub
+fresh_project
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh run --local --root "$ROOT" --terminal none
+check "fresh-bootstrap exit" 0 "$RC"
+[ "$(status_line)" = "STATUS=STARTED" ] \
+  && ok "fresh-bootstrap status is STARTED, not DRIFT" \
+  || bad "fresh-bootstrap status is STARTED, not DRIFT" "$OUT"
+launcher_ran && ok "fresh-bootstrap: launcher reached, it owns the bootstrap" \
+  || bad "fresh-bootstrap: launcher reached" "$(cat "$STUB/calls.log")"
+
+# 20. fresh lock acquisition works with no .swarmforge/ parent at all. This is
+#     the same fixture as case 19 and the assertion is really about case 19's
+#     precondition, but it gets its own case because the failure it guards was
+#     silent and misleading: the bare mkdir failed on the missing parent, the
+#     holder read then found nothing, and a genuinely fresh project reported
+#     contention with an EMPTY holder — "lock held by ''".
+reset_stub
+fresh_project
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh run --local --root "$ROOT" --terminal none
+! printf '%s\n' "$OUT" | grep -q "lock held by ''" \
+  && ok "fresh lock: missing .swarmforge parent is not empty-holder contention" \
+  || bad "fresh lock: missing .swarmforge parent is not empty-holder contention" "$OUT"
+check "fresh lock: start still succeeds" 0 "$RC"
+
+# 21. INCOMPLETE, manifest-only: the mirror image of case 11's snapshot-only.
+#     Never guess which side is authoritative — refuse and make the operator
+#     recover. (Case 11 already covers snapshot-without-manifest.)
+reset_stub
+fresh_project
+mkdir -p "$ROOT/.swarmforge"
+printf 'SOURCE_COMMIT=deadbeef\nSOURCE_REPO=unknown\nDIGEST=0000000000000000000000000000000000000000000000000000000000000000\n' \
+  > "$ROOT/.swarmforge/scripts-manifest"
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh run --local --root "$ROOT" --terminal none
+check "manifest-only exit" 4 "$RC"
+[ "$(status_line)" = "STATUS=DRIFT" ] \
+  && ok "manifest-only status is DRIFT" || bad "manifest-only status is DRIFT" "$OUT"
+! launcher_ran && ok "manifest-only: launcher never invoked" \
+  || bad "manifest-only: launcher never invoked" "$(cat "$STUB/calls.log")"
+
+# 22. a readiness timeout on the FRESH-BOOTSTRAP path leaves the lock HELD.
+#     The readiness budget is sized for launching an already-installed
+#     snapshot; a first run also downloads one, which is unbounded. Timing out
+#     does not prove the launcher stopped, so auto-releasing here would let a
+#     retry — or a concurrent `update SwarmForge scripts` — become a second
+#     writer against an install that is still in progress.
+reset_stub
+fresh_project
+SF_START_READY_TRIES=1 SF_START_READY_INTERVAL=0 SF_TEST_DELAY=30 \
+  SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh run --local --root "$ROOT" --terminal none
+check "fresh-timeout exit" 5 "$RC"
+[ -d "$ROOT/.swarmforge/update-lock" ] \
+  && ok "fresh-timeout: lock deliberately left HELD for an in-progress bootstrap" \
+  || bad "fresh-timeout: lock deliberately left HELD" "update-lock was released"
+printf '%s\n' "$OUT" | grep -q 'left HELD' \
+  && ok "fresh-timeout: the report says the lock was left held, and why" \
+  || bad "fresh-timeout: the report says the lock was left held" "$OUT"
+
+# 23. the same timeout on a MANAGED project still releases the lock. The
+#     hold in case 22 is scoped to the fresh path only — a managed snapshot's
+#     launch has no unbounded download behind it, so the pre-existing
+#     release-on-exit behavior must be untouched.
+reset_stub
+rm -rf "$ROOT/.swarmforge/update-lock"
+reset_scripts_fixture
+write_matching_manifest
+SF_START_READY_TRIES=1 SF_START_READY_INTERVAL=0 SF_TEST_DELAY=30 \
+  SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh run --local --root "$ROOT" --terminal none
+check "managed-timeout exit" 5 "$RC"
+[ -d "$ROOT/.swarmforge/update-lock" ] \
+  && bad "managed-timeout: lock released as before" "update-lock still held on a managed project" \
+  || ok "managed-timeout: lock released as before"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]

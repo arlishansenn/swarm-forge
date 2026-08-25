@@ -104,7 +104,14 @@ if SOCK=$(read_file .swarmforge/tmux-socket 2>/dev/null); then
 fi
 
 # ---------- lock: exclude a concurrent update (issue #29) ----------
-if ! acquire_lock start; then
+# `|| LOCK_RC=$?` rather than a bare call: acquire_lock reports contention (1)
+# and a filesystem failure (2) through its exit status, and under `set -e` a
+# bare non-zero call would abort the script before the status could be read.
+LOCK_RC=0; acquire_lock start || LOCK_RC=$?
+if [ "$LOCK_RC" = 2 ]; then
+  die ERROR "cannot create $ROOT/.swarmforge to take the project lock — check the path and its permissions" 5
+fi
+if [ "$LOCK_RC" != 0 ]; then
   if [ "$FORCE" != 1 ]; then
     die UNSAFE "project lock held by '$LOCK_HOLDER' — wait, or re-run with --force to break a lock left by a dead process" 6
   fi
@@ -122,11 +129,45 @@ fi
 # release_lock call elsewhere in this file.
 trap release_lock EXIT
 
-# ---------- drift: installed scripts vs their own manifest (issue #29) ----------
+# ---------- snapshot state: fresh / managed / incomplete (issues #29, #35) ----------
+# Three states, told apart by which of the two identity artifacts exist. They
+# are checked BEFORE any launch, and — for the managed case — before the
+# launcher's own sync-worktree-scripts! mirroring can propagate the top-level
+# tree into role worktrees. Issue #29's per-role fidelity check only proves a
+# role's copy matches the top-level source; it cannot catch a top-level tree
+# that is already corrupt, because the mirror trivially matches whatever it
+# just copied from. Catching it here is the only place that helps.
+#
+# 1. FRESH    — snapshot and manifest both absent. This is a project that was
+#               onboarded and left stopped: the Pack's own launcher owns
+#               first-run bootstrap, so hand off to it instead of refusing.
+#               Fresh does NOT mean "ignore a mismatch"; it is the single
+#               exact state where both artifacts are absent.
+# 2. MANAGED  — both present. Verify the digest before launching.
+# 3. INCOMPLETE — exactly one present. A torn install or an interrupted
+#               bootstrap. Never guess which side is right: DRIFT/4 and make
+#               the operator run `update SwarmForge scripts` or recover.
+SNAPSHOT_PRESENT=0
+run_remote_test() { # $1 = test expression body
+  if [ "$LOCAL" = 1 ]; then bash -c "$1"; else ssh -n -i "$KEY" "$TARGET" "$1"; fi
+}
+run_remote_test "test -d $(printf '%q' "$ROOT/swarmforge/scripts")" 2>/dev/null && SNAPSHOT_PRESENT=1
+MANIFEST_PRESENT=0
+run_remote_test "test -f $(printf '%q' "$ROOT/.swarmforge/scripts-manifest")" 2>/dev/null && MANIFEST_PRESENT=1
+
+FRESH_BOOTSTRAP=0
 if [ "$FORCE" != 1 ]; then
-  INSTALLED_DIGEST=$(remote_scripts_digest "$ROOT/swarmforge/scripts")
-  if ! MANIFEST_DIGEST=$(read_manifest) || [ "$MANIFEST_DIGEST" != "$INSTALLED_DIGEST" ]; then
-    die DRIFT "installed SwarmForge scripts do not match $ROOT/.swarmforge/scripts-manifest (or it's missing) — run update SwarmForge scripts first, or re-run with --force to launch anyway" 4
+  if [ "$SNAPSHOT_PRESENT" = 0 ] && [ "$MANIFEST_PRESENT" = 0 ]; then
+    FRESH_BOOTSTRAP=1
+  elif [ "$SNAPSHOT_PRESENT" = 1 ] && [ "$MANIFEST_PRESENT" = 1 ]; then
+    INSTALLED_DIGEST=$(remote_scripts_digest "$ROOT/swarmforge/scripts")
+    if ! MANIFEST_DIGEST=$(read_manifest) || [ "$MANIFEST_DIGEST" != "$INSTALLED_DIGEST" ]; then
+      die DRIFT "installed SwarmForge scripts do not match $ROOT/.swarmforge/scripts-manifest — run update SwarmForge scripts first, or re-run with --force to launch anyway" 4
+    fi
+  elif [ "$SNAPSHOT_PRESENT" = 1 ]; then
+    die DRIFT "$ROOT/swarmforge/scripts exists but $ROOT/.swarmforge/scripts-manifest does not — an interrupted install; run update SwarmForge scripts, or re-run with --force to launch anyway" 4
+  else
+    die DRIFT "$ROOT/.swarmforge/scripts-manifest exists but $ROOT/swarmforge/scripts does not — an interrupted install; run update SwarmForge scripts, or re-run with --force to launch anyway" 4
   fi
 fi
 
@@ -167,8 +208,24 @@ done
 # this script never waits on or inspects the launcher's own exit code; the
 # runtime files are the only source of truth it trusts, same as every other
 # verb in this skill.
-[ "$READY" = 1 ] || die ERROR \
-  "$ROOT/.swarmforge/tmux-socket never came up (or its tmux server never answered) within ${READY_TRIES}x${READY_INTERVAL}s — check $ROOT/$LOG" 5
+if [ "$READY" != 1 ]; then
+  # On a fresh bootstrap the lock stays HELD past this timeout (issue #35).
+  # The readiness budget is sized for launching an already-installed
+  # snapshot; a first-run bootstrap also downloads one, which is an
+  # unbounded network operation. Timing out here does not mean the launcher
+  # stopped — it may still be writing the snapshot. Releasing the lock would
+  # let a retried `start swarm`, or a concurrent `update SwarmForge
+  # scripts`, become a second writer against that in-progress install. So
+  # the trap is disarmed and clearing the lock becomes an explicit operator
+  # --force, the same "operator-judged, never inferred" convention issue #29
+  # set for lock contention generally.
+  if [ "$FRESH_BOOTSTRAP" = 1 ]; then
+    trap - EXIT
+    die ERROR "first-run bootstrap did not become ready within ${READY_TRIES}x${READY_INTERVAL}s. The snapshot download may still be running, so the project lock is left HELD deliberately — check $ROOT/$LOG, then re-run with --force once you have confirmed nothing is still writing" 5
+  fi
+  die ERROR \
+    "$ROOT/.swarmforge/tmux-socket never came up (or its tmux server never answered) within ${READY_TRIES}x${READY_INTERVAL}s — check $ROOT/$LOG" 5
+fi
 
 printf 'STATUS=STARTED\nROOT=%s\nSOCK=%s\nTERMINAL=%s\n' "$ROOT" "$SOCK" "$TERMINAL"
 exit 0
