@@ -274,14 +274,18 @@ VALID_ROWS=$(printf '%s\n' "$FILTERED" | { grep '^ROW' || true; } | cut -d $'\x1
 # `2026-08-24T17:26:56.932911Z`). Rather than patch a truncate-then-parse
 # epoch helper into this path, this sidesteps date parsing entirely: these
 # are fixed-width ISO8601 UTC strings from one producer (Instant/now()), so
-# byte-lexical order already equals chronological order, fractional seconds
-# included, with no epoch arithmetic needed at all — the "epoch only when
+# byte-lexical order equals chronological order ONCE the strings are the
+# same width, with no epoch arithmetic needed at all — the "epoch only when
 # something needs arithmetic with another time" case never arises here.
-# ponytail: this assumes every completed_at being compared shares the same
-# width (all-fractional or all-whole) — true for this producer's real output
-# but not a general ISO8601 guarantee; pad/normalize widths if a producer
-# with mixed-width timestamps ever appears.
-# Only when two rows' completed_at strings are BYTE-IDENTICAL (the same
+# The strings are NOT naturally the same width: Java's Instant.toString()
+# (ISO_INSTANT, what done_with_current_task.bb emits) truncates trailing
+# zeros and drops the fractional part entirely when the nanos land exactly
+# on a second boundary, so one producer legitimately emits both
+# `...:55Z` and `...:55.000001Z`. Raw bytes compare 'Z' > '.', which would
+# pick the EARLIER record. So norm() below pads/truncates the fraction to a
+# fixed 9 digits (Instant's max precision) FOR COMPARISON ONLY; the row
+# kept and printed still carries the original completed_at verbatim.
+# Only when two rows' NORMALIZED completed_at strings are identical (the same
 # second, two terminal returns in a fast cleaner->coder loop) does this fall
 # back to filename lexical order — an explicit, declared LAST-RESORT
 # tie-break (filenames already carry a priority+timestamp prefix, this
@@ -290,10 +294,21 @@ VALID_ROWS=$(printf '%s\n' "$FILTERED" | { grep '^ROW' || true; } | cut -d $'\x1
 DEDUPED=""
 if [ -n "$VALID_ROWS" ]; then
   DEDUPED=$(printf '%s\n' "$VALID_ROWS" | LC_ALL=C awk -v FS=$'\x1f' -v OFS=$'\x1f' '
+    # Fixed-width form of an ISO8601 UTC instant, comparison-only: the
+    # fraction is zero-padded (or truncated) to 9 digits, so a no-fraction
+    # timestamp becomes .000000000 and sorts before any fraction in the
+    # same second instead of after it.
+    function norm(t,   p, head, frac) {
+      sub(/Z$/, "", t)
+      p = index(t, ".")
+      if (p) { head = substr(t, 1, p - 1); frac = substr(t, p + 1) }
+      else   { head = t; frac = "" }
+      return head "." substr(frac "000000000", 1, 9) "Z"
+    }
     $3 != "" {
-      k = $3
-      if (!(k in seen) || $5 > best[k] || ($5 == best[k] && $2 > bestfile[k])) {
-        seen[k] = 1; best[k] = $5; bestfile[k] = $2; row[k] = $0
+      k = $3; n = norm($5)
+      if (!(k in seen) || n > best[k] || (n == best[k] && $2 > bestfile[k])) {
+        seen[k] = 1; best[k] = n; bestfile[k] = $2; row[k] = $0
       }
     }
     END { for (k in row) print row[k] }

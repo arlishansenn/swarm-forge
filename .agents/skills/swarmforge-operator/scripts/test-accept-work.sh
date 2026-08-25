@@ -334,6 +334,30 @@ printf '%s\n' "$OUT" | grep -q '^commit: ffffffff05$' \
 N=$(printf '%s\n' "$OUT" | grep -c '^task: same-task$')
 check "newest-wins: exactly one entry" 1 "$N"
 
+# 9b. same task, same second, MIXED-WIDTH completed_at — the single real
+#     producer emits both shapes: Instant.toString() drops the fractional
+#     part entirely when the nanos land on a second boundary, so
+#     `...:55Z` (earlier) and `...:55.000001Z` (one microsecond later) are
+#     both legitimate output. Raw byte comparison has 'Z' > '.' and would
+#     report the EARLIER record — exactly the wrong-commit failure issue #39
+#     exists to eliminate. The no-fraction record also gets the lexically
+#     LATER filename, so the tie-break cannot rescue this by accident: only
+#     fixed-width normalization of the fraction makes the later record win.
+reset_fixture; reset_stub
+mk_roles coder master "$ROOT"
+mk_completed - aa_frac.handoff   mixedwidth-task ffff000001 2026-08-24T17:26:55.000001Z
+mk_completed - zz_nofrac.handoff mixedwidth-task aaaa000002 2026-08-24T17:26:55Z
+run
+check "mixed-width exit" 0 "$RC"
+printf '%s\n' "$OUT" | grep -q '^commit: ffff000001$' \
+  && ok "mixed-width: fractional record wins over same-second no-fraction one" \
+  || bad "mixed-width: fractional record wins over same-second no-fraction one" "$OUT"
+printf '%s\n' "$OUT" | grep -q '^completed_at: 2026-08-24T17:26:55.000001Z$' \
+  && ok "mixed-width: completed_at printed verbatim, not normalized" \
+  || bad "mixed-width: completed_at printed verbatim, not normalized" "$OUT"
+N=$(printf '%s\n' "$OUT" | grep -c '^task: mixedwidth-task$')
+check "mixed-width: exactly one entry" 1 "$N"
+
 # 10. same task, IDENTICAL completed_at strings (a real scenario: two
 #     done_with_current completions in the same second on a fast
 #     cleaner->coder loop) -> explicit last-resort tie-break by filename

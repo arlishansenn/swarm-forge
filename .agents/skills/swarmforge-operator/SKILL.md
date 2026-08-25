@@ -547,9 +547,12 @@ Rules (unchanged from the manual command this replaces):
   already excluded by reading only the master worktree; when master itself
   holds several terminal returns for one `task:` (a re-run, a fast
   `cleaner → coder` loop), the newest `completed_at:` wins. Ordering compares
-  the raw ISO8601 UTC string, so fractional seconds
-  (`2026-08-24T17:26:56.932911Z`) order correctly — `date` on macOS cannot
-  parse that shape at all. Byte-identical `completed_at:` falls back to
+  the ISO8601 UTC string with its fractional part padded to a fixed 9 digits
+  first — the producer drops the fraction entirely on an exact second
+  boundary, so `...:55Z` and `...:55.000001Z` both occur and only the padded
+  form orders them correctly. No `date` parsing is involved; `date` on macOS
+  cannot parse the fractional shape at all. The report still prints the
+  recorded `completed_at:` verbatim. Equal padded timestamps fall back to
   filename lexical order, a declared last-resort tie-break, so the result is
   never undefined.
 - The handoff points at the commit only. The code itself is in git; verify
