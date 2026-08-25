@@ -165,7 +165,8 @@
   (let [result (run {:dir repo-root} (script "swarmforge.bb") "--test-required-helpers")
         names (set (str/split-lines (str/trim (:out result))))]
     (is (contains? names "pack_web.sh"))
-    (is (contains? names "pack_board.sh"))))
+    (is (contains? names "pack_board.sh"))
+    (is (contains? names "pack_dashboard_request.sh"))))
 
 (defn write-pack-conf! [root conf]
   (write-file (fs/path root "swarmforge/constitution.prompt") "Read articles.\n")
@@ -324,6 +325,41 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest grok-launch-command-uses-minimal-for-scrollback
+  ;; Given a grok pack role
+  ;; When SwarmForge builds the launch command
+  ;; Then grok runs --minimal so finalized chatter is in tmux scrollback
+  (let [root (tmp-dir)]
+    (try
+      (let [command (:out (run {:dir root}
+                               (script "swarmforge.bb")
+                               "--test-launch-command"
+                               (str root)
+                               "grok"))]
+        (is (str/includes? command " --minimal ")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest launch-command-puts-transcript-in-tmux-scrollback
+  ;; Given each pack backend
+  ;; When SwarmForge builds the launch command
+  ;; Then Codex and Copilot use --no-alt-screen, Claude disables the
+  ;; alternate screen, and Grok keeps --minimal
+  (doseq [[agent needle] [["codex" "--no-alt-screen"]
+                          ["copilot" "--no-alt-screen"]
+                          ["claude" "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1"]
+                          ["grok" "--minimal"]]]
+    (let [root (tmp-dir)]
+      (try
+        (let [command (:out (run {:dir root}
+                                 (script "swarmforge.bb")
+                                 "--test-launch-command"
+                                 (str root)
+                                 agent))]
+          (is (str/includes? command needle) agent))
+        (finally
+          (fs/delete-tree root))))))
+
 (deftest grok-launch-command-uses-bypass-permissions-with-always-approve
   (let [root (tmp-dir)]
     (try
@@ -374,6 +410,155 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest swarmforge-trusts-codex-worktree-once
+  ;; Given a Codex worktree with no projects block
+  ;; When startup ensures trust
+  ;; Then config.toml gains trust_level trusted for that exact path, once
+  (let [root (tmp-dir)
+        home (fs/create-temp-dir {:prefix "codex-home."})
+        wt (str (fs/absolutize root))]
+    (try
+      (doseq [_ [1 2]]
+        (run {:dir root :env {"CODEX_HOME" (str home)
+                              "HOME" (str home)
+                              "PATH" (System/getenv "PATH")
+                              "GIT_CONFIG_NOSYSTEM" "1"}}
+             (script "swarmforge.bb")
+             "--test-ensure-codex-trust"
+             wt))
+      (let [cfg (slurp (str (fs/path home "config.toml")))
+            header (str "[projects." (pr-str wt) "]")
+            hits (count (re-seq (re-pattern (java.util.regex.Pattern/quote header)) cfg))]
+        (is (str/includes? cfg header))
+        (is (str/includes? cfg "trust_level = \"trusted\""))
+        (is (= 1 hits)))
+      (finally
+        (fs/delete-tree root)
+        (fs/delete-tree home)))))
+
+(deftest swarmforge-does-not-overwrite-existing-codex-project-block
+  ;; Given an existing projects block for the worktree
+  ;; When startup ensures trust
+  ;; Then that block is left unchanged
+  (let [root (tmp-dir)
+        home (fs/create-temp-dir {:prefix "codex-home."})
+        wt (str (fs/absolutize root))
+        header (str "[projects." (pr-str wt) "]")
+        original (str header "\ntrust_level = \"untrusted\"\nnote = \"keep\"\n")]
+    (try
+      (write-file (fs/path home "config.toml") original)
+      (run {:dir root :env {"CODEX_HOME" (str home)
+                            "PATH" (System/getenv "PATH")
+                            "GIT_CONFIG_NOSYSTEM" "1"}}
+           (script "swarmforge.bb")
+           "--test-ensure-codex-trust"
+           wt)
+      (is (= original (slurp (str (fs/path home "config.toml")))))
+      (finally
+        (fs/delete-tree root)
+        (fs/delete-tree home)))))
+
+(deftest swarm-tool-knows-constitution-tool-names
+  ;; Given a pack project
+  ;; When require runs for clj-mutate
+  ;; Then it is a known tool (missing until ensure), not Unknown tool
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (let [missing (run {:dir root :ok? false}
+                         (script "swarm_tool.sh") "require" "clj-mutate")
+            help (run {:dir root :ok? false}
+                      (script "swarm_tool.sh") "--help")]
+        (is (not= 0 (:exit missing)))
+        (is (str/includes? (:err missing) "MISSING: clj-mutate"))
+        (is (not (str/includes? (:err missing) "Unknown tool")))
+        (is (str/includes? (str (:err help) (:out help)) "clj-mutate"))
+        (is (str/includes? (str (:err help) (:out help)) "crap4clj"))
+        (is (str/includes? (str (:err help) (:out help)) "dry4clj"))
+        (is (str/includes? (str (:err help) (:out help)) "cloverage"))
+        (is (str/includes? (str (:err help) (:out help)) "speclj"))
+        (is (str/includes? (str (:err help) (:out help)) "speclj-structure-check")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarm-tool-ensure-cloverage-invokes-cloverage
+  ;; Given a pack project
+  ;; When swarm_tool.sh ensure cloverage
+  ;; Then the wrapper launches cloverage.coverage, not crap4clj
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "cloverage")
+      (let [wrapper (slurp (str (fs/path root ".swarmforge/bin/cloverage")))]
+        (is (str/includes? wrapper "cloverage.coverage"))
+        (is (str/includes? wrapper "cloverage/cloverage"))
+        (is (str/includes? wrapper "\"src\""))
+        (is (str/includes? wrapper "\"spec\""))
+        (is (str/includes? wrapper "\"test\""))
+        (is (str/includes? wrapper "-s spec"))
+        (is (str/includes? wrapper "-r speclj"))
+        (is (str/includes? wrapper "speclj/speclj"))
+        (is (not (str/includes? wrapper "crap4clj")))
+        (is (zero? (:exit (run {:dir root} (script "swarm_tool.sh") "require" "cloverage"))))
+        (is (zero? (:exit (run {:dir root} (script "swarm_tool.sh") "require" "Cloverage")))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarm-tool-ensure-speclj-uses-speclj-main
+  ;; Given a pack project
+  ;; When swarm_tool.sh ensure speclj
+  ;; Then the wrapper runs speclj.main -c spec, not speclj.cli
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "speclj")
+      (let [wrapper (slurp (str (fs/path root ".swarmforge/bin/speclj")))]
+        (is (str/includes? wrapper "speclj.main"))
+        (is (str/includes? wrapper "-c spec"))
+        (is (str/includes? wrapper "3.13.0"))
+        (is (not (str/includes? wrapper "speclj.cli"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarm-tool-ensure-crap4clj-also-installs-cloverage
+  ;; Given a pack project with local crap4clj source
+  ;; When swarm_tool.sh ensure crap4clj
+  ;; Then both crap4clj and cloverage wrappers are installed
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (write-file (fs/path root ".swarmforge/tools/crap4clj/bb.edn")
+                  "{:tasks {crap4clj identity}}\n")
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "crap4clj")
+      (is (fs/executable? (fs/path root ".swarmforge/bin/crap4clj")))
+      (is (fs/executable? (fs/path root ".swarmforge/bin/cloverage")))
+      (is (str/includes? (slurp (str (fs/path root ".swarmforge/bin/cloverage")))
+                         "cloverage.coverage"))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarm-tool-ensure-clj-mutate-also-installs-cloverage
+  ;; Given a pack project with local clj-mutate source
+  ;; When swarm_tool.sh ensure clj-mutate
+  ;; Then both clj-mutate and cloverage wrappers are installed
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (write-file (fs/path root ".swarmforge/tools/clj-mutate/bb.edn")
+                  "{:tasks {clj-mutate identity}}\n")
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "clj-mutate")
+      (is (fs/executable? (fs/path root ".swarmforge/bin/clj-mutate")))
+      (is (fs/executable? (fs/path root ".swarmforge/bin/cloverage")))
+      (is (str/includes? (slurp (str (fs/path root ".swarmforge/bin/cloverage")))
+                         "cloverage.coverage"))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest swarm-tool-require-and-ensure-install-aps-wrappers
   ;; Given a project without APS tools
   ;; When require runs, it reports missing
@@ -407,36 +592,22 @@
       (finally
         (fs/delete-tree root)))))
 
-(deftest specifier-instruction-file-names-aps-require-ensure-and-tmp-argv
-  ;; Given a specifier assignment
-  ;; When SwarmForge writes the instruction file
-  ;; Then Tool Startup names require/ensure and the two-arg parse/dry-check
-  ;; forms into ./tmp/, and does not send the agent hunting under $HOME
+(deftest swarmforge-start-order-opens-dashboard-before-agents
+  ;; Given a pack
+  ;; When --test-start-order
+  ;; Then pack_web starts before agents
   (let [root (tmp-dir)]
     (try
-      (let [result (run {:dir root}
-                        (script "swarmforge.bb")
-                        "--test-instruction-file"
-                        (str root)
-                        "specifier")
-            prompt (str/trim (:out result))
-            path (fs/path root ".swarmforge/prompts/specifier.md")]
-        (is (fs/exists? path))
-        (is (str/includes? prompt "## Tool Startup"))
-        (is (str/includes? prompt "swarm_tool.sh require gherkin-parser"))
-        (is (str/includes? prompt "swarm_tool.sh ensure gherkin-parser"))
-        (is (str/includes? prompt "swarm_tool.sh require ir-dry-checker"))
-        (is (str/includes? prompt "swarm_tool.sh ensure ir-dry-checker"))
-        (is (str/includes? prompt "gherkin-parser <feature> ./tmp/"))
-        (is (str/includes? prompt "ir-dry-checker <ir> ./tmp/"))
-        (is (str/includes? prompt "./tmp/")
-            "parse, dry-check, and drafts belong in ./tmp/")
-        (is (str/includes? prompt "/tmp")
-            "must say not to use /tmp")
-        (is (str/includes? prompt "outbox/tmp")
-            "must say not to use the handoff outbox as scratch")
-        (is (str/includes? prompt "$HOME")
-            "must say not to search $HOME"))
+      (write-pack-conf! root
+                        (str "window-invisible specifier codex master\n"
+                             "window coder codex coder\n"))
+      (let [out (:out (run {:dir root} (script "swarmforge.bb")
+                           "--test-start-order" (str root)))
+            pack (.indexOf out "pack_web start")
+            agents (.indexOf out "start-agents")]
+        (is (>= pack 0))
+        (is (>= agents 0))
+        (is (< pack agents)))
       (finally
         (fs/delete-tree root)))))
 
@@ -530,6 +701,28 @@
         (run {:dir root :ok? false} "tmux" "-S" sock "kill-server")
         (fs/delete-tree root)))))
 
+(deftest role-session-keeps-tmux-scrollback
+  ;; Given a tmux socket
+  ;; When SwarmForge creates a role session
+  ;; Then history-limit keeps thousands of lines
+  (let [root (tmp-dir)
+        sock (str root "/test.sock")
+        conf (fs/path root "tmux.conf")]
+    (try
+      (write-file conf "set -g history-limit 50\n")
+      (run {:dir root} "tmux" "-S" sock "-f" (str conf) "new-session" "-d" "-s" "probe" "sleep" "120")
+      (let [result (run {:dir root}
+                        (script "swarmforge.bb")
+                        "--test-create-role-session"
+                        sock
+                        "swarmforge-specifier")
+            limit (Long/parseLong (str/trim (:out result)))]
+        (is (zero? (:exit result)))
+        (is (>= limit 2000)))
+      (finally
+        (run {:dir root :ok? false} "tmux" "-S" sock "kill-server")
+        (fs/delete-tree root)))))
+
 (deftest swarm-cleanup-tolerates-missing-runtime-state
   (let [root (tmp-dir)
         ids-file (fs/path root ".swarmforge/window-ids")]
@@ -591,3 +784,84 @@
           (.destroyForcibly daemon))
         (run {:dir root :ok? false} "tmux" "-S" sock "kill-server")
         (fs/delete-tree root)))))
+
+(defn write-echo-tool! [root tool]
+  (write-file (fs/path root ".swarmforge/roles.tsv")
+              (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+  (write-file (fs/path root ".swarmforge/tools" tool "bb.edn")
+              (str "{:tasks {" tool " (apply println *command-line-args*)}}\n")))
+
+(deftest clj-mutate-wrapper-is-differential-with-four-workers
+  ;; Given an installed clj-mutate wrapper
+  ;; When it is invoked with --mutate-all
+  ;; Then --mutate-all is dropped and --max-workers 4 is used
+  (let [root (tmp-dir)]
+    (try
+      (write-echo-tool! root "clj-mutate")
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "clj-mutate")
+      (let [out (:out (run {:dir root}
+                           (str (fs/path root ".swarmforge/bin/clj-mutate"))
+                           "src/htw/game.clj" "--reuse-lcov" "--mutate-all"
+                           "--test-command" "bb test"))]
+        (is (str/includes? out "--max-workers 4"))
+        (is (not (str/includes? out "--mutate-all"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest clj-mutate-scan-does-not-inject-max-workers
+  ;; Given an installed clj-mutate wrapper
+  ;; When it is invoked with --scan
+  ;; Then it does not add --max-workers
+  (let [root (tmp-dir)]
+    (try
+      (write-echo-tool! root "clj-mutate")
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "clj-mutate")
+      (let [out (:out (run {:dir root}
+                           (str (fs/path root ".swarmforge/bin/clj-mutate"))
+                           "src/htw/game.clj" "--scan"))]
+        (is (not (str/includes? out "--max-workers"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest gherkin-mutator-wrapper-is-differential-with-four-workers
+  ;; Given an installed gherkin-mutator wrapper
+  ;; When it is invoked with --level full
+  ;; Then the level is hard and --workers 4 is used
+  (let [root (tmp-dir)
+        aps (fs/path root "aps-src")]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (write-file (fs/path aps "bb.edn")
+                  "{:tasks {gherkin-mutator (apply println *command-line-args*)}}\n")
+      (run {:dir root :env {"SWARMFORGE_TOOL_SRC" (str aps)
+                            "PATH" (System/getenv "PATH")
+                            "GIT_CONFIG_NOSYSTEM" "1"}}
+           (script "swarm_tool.sh") "ensure" "gherkin-mutator")
+      (let [out (:out (run {:dir root}
+                           (str (fs/path root ".swarmforge/bin/gherkin-mutator"))
+                           "--feature" "features/a.feature" "--level" "full"
+                           "--runner-worker" "true"))]
+        (is (str/includes? out "--level hard"))
+        (is (str/includes? out "--workers 4"))
+        (is (not (str/includes? out "--level full"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest constitution-tool-wrappers-do-not-use-a-lock-file
+  ;; Given an installed constitution tool wrapper
+  ;; When it is written
+  ;; Then it does not take a project lock directory
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (write-file (fs/path root ".swarmforge/tools/crap4clj/bb.edn")
+                  "{:tasks {crap4clj identity}}\n")
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "crap4clj")
+      (let [wrapper (slurp (str (fs/path root ".swarmforge/bin/crap4clj")))]
+        (is (not (str/includes? wrapper "constitution-tools.lock")))
+        (is (not (str/includes? wrapper "SWARMFORGE_TOOL_HELD"))))
+      (finally
+        (fs/delete-tree root)))))
+

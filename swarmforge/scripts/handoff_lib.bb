@@ -16,23 +16,21 @@
     (when-not (str/blank? out)
       (str/trim out))))
 
+(defn roles-at? [root]
+  (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))))
+
+(defn git-common-dir []
+  (let [out (:out (babashka.process/sh {:continue true} "git" "rev-parse" "--git-common-dir"))]
+    (when-not (str/blank? out)
+      (let [path (fs/path (str/trim out))]
+        (str (if (fs/absolute? path) path (fs/absolutize path)))))))
+
 (defn project-root []
-  (let [cwd (fs/cwd)
-        direct (fs/path cwd ".swarmforge" "roles.tsv")]
-    (if (fs/exists? direct)
-      cwd
-      (let [git-root (:out (babashka.process/sh {:continue true} "git" "rev-parse" "--show-toplevel"))
-            root (when-not (str/blank? git-root) (fs/path (str/trim git-root)))]
-        (if (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv")))
-          root
-          (let [common (:out (babashka.process/sh {:continue true} "git" "rev-parse" "--git-common-dir"))
-                common-path (when-not (str/blank? common)
-                              (let [path (fs/path (str/trim common))]
-                                (if (fs/absolute? path) path (fs/absolutize path))))
-                common-parent (some-> common-path fs/parent)]
-            (if (and common-parent (fs/exists? (fs/path common-parent ".swarmforge" "roles.tsv")))
-              common-parent
-              (throw (ex-info "Cannot find SwarmForge project root" {:exit 1})))))))))
+  (or (let [parent (some-> (git-common-dir) fs/parent str)]
+        (when (roles-at? parent) parent))
+      (when (roles-at? (git-toplevel)) (git-toplevel))
+      (when (roles-at? (fs/cwd)) (fs/cwd))
+      (throw (ex-info "Cannot find SwarmForge project root" {:exit 1}))))
 
 (defn roles-file []
   (fs/path (project-root) ".swarmforge" "roles.tsv"))
@@ -164,11 +162,33 @@
       (throw (ex-info (str "AMBIGUOUS_TASK_STATE: batch contains no tasks: " batch-dir) {:exit 2})))
     (println "BATCH:" (str batch-dir))
     (println "COUNT:" (count files))
+    (when-let [name (header-field (first files) "task")]
+      (println "TASK_NAME:" name))
     (println "PRIORITY:" (or (header-field (first files) "priority") "50"))
     (doseq [[index file] (map-indexed vector files)]
       (println)
       (println "BATCH_ITEM:" (inc index))
       (print-task file))))
+
+(defn archive-current-role! []
+  (let [script (str (fs/path (fs/parent *file*) "pack_board.sh"))
+        result (babashka.process/sh {:continue true}
+                                    script "archive" "--role" (role)
+                                    "--root" (str (project-root)))]
+    (when-not (zero? (:exit result))
+      (binding [*out* *err*]
+        (print (str (:err result) (:out result)))))))
+
+(defn announce-follow-up! []
+  (if (seq (handoff-files (fs/path (inbox-dir) "new")))
+    (println "MAIL_WAITING")
+    (println "NO_TASK")))
+
+(defn finish-done! []
+  (try
+    (archive-current-role!)
+    (catch Exception _))
+  (announce-follow-up!))
 
 (defn next-sequence []
   (let [dir (state-dir)
@@ -213,6 +233,7 @@
       "print-task" (print-task (second args))
       "print-batch" (print-batch (second args))
       "next-sequence" (println (next-sequence))
+      "finish-done" (finish-done!)
       (do
         (binding [*out* *err*]
           (println "Usage: handoff_lib.bb <command> [args...]"))

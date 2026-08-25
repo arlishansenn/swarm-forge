@@ -22,24 +22,36 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .btn-sm{padding:4px 8px;font-size:11px}
 .btn-approve{background:#2f6b3a;border-color:#2f6b3a;color:#fff}
 .btn-approve:hover{background:#3d8a4a;border-color:#3d8a4a;color:#fff}
-.attention{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;padding:8px 14px;background:var(--amber-bg);border-bottom:1px solid #efd7a8;font-size:12px;max-height:120px;overflow:auto}
+.attention{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;padding:8px 14px;background:var(--amber-bg);border-bottom:1px solid #efd7a8;font-size:12px;max-height:120px;overflow:auto;position:relative;z-index:30}
 .attention .tag{font-weight:700;text-transform:uppercase;font-size:10px;color:#8a5a0a;padding-top:4px}
-.att-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:rgba(255,255,255,.65);border:1px solid #efd7a8;border-radius:6px;padding:4px 8px;margin-bottom:4px}
+.att-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:rgba(255,255,255,.65);border:1px solid #efd7a8;border-radius:6px;padding:4px 8px;margin:0 0 4px}
+.menu{position:relative;display:inline-block}
+.menu-list{display:none;position:fixed;z-index:200;min-width:12rem;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,.12);padding:4px 0}
+.menu.open .menu-list{display:block}
+.menu-list button{display:block;width:100%;text-align:left;border:0;background:none;padding:6px 10px;font:inherit;font-size:11px;cursor:pointer}
+.menu-list button:hover{background:#f0f2ee}
+.batch-more{margin-left:2px;color:var(--muted);font-weight:700;cursor:default;vertical-align:baseline}
+.menu-list .batch-item{display:block;padding:6px 10px;font-size:11px;white-space:nowrap}
 .pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:600;background:var(--chip)}
 .pill-warn{background:#ffe2a8;color:#7a4e00}.pill-ok{background:var(--green-bg);color:var(--green)}
 .body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 8px minmax(220px,var(--rail));overflow:hidden}
-.splitter{background:var(--line);width:8px;min-width:8px}
+.splitter{background:var(--line);width:8px;min-width:8px;cursor:col-resize}
 .board{padding:12px;overflow:auto;min-width:0;background:linear-gradient(180deg,#e8ebe4 0%,var(--bg) 48px);display:flex;flex-direction:column;min-height:0}
 .board-toolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;font-size:11px;color:var(--muted);flex:0 0 auto}
 .columns{display:flex;gap:12px;align-items:stretch;min-width:min-content;flex:1;min-height:0}
 .col{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-start;min-height:0;max-height:100%}
 .col h3{margin:0 0 8px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 .col-body{display:flex;flex-direction:column;align-items:flex-start;gap:8px;flex:1;min-height:100px;overflow:auto;padding:8px;background:rgba(255,255,255,.35);border:1px dashed #c5cbc2;border-radius:10px;width:max-content;min-width:var(--card-min-w)}
+.batch{display:flex;flex-direction:column;gap:0;width:max-content;min-width:var(--card-min-w)}
 .card{background:var(--card);border:1px solid #d0cbb8;border-radius:8px;padding:7px 8px;font-size:11px;width:max-content;max-width:var(--card-max-w);min-width:var(--card-min-w);min-height:var(--card-min-h);cursor:pointer;display:flex;flex-direction:column;gap:3px}
 .card:hover{border-color:#a89f7e}
 .card .title{font-weight:700;font-size:12px}
 .card .title .name{overflow:hidden;text-overflow:ellipsis;max-width:11rem;display:block}
-.card .foot{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:10px;margin-top:auto}
+.card .status{color:var(--muted);font-size:10px;white-space:normal;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.card-rejected .status{color:var(--red);font-weight:700;-webkit-line-clamp:1}
+.card-del{margin-left:auto;padding:1px 6px;font-size:10px;line-height:1.2}
+.card .foot{display:flex;justify-content:flex-end;gap:8px;color:var(--muted);font-size:10px;margin-top:auto}
+.card-thin{min-height:0;padding:4px 8px;gap:0}
 .timer{font-variant-numeric:tabular-nums}
 .rail{background:var(--panel);display:flex;flex-direction:column;min-height:0;overflow:hidden;font-size:12px;scrollbar-gutter:stable}
 .rail section{padding:10px 12px;border-bottom:1px solid var(--line-soft);display:flex;flex-direction:column;min-height:0}
@@ -65,7 +77,8 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .wif-therm[data-heat="5"] .bar:nth-child(-n+5),
 .wif-therm[data-heat="6"] .bar:nth-child(-n+6){background:var(--green)}
 .ts-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}.ts-head h2{margin:0;flex:1}
-.history{flex:1;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;overflow:auto;display:flex;flex-direction:column;gap:8px;font-size:11px}
+.history{flex:1;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;overflow:auto;display:flex;flex-direction:column;justify-content:flex-end;gap:8px;font-size:11px}
+.att-row input[type=text]{flex:1;min-width:8rem;border:1px solid #c6cbc5;border-radius:6px;padding:4px 6px;font:inherit;font-size:11px}
 .bubble-you{border-left:3px solid #6b7c72;padding-left:8px;white-space:pre-wrap}
 .bubble-ts{color:#4a4f4c;padding-left:12px;font-style:italic;white-space:pre-wrap}
 .composer{display:flex;gap:6px;margin-top:8px;align-items:flex-end}
@@ -90,14 +103,16 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
     <span class="meta" id="pack-meta"><span class="dot">●</span> live</span>
     <span class="spacer"></span>
     <button class="btn btn-primary" type="button" id="btn-new-task">New Task</button>
-    <button class="btn" type="button" id="btn-open-master">Open</button>
     <button class="btn btn-danger" type="button" id="teardown-btn">Teardown</button>
   </header>
   <p id="error" class="error"></p>
 
   <div class="attention" id="attention">
     <div class="tag">Attention</div>
-    <div id="attention-rows"></div>
+    <div id="attention-rows">
+      <div id="attention-approvals"></div>
+      <div id="attention-clarifications"></div>
+    </div>
   </div>
 
   <div class="body">
@@ -149,6 +164,20 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
   </div>
 </div>
 
+<div class="float-layer" id="reject-layer">
+  <div class="float" role="dialog" aria-labelledby="rt-title">
+    <div class="titlebar" id="rt-title">Rejected task</div>
+    <div class="body-pad">
+      <label for="rt-text">Task</label>
+      <textarea id="rt-text"></textarea>
+      <div class="actions">
+        <button type="button" class="btn btn-danger" id="rt-delete">Delete</button>
+        <button type="button" class="btn btn-primary" id="rt-retry">Retry</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="float-layer" id="new-task-layer">
   <div class="float" role="dialog" aria-labelledby="nt-title">
     <div class="titlebar" id="nt-title">New Task</div>
@@ -174,21 +203,44 @@ function displayName(role) {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
-function cardEl(task) {
+function cardEl(task, opts) {
+  const thin = opts && opts.thin;
   const card = document.createElement("article");
-  card.className = "card";
+  card.className = thin ? "card card-thin" : "card";
+  if (task.status === "REJECTED") card.classList.add("card-rejected");
+  card.setAttribute("data-task-name", task.name || "");
   const title = document.createElement("div");
   title.className = "title";
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = task.name;
   title.appendChild(name);
-  const foot = document.createElement("div");
-  foot.className = "foot";
-  const lane = document.createElement("span");
-  lane.textContent = task.lane;
-  foot.appendChild(lane);
-  card.append(title, foot);
+  card.appendChild(title);
+  if (task.status === "REJECTED") {
+    const foot = document.createElement("div");
+    foot.className = "foot";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "btn btn-sm card-del";
+    edit.textContent = "Edit";
+    edit.title = "Edit rejected card";
+    edit.onclick = (event) => {
+      event.stopPropagation();
+      openRejectEdit(task.name);
+    };
+    foot.appendChild(edit);
+    card.appendChild(foot);
+  }
+  if (!thin && task.status) {
+    const status = document.createElement("div");
+    status.className = "status";
+    status.textContent = task.status;
+    card.appendChild(status);
+  }
+  card.onclick = () => {
+    if (task.status === "REJECTED") openRejectEdit(task.name);
+    else openGrowable("/task?name=" + encodeURIComponent(task.name || ""), "task-" + (task.name || ""));
+  };
   return card;
 }
 
@@ -201,7 +253,25 @@ function columnEl(lane, tasks) {
   const body = document.createElement("div");
   body.className = "col-body";
   body.id = "lane-" + lane;
-  tasks.filter((task) => task.lane === lane).forEach((task) => body.appendChild(cardEl(task)));
+  const mine = tasks.filter((task) => task.lane === lane);
+  let i = 0;
+  while (i < mine.length) {
+    const id = mine[i].batch;
+    if (id) {
+      const group = [];
+      while (i < mine.length && mine[i].batch === id) group.push(mine[i++]);
+      if (group.length > 1) {
+        const wrap = document.createElement("div");
+        wrap.className = "batch";
+        group.forEach((task, idx) => wrap.appendChild(cardEl(task, {thin: idx > 0})));
+        body.appendChild(wrap);
+      } else {
+        body.appendChild(cardEl(group[0]));
+      }
+    } else {
+      body.appendChild(cardEl(mine[i++]));
+    }
+  }
   col.append(heading, body);
   return col;
 }
@@ -222,8 +292,6 @@ function renderChrome(data) {
   dot.className = "dot";
   dot.textContent = "●";
   $("pack-meta").append(dot, " live · master = " + master);
-  $("btn-open-master").textContent = "Open " + master;
-  $("btn-open-master").setAttribute("data-open-agent", masterRole);
   $("btn-open-master-rail").textContent = "Open " + master;
   $("btn-open-master-rail").setAttribute("data-open-agent", masterRole);
   $("master-title").textContent = master;
@@ -239,9 +307,13 @@ function age(iso) {
   return Math.round(hours / 24) + "d";
 }
 
-function openAgentWindow(url, name) {
+function openGrowable(url, name) {
   const sep = url.indexOf("?") >= 0 ? "&" : "?";
-  window.open(url + sep + "_open=" + Date.now(), name, "popup=yes,width=780,height=560");
+  window.open(url + sep + "_open=" + Date.now(), name, "resizable=yes,scrollbars=yes,width=780,height=560");
+}
+
+function openAgentWindow(url, name) {
+  openGrowable(url, name);
 }
 
 function stateIcon(state) {
@@ -261,9 +333,37 @@ function stateIcon(state) {
 
 function workRow(item) {
   const tr = document.createElement("tr");
+  tr.dataset.workRole = item.role || "";
   const task = document.createElement("td");
-  task.title = item.task || "";
-  task.textContent = item.task || "";
+  const names = item.tasks && item.tasks.length ? item.tasks : (item.task ? [item.task] : []);
+  task.dataset.tasks = names.join("\n");
+  task.append(names[0] || "");
+  if (names.length > 1) {
+    const more = document.createElement("span");
+    more.className = "menu batch-more";
+    const mark = document.createElement("span");
+    mark.textContent = "+";
+    const list = document.createElement("div");
+    list.className = "menu-list";
+    names.forEach((name) => {
+      const row = document.createElement("div");
+      row.className = "batch-item";
+      row.textContent = name;
+      list.appendChild(row);
+    });
+    const place = () => {
+      const box = mark.getBoundingClientRect();
+      list.style.top = box.bottom + "px";
+      list.style.left = box.left + "px";
+    };
+    more.addEventListener("mouseenter", () => {
+      more.classList.add("open");
+      place();
+    });
+    more.addEventListener("mouseleave", () => more.classList.remove("open"));
+    more.append(mark, list);
+    task.append(" ", more);
+  }
   const role = document.createElement("td");
   const link = document.createElement("button");
   link.type = "button";
@@ -291,8 +391,33 @@ function workRow(item) {
 
 function renderWork(data) {
   const rows = $("work-rows");
-  rows.replaceChildren();
-  (data.work_in_flight || []).forEach((item) => rows.appendChild(workRow(item)));
+  const items = data.work_in_flight || [];
+  const live = {};
+  items.forEach((item) => {
+    live[item.role] = true;
+  });
+  [...rows.querySelectorAll("[data-work-role]")].forEach((tr) => {
+    if (!live[tr.dataset.workRole]) tr.remove();
+  });
+  items.forEach((item, i) => {
+    let tr = rows.querySelector("[data-work-role=\"" + item.role + "\"]");
+    if (!tr) {
+      tr = workRow(item);
+      const before = rows.children[i];
+      if (before) rows.insertBefore(tr, before);
+      else rows.appendChild(tr);
+      return;
+    }
+    const names = item.tasks && item.tasks.length ? item.tasks : (item.task ? [item.task] : []);
+    const key = names.join("\n");
+    if (tr.children[0].dataset.tasks !== key) {
+      tr.replaceWith(workRow(item));
+      return;
+    }
+    tr.querySelector(".wif-therm").dataset.heat = String(Number(item.activity) || 0);
+    tr.children[2].replaceChildren(stateIcon(item.state));
+    tr.children[3].textContent = age(item.updated_at);
+  });
 }
 
 function fileName(path) {
@@ -313,13 +438,52 @@ async function viewDoc(path) {
   $("doc-layer").classList.add("open");
 }
 
-function artifactButton(path) {
+const openDocMenus = new Set();
+const clarDrafts = {};
+
+function artifactMenu(paths, id) {
+  const wrap = document.createElement("div");
+  wrap.className = "menu";
+  wrap.dataset.docId = id || "";
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "btn btn-sm";
-  btn.textContent = "View " + fileName(path);
-  btn.onclick = () => viewDoc(path);
-  return btn;
+  btn.textContent = "Documents";
+  const list = document.createElement("div");
+  list.className = "menu-list";
+  (paths || []).forEach((path) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.textContent = fileName(path);
+    item.onclick = (event) => {
+      event.stopPropagation();
+      wrap.classList.remove("open");
+      if (id) openDocMenus.delete(id);
+      viewDoc(path);
+    };
+    list.appendChild(item);
+  });
+  const place = () => {
+    const box = btn.getBoundingClientRect();
+    list.style.top = box.bottom + "px";
+    list.style.left = box.left + "px";
+  };
+  btn.onclick = (event) => {
+    event.stopPropagation();
+    wrap.classList.toggle("open");
+    if (wrap.classList.contains("open")) {
+      if (id) openDocMenus.add(id);
+      place();
+    } else if (id) {
+      openDocMenus.delete(id);
+    }
+  };
+  wrap.append(btn, list);
+  if (id && openDocMenus.has(id)) {
+    wrap.classList.add("open");
+    requestAnimationFrame(place);
+  }
+  return wrap;
 }
 
 function approvalButton(item, action, label, className) {
@@ -340,7 +504,7 @@ function attentionRow(item) {
   const summary = document.createElement("span");
   summary.textContent = item.gate + " · " + item.task;
   row.append(pill, summary);
-  (item.artifacts || []).forEach((path) => row.appendChild(artifactButton(path)));
+  if ((item.artifacts || []).length) row.appendChild(artifactMenu(item.artifacts, item.id));
   row.append(
     approvalButton(item, "approve", "Approve", "btn btn-sm btn-approve"),
     approvalButton(item, "reject", "Reject", "btn btn-sm")
@@ -348,10 +512,70 @@ function attentionRow(item) {
   return row;
 }
 
+function clarificationRow(item) {
+  const row = document.createElement("form");
+  row.className = "att-row";
+  const pill = document.createElement("span");
+  pill.className = "pill pill-warn";
+  pill.textContent = "Clarification requested from: " + (item.role || "agent");
+  const summary = document.createElement("span");
+  summary.textContent = item.body || "";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "Answer…";
+  input.dataset.clarId = item.id || "";
+  input.value = clarDrafts[item.id] || "";
+  input.addEventListener("input", () => {
+    clarDrafts[item.id] = input.value;
+  });
+  const send = document.createElement("button");
+  send.type = "submit";
+  send.className = "btn btn-sm btn-primary";
+  send.textContent = "Submit";
+  row.addEventListener("submit", (event) => {
+    event.preventDefault();
+    postClarification(item.id, input.value);
+  });
+  row.append(pill, summary, input, send);
+  return row;
+}
+
+async function postClarification(id, text) {
+  if (!text || !text.trim()) return;
+  await fetch("/api/clarifications/" + encodeURIComponent(id) + "/answer", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({text})
+  });
+  loadState();
+}
+
+function renderApprovals(items) {
+  const box = $("attention-approvals");
+  box.replaceChildren();
+  (items || []).forEach((item) => box.appendChild(attentionRow(item)));
+}
+
+function renderClarifications(items) {
+  const box = $("attention-clarifications");
+  const pending = (items || []).filter((item) => item.status === "pending");
+  const live = {};
+  pending.forEach((item) => {
+    live[item.id] = true;
+  });
+  [...box.querySelectorAll("[data-clar-id]")].forEach((input) => {
+    if (!live[input.dataset.clarId]) input.closest(".att-row").remove();
+  });
+  pending.forEach((item) => {
+    if (!box.querySelector("[data-clar-id=\"" + item.id + "\"]")) {
+      box.appendChild(clarificationRow(item));
+    }
+  });
+}
+
 function renderAttention(data) {
-  const rows = $("attention-rows");
-  rows.replaceChildren();
-  (data.approvals || []).forEach((item) => rows.appendChild(attentionRow(item)));
+  renderApprovals(data.approvals);
+  renderClarifications(data.clarifications);
 }
 
 async function loadState() {
@@ -364,6 +588,7 @@ async function loadState() {
     renderBoard(data);
     renderAttention(data);
     renderWork(data);
+    renderChat(data);
   } catch (_) {
     $("error").textContent = "Swarm disconnected";
   }
@@ -377,15 +602,148 @@ async function submitNewTask() {
   const name = $("nt-name").value.trim();
   const text = $("nt-text").value;
   if (!name) return;
-  await fetch("/api/tasks", {
+  const res = await fetch("/api/tasks", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({name, text})
   });
+  if (!res.ok) {
+    let msg = "Could not create task";
+    try {
+      const body = await res.json();
+      msg = body.error || msg;
+    } catch (_) {}
+    alert(msg);
+    $("nt-name").focus();
+    return;
+  }
   $("nt-name").value = "";
   $("nt-text").value = "";
   closeNewTask();
   loadState();
+}
+
+async function deleteTask(name) {
+  if (!name) return;
+  await fetch("/api/tasks/delete", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name})
+  });
+  loadState();
+}
+
+let rejectName = "";
+function closeRejectEdit() {
+  $("reject-layer").classList.remove("open");
+  rejectName = "";
+}
+
+async function openRejectEdit(name) {
+  rejectName = name || "";
+  $("rt-title").textContent = rejectName;
+  $("rt-text").value = "";
+  $("reject-layer").classList.add("open");
+  try {
+    const res = await fetch("/task?name=" + encodeURIComponent(rejectName), {cache: "no-store"});
+    if (!res.ok) return;
+    const raw = await res.text();
+    $("rt-text").value = raw.replace(/^[^\n]*\n\n/, "");
+  } catch (_) {}
+}
+
+async function retryRejected() {
+  if (!rejectName) return;
+  await fetch("/api/tasks/retry", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: rejectName, text: $("rt-text").value})
+  });
+  closeRejectEdit();
+  loadState();
+}
+
+async function deleteRejected() {
+  if (!rejectName) return;
+  await deleteTask(rejectName);
+  closeRejectEdit();
+}
+
+function bindSplitter() {
+  const split = document.querySelector(".splitter");
+  const body = document.querySelector(".body");
+  if (!split || !body) return;
+  split.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    const move = (e) => {
+      const rect = body.getBoundingClientRect();
+      const width = Math.max(220, Math.min(rect.width - 180, rect.right - e.clientX));
+      document.documentElement.style.setProperty("--rail", width + "px");
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  });
+}
+
+let firstPaint = true;
+function chatToEnd() {
+  const history = $("chat-history");
+  history.scrollTop = history.scrollHeight;
+}
+
+function chatTurn(item) {
+  const wrap = document.createElement("div");
+  wrap.dataset.chatId = item.id || "";
+  const you = document.createElement("div");
+  you.className = "bubble-you";
+  you.textContent = item.body || "";
+  wrap.appendChild(you);
+  if (item.response) {
+    const reply = document.createElement("div");
+    reply.className = "bubble-ts";
+    reply.textContent = item.response;
+    wrap.appendChild(reply);
+  }
+  return wrap;
+}
+
+function renderChat(data) {
+  const history = $("chat-history");
+  const items = data.chat || [];
+  const nearEnd = firstPaint
+    || (history.scrollHeight - history.scrollTop - history.clientHeight) <= 64;
+  const live = {};
+  items.forEach((item) => {
+    live[item.id] = true;
+  });
+  [...history.querySelectorAll("[data-chat-id]")].forEach((el) => {
+    if (!live[el.dataset.chatId]) el.remove();
+  });
+  items.forEach((item) => {
+    let wrap = history.querySelector("[data-chat-id=\"" + item.id + "\"]");
+    if (!wrap) {
+      history.appendChild(chatTurn(item));
+      return;
+    }
+    const reply = wrap.querySelector(".bubble-ts");
+    if (item.response && !reply) {
+      const next = document.createElement("div");
+      next.className = "bubble-ts";
+      next.textContent = item.response;
+      wrap.appendChild(next);
+    } else if (item.response && reply && reply.textContent !== item.response) {
+      reply.textContent = item.response;
+    }
+  });
+  if (nearEnd) {
+    chatToEnd();
+    requestAnimationFrame(chatToEnd);
+  }
+  firstPaint = false;
 }
 
 async function sendChat() {
@@ -396,11 +754,8 @@ async function sendChat() {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({text})
   });
-  const bubble = document.createElement("div");
-  bubble.className = "bubble-you";
-  bubble.textContent = text;
-  $("chat-history").appendChild(bubble);
   $("chat-input").value = "";
+  loadState();
 }
 
 async function teardownSwarm() {
@@ -428,6 +783,9 @@ async function teardownSwarm() {
 $("btn-new-task").onclick = () => $("new-task-layer").classList.add("open");
 $("nt-cancel").onclick = closeNewTask;
 $("nt-ok").onclick = submitNewTask;
+$("rt-delete").onclick = deleteRejected;
+$("rt-retry").onclick = retryRejected;
+bindSplitter();
 $("doc-close").onclick = () => $("doc-layer").classList.remove("open");
 $("teardown-btn").onclick = teardownSwarm;
 $("chat-input").addEventListener("keydown", (event) => {
@@ -437,6 +795,12 @@ $("chat-input").addEventListener("keydown", (event) => {
   }
 });
 document.addEventListener("click", (event) => {
+  if (!event.target.closest(".menu")) {
+    document.querySelectorAll(".menu.open").forEach((el) => {
+      el.classList.remove("open");
+      if (el.dataset.docId) openDocMenus.delete(el.dataset.docId);
+    });
+  }
   const btn = event.target.closest("[data-open-agent]");
   if (!btn) return;
   const role = btn.getAttribute("data-open-agent");
