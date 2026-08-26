@@ -1,6 +1,6 @@
 ---
 name: swarmforge-operator
-description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, stopping the swarm, or installing a fork pack (two-pack, four-pack, six-pack) into a new or existing project directory before the swarm has ever run."
+description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, running one GitHub issue through the swarm to a stacked pull request, stopping the swarm, or installing a fork pack (two-pack, four-pack, six-pack) into a new or existing project directory before the swarm has ever run."
 ---
 
 # SwarmForge Operator
@@ -75,8 +75,8 @@ program, not to this contract.
 
 **Not every verb has a script yet.** `onboard project`, `open swarm`, `dashboard`,
 `wake role`, `talk role`, `read swarm`, `stop swarm`, `accept work`,
-`start swarm`, and `update SwarmForge scripts` are scripted and follow this
-contract today. The other verbs
+`start swarm`, `update SwarmForge scripts`, and `run issue` are scripted and
+follow this contract today. The other verbs
 are shell steps in this file; run them as written and read their raw output.
 Bringing them under the contract is tracked in the issue tracker.
 
@@ -638,6 +638,128 @@ went unclaimed — that could be the daemon stopped, the role busy, or a failed
 wake (see issue #14) — this verb's only job is to make a stuck chain visible,
 not to explain it.
 
+## Verb: `run issue`
+
+Put **one** GitHub issue through the swarm and stop at a reviewable PR. Every
+step it takes was already a documented step in this file; what was missing was
+a verb that takes them in order. Skipping one raised no error, and podsum lost
+both ways it can be lost: a `git pull` was never run after a merge, so the
+managed project's `main` diverged from `origin/main` and stayed diverged; and
+a Board card named `验收 3 个 commit` produced a `task:` that mapped back to no
+issue, so the accepting human had to reverse-engineer what the PR closed.
+
+```sh
+scripts/run-issue.sh --root <project-root> --issue <N> \
+  [--target user@host] [--key <path>] [--local]
+```
+
+Six steps, in this order:
+
+1. Read `$ROOT/.swarmforge/dashboard-url`. **Every run, never cached** —
+   `pack_web` binds a fresh port on every start.
+2. `gh issue view <N>` on the target, inside `$ROOT`, so `gh` resolves the
+   *managed project's* repository from its own git remote. Its title becomes
+   the slug: `feat/issue-<N>-<slug>` for the branch, `issue-<N>-<slug>` for
+   the task name, one source for both.
+3. `BASE` = the newest open PR's `headRefName`, or `main` when there is none.
+4. Refuse if the Board already has a card by that name; refuse if the swarm is
+   waiting on a human. Then create the branch from `BASE`.
+5. `POST {dashboard-url}/api/tasks` once, then poll the Board lane until
+   `done`.
+6. `accept work` for the commit, `git push`, `gh pr create --base BASE`.
+
+### Stacked branches, and why `main` is left alone
+
+The branch comes off the newest open PR's head, not off `main`:
+
+```
+main                      ← only ever moves when a human merges a PR
+ └ feat/issue-27          PR base = main
+    └ feat/issue-28       PR base = feat/issue-27
+       └ feat/issue-29    PR base = feat/issue-28
+```
+
+That buys three things at once. A linear `blocked by` chain needs the previous
+issue's commits **visible** to the next issue's coder, and they are not on
+`main` until a human merges. PR diffs stay clean — every branch off `main`
+with nothing merged means each later PR carries every earlier PR's commits.
+And the swarm stops committing onto `main` directly. Once a human merges the
+lower PR, GitHub retargets the upper one to `main` by itself.
+
+No new worktree is needed for this. `merge_and_process.bb` contains exactly
+two git commands (`merge-base --is-ancestor` and `merge --no-edit`), both
+against whatever `HEAD` is; nothing in the swarm names a branch. `BASE` is
+looked up fresh from `gh pr list` on every call — **this verb keeps no state
+between calls.**
+
+### The four things it refuses to get wrong
+
+- **It never posts the same task twice.** `pack_web`'s `create-task!` checks
+  only that the name is non-empty, so a second POST really does create a
+  second card and a second handoff note. The Board is grepped for the task
+  name *before* anything is created.
+- **It stops when the swarm is waiting on a human.** A blocked agent does not
+  fail — it writes a clarification request or a pending approval and waits, so
+  its task never reaches `done`. `/api/state`'s `clarifications` (status
+  `pending`) and `approvals` are checked once before anything is created and
+  again on every poll round. This is the only thing in the loop that stops it
+  on purpose, and it is what makes a `for ... || break` chain safe: without
+  it, the loop moves on to the next issue and stacks the next branch on top of
+  work nobody has looked at.
+- **Only the Board lane says a task finished.** The chain is
+  `coder → cleaner → coder`, and `/api/state`'s `work_in_flight[].state` reads
+  `idle` for the coder between hops. A role-state check calls a half-finished
+  task done; the script never reads that field.
+- **A poll timeout is not a failure.** It exits `5` `ERROR` saying the task may
+  still be running, and **never re-posts** — a re-post would create a second
+  card and a second chain.
+
+### One issue per call
+
+There is no `--issues 28,29,30`. A list version would need exactly one piece
+of error handling, and the caller already has it:
+
+```sh
+for n in 28 29 30; do run-issue.sh --root R --issue "$n" || break; done
+```
+
+Exit codes / STATUS line:
+
+- `0` `PR_OPENED` — the report body carries `issue:`, `task:`, `branch:`,
+  `base:`, `commit:` and `url:`.
+- `2` `USAGE` — missing `--root` or `--issue`, or `--issue` is not a number.
+  Nothing runs at all.
+- `5` `ERROR` — `dashboard-url`/`roles.tsv` missing, `gh`/`git`/`curl` failed,
+  the poll ceiling was reached (`SF_RUN_ISSUE_TIMEOUT_SECONDS`, default
+  7200s), or the Board says `done` but `accept work` reports no terminal
+  handoff for that task — never open a PR from a branch whose commit was not
+  confirmed.
+- `6` `UNSAFE` — a card by that name already exists, or a pending
+  clarification/approval is blocking. Both name the thing to clear. Nothing
+  was created in the duplicate case.
+
+The PR is always opened with explicit `--title`/`--body`. **Never `--fill`:**
+it would use the swarm's own commit messages, which carry no `Closes #N` —
+exactly how a PR ended up needing a human to work out which issue it closed.
+The body carries `Closes #<N>` plus `accept work`'s `task:`/`commit:`/
+`completed_at:` verbatim, and no diff copy: the code is in git, the PR only
+needs the pointer.
+
+The task body is the minimal handoff `#26`/`#27` already proved — read the
+issue, inventory before implementing, TDD, and the handoff chain, which is
+**derived from `roles.tsv`** rather than written out, because role names
+differ per pack. The issue body itself is deliberately not copied; the coder
+can read it, and a copy goes stale.
+
+**Boundary:** this verb opens a PR and stops. It never merges (`--merge` and
+`--auto` are never passed), never answers a clarification (`read swarm` does
+not even know the concept exists — that is a separate issue), and never
+changes the Dashboard's listen address or the role topology. Recovery from
+either `UNSAFE` is a human's: resolve the clarification in the Dashboard, or
+delete the duplicate card — and if the task had already been posted before the
+block, take it the rest of the way with `accept work` by hand rather than
+re-running this verb, which would refuse on the card it created.
+
 ## Verb: `stop swarm`
 
 Run the bundled script; it preflights before it stops anything (issue #11):
@@ -765,5 +887,25 @@ the stub-ssh tar-pipe transfer, and the required cross-verb case: this
 script's own successful update followed by `start-swarm.sh --local` with no
 `--force` proceeding straight to `STATUS=STARTED` instead of `DRIFT`,
 proving the digest this script writes and `start-swarm.sh`'s own read of it
-genuinely agree. Run them after any change to the scripts or the stub
+genuinely agree. `scripts/test-run-issue.sh` runs `run-issue.sh` against stubbed
+`gh`/`git`/`curl` and a stubbed `accept-work.sh`, with `--local` so `ssh` is
+never invoked while `dashboard-url`, `roles.tsv` and the Board TSV stay real
+files read by a real `cat`. Lane progression is driven by the stubs — the POST
+stub creates the card in the master lane, and each `/api/state` call advances
+it by one scripted lane — so "how many rounds did it wait" is an assertable
+number rather than a race. It covers missing/non-numeric arguments (nothing
+runs at all), a duplicate Board card (exit 6, no POST, board and handoffs
+byte-identical, no branch created), a pending clarification and a pending
+approval before the POST (exit 6 naming the id, nothing created), a
+clarification appearing mid-poll (exit 6 at the exact round it appeared, no
+PR), `BASE` taken from an open PR's head and falling back to `main`, the
+branch and task name sharing one slug, the task body naming the handoff chain
+derived from `roles.tsv`, a coder that goes idle mid-chain while the lane is
+still `coder`/`cleaner` (keeps waiting, and `work_in_flight` never appears
+outside comments in the script), the poll ceiling (exit 5, exactly one POST,
+no PR), and the PR argv itself: `--base`/`--head`/`--title`/`--body` present,
+`Closes #N` and `accept work`'s `commit:` in the body, and `--merge`,
+`--auto`, `--fill` absent. Its `accept work` stub prints a `WARN=` line and a
+decoy task block first, so a parser that reads by line offset instead of by
+`task:` prefix fails. Run them after any change to the scripts or the stub
 contracts.
