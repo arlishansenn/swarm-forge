@@ -45,6 +45,23 @@ bash swarmforge/scripts/test-sync-worktree-scripts.sh
 差异被 upstream 采纳后，从表里删掉，并在删除的 commit message 里注明是哪个 upstream
 commit 收的。
 
+## 一个 operator verb 不只是一个脚本
+
+加或改 `.agents/skills/swarmforge-operator/` 的动词时，交付物是**四件**，缺一不算做完：
+
+1. `scripts/<verb>.sh` —— `STATUS=` 首行，共用那张退出码表。
+2. `scripts/test-<verb>.sh` —— 对着 stub 跑，不碰真实网络。
+3. `SKILL.md` 的 `## Verb: <verb>` 一节 —— **写给 agent 的**。
+4. `README.md` 的 verb 表一行 + 契约一节 —— **写给用户的**。
+
+**判据：下一个 agent 只读 `SKILL.md`，能不能正确地把这个动词跑起来？** 只写到「脚本能干
+什么」不够，「怎么调用它」同样要写进去：会阻塞多久、烧不烧 token、哪个 harness 的 shell
+tool 会把它掐掉。这类知识往往是在会话里被问出来的，**回答完必须落进文件，不能只留在对话里**。
+
+issue #60 真实漏过：`run-issue.sh` 和 55 个 check 都写完了，但一个会阻塞两小时的动词，
+`SKILL.md` 和 `README.md` 都没说该怎么起它（pi 的 `bash` tool 没有默认超时，前台跑；
+Claude Code 上限 600 秒，必须 `run_in_background`），是用户追问才补上的。
+
 ## 测试
 
 - `bb test` —— 主套件（`test/swarmforge/` 下三个文件）。
@@ -54,3 +71,7 @@ commit 收的。
   也不在 `bb test` 里。**跑它们时把输出重定向到文件，不要用 `$(...)` 捕获**：
   `test-start-swarm.sh` 一类会留下后台进程持有那根管道，命令替换等不到 EOF，会一直挂着，
   看起来像测试卡死，其实早就跑完了。
+- **一次 tool call 只跑一个 suite，不要用 `for t in test-*.sh` 循环包起来。** 重定向到
+  文件也救不了：issue #60 这次，循环在 `test-accept-work.sh`（本身已通过）之后就再没往下
+  走，15 分钟一个后续 suite 都没启动；拆成一次一个立刻全部跑完。没有根因，但拆开跑是可
+  复现有效的走法。

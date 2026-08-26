@@ -751,6 +751,36 @@ issue, inventory before implementing, TDD, and the handoff chain, which is
 differ per pack. The issue body itself is deliberately not copied; the coder
 can read it, and a copy goes stale.
 
+### Running it from an agent session
+
+**This verb blocks for the whole chain — minutes to hours. That is not a hang.**
+It polls every `SF_RUN_ISSUE_POLL_SECONDS` (default 15s) up to
+`SF_RUN_ISSUE_TIMEOUT_SECONDS` (default 7200s). The loop is plain shell: two
+short round trips per round (`curl /api/state`, `cat tasks.tsv`) and **no model
+call**, so the wait costs no tokens no matter how long it runs. What costs
+tokens is the swarm's own agents on the target host, and that is unaffected by
+the poll interval.
+
+How to launch it depends on the harness's shell tool, and getting this wrong
+looks like a failure that isn't one:
+
+- **pi** — its `bash` tool takes an optional `timeout` in seconds and has **no
+  default** (`packages/coding-agent/src/core/tools/bash.ts`), so run this verb
+  in the foreground and pass no timeout. Do not wrap it in `nohup ... &`:
+  cancelling a pi tool call kills the whole process tree, which would take a
+  detached job with it.
+- **Claude Code** — its `Bash` tool defaults to 120s and caps at **600s**, well
+  under this verb's ceiling. Use `run_in_background: true`; a foreground call
+  gets moved to the background at 10 minutes and reads as a failed run.
+
+Either way, do not "check on it" with `read swarm` in a second call while it
+runs — the script is already polling, and a second reader tells you nothing it
+will not print itself.
+
+If a run is cancelled after the POST, **the task stays posted**. Re-running
+this verb then refuses on the card it created (`6` `UNSAFE`), which is correct:
+finish that one by hand with `accept work`, `git push` and `gh pr create`.
+
 **Boundary:** this verb opens a PR and stops. It never merges (`--merge` and
 `--auto` are never passed), never answers a clarification (`read swarm` does
 not even know the concept exists — that is a separate issue), and never
