@@ -194,6 +194,80 @@ done
 ORDER=$(printf '%s\n' "$OUT" | awk '$1=="coder"||$1=="cleaner"||$1=="reviewer"{print $1}' | tr '\n' ' ')
 check "remote 3-role order matches sessions.tsv" "coder cleaner reviewer " "$ORDER"
 
+# ---------- issue #58: Grok renders a static footer BELOW the prompt ----------
+# Both fixtures are the real shapes captured off podsum, verbatim. What makes
+# them worth encoding is that the physically last non-empty line is the SAME
+# footer in both, while the roles are in opposite states — so any reader that
+# ends at `tail -1` cannot tell them apart, and reported UNKNOWN for every
+# Grok role. `stop swarm` shares this judgment, which turned its safety gate
+# into a formality that always needed --force.
+
+# 8. idle Grok pane: content above the prompt, footer below it → IDLE.
+reset_stub; touch "$STUB/live"
+set_pane swarmforge-coder 'Worked for 2m56s / minimal · /help
+❯
+Grok 4.6 (high) · always-approve · 93K / 500K (19%) · ctrl+o transcript'
+run
+check "grok idle exit" 0 "$RC"
+printf '%s\n' "$(role_line coder)" | grep -q 'IDLE' \
+  && ok "grok idle pane classifies IDLE, not UNKNOWN" \
+  || bad "grok idle pane classifies IDLE, not UNKNOWN" "$(role_line coder)"
+printf '%s\n' "$(role_line coder)" | grep -qv 'ctrl+o transcript' \
+  && ok "grok idle report names the deciding line, not the footer" \
+  || bad "grok idle report names the deciding line, not the footer" "$(role_line coder)"
+
+# 9. busy Grok pane: the spinner sits ABOVE the prompt, which is still drawn
+#    empty, with the footer below both. Reading upward and stopping at the
+#    first classifiable line would find the empty prompt and report IDLE on a
+#    role that is mid-request — BUSY has to win over IDLE within the window.
+reset_stub; touch "$STUB/live"
+set_pane swarmforge-coder '⠙ Waiting for response… 0.0s … 48s ⇣74.6k
+❯
+Grok 4.6 (high) · always-approve · 74K / 500K (15%) · ctrl+o transcript'
+run
+check "grok busy exit" 0 "$RC"
+printf '%s\n' "$(role_line coder)" | grep -q 'BUSY' \
+  && ok "grok busy pane classifies BUSY, not IDLE" \
+  || bad "grok busy pane classifies BUSY, not IDLE" "$(role_line coder)"
+
+# 10. the two shapes above share their last non-empty line. This asserts the
+#     premise directly, so a future reader cannot mistake cases 8 and 9 for
+#     two unrelated fixtures that happen to differ.
+reset_stub; touch "$STUB/live"
+set_pane swarmforge-coder '⠙ Waiting for response… 0.0s … 48s ⇣74.6k
+❯
+Grok 4.6 (high) · always-approve · 74K / 500K (15%) · ctrl+o transcript'
+set_pane swarmforge-cleaner 'Worked for 2m56s / minimal · /help
+❯
+Grok 4.6 (high) · always-approve · 93K / 500K (19%) · ctrl+o transcript'
+run
+printf '%s\n' "$(role_line coder)"   | grep -q 'BUSY' \
+  && printf '%s\n' "$(role_line cleaner)" | grep -q 'IDLE' \
+  && ok "two Grok roles with the same last line classify differently" \
+  || bad "two Grok roles with the same last line classify differently" "$OUT"
+
+# 11. a footer with nothing above it is still not a state. UNKNOWN must not
+#     become IDLE just because the footer was skipped and the window emptied.
+reset_stub; touch "$STUB/live"
+set_pane swarmforge-coder 'Grok 4.6 (high) · always-approve · 93K / 500K (19%) · ctrl+o transcript'
+run
+check "footer-only exit" 0 "$RC"
+printf '%s\n' "$(role_line coder)" | grep -q 'UNKNOWN' \
+  && ok "footer-only pane stays UNKNOWN" \
+  || bad "footer-only pane stays UNKNOWN" "$(role_line coder)"
+
+# 12. the footer pattern only ever strips TRAILING lines. The same string
+#     inside transcript history is content, and must not shift which line is
+#     read as the input line.
+reset_stub; touch "$STUB/live"
+set_pane swarmforge-coder 'someone pasted ctrl+o transcript into the chat
+❯
+Grok 4.6 (high) · always-approve · 93K / 500K (19%) · ctrl+o transcript'
+run
+printf '%s\n' "$(role_line coder)" | grep -q 'IDLE' \
+  && ok "footer text quoted in history does not shift the input line" \
+  || bad "footer text quoted in history does not shift the input line" "$(role_line coder)"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]

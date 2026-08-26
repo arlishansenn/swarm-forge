@@ -277,6 +277,40 @@ run_remote
 check "remote clean exit" 0 "$RC"
 close_swarm_called && ok "remote clean: close-swarm called" || bad "remote clean: close-swarm called" "$(cat "$STUB/calls.log")"
 
+# ---------- issue #58: Grok panes must reach a verdict, not UNKNOWN ----------
+# stop swarm shares read swarm's classification. With the footer as the last
+# non-empty line, every Grok role read UNKNOWN, so the preflight refused every
+# stop as UNSAFE/6 and --force became the only way to stop a swarm at all — a
+# safety gate that always fires is a safety gate nobody reads.
+
+# 11. an all-idle Grok swarm stops normally, no --force.
+all_clean
+set_pane swarmforge-coder 'Worked for 2m56s / minimal · /help
+❯
+Grok 4.6 (high) · always-approve · 93K / 500K (19%) · ctrl+o transcript'
+set_pane swarmforge-cleaner 'Worked for 1m02s / minimal · /help
+❯
+Grok 4.6 (high) · always-approve · 51K / 500K (10%) · ctrl+o transcript'
+run
+check "grok all-idle exit" 0 "$RC"
+close_swarm_called && ok "grok all-idle: close-swarm called without --force" \
+  || bad "grok all-idle: close-swarm called without --force" "$(cat "$STUB/calls.log")"
+
+# 12. and a busy Grok role still blocks it. The gate has to keep working in
+#     the direction that matters — the spinner sits above the prompt, so a
+#     reader that stops at the input line would call this role idle and stop
+#     it mid-request.
+all_clean
+set_pane swarmforge-coder '⠙ Waiting for response… 0.0s … 48s ⇣74.6k
+❯
+Grok 4.6 (high) · always-approve · 74K / 500K (15%) · ctrl+o transcript'
+run
+check "grok busy blocks exit" 6 "$RC"
+printf '%s\n' "$OUT" | head -1 | grep -q '^STATUS=UNSAFE$' \
+  && ok "grok busy blocks: UNSAFE" || bad "grok busy blocks: UNSAFE" "$OUT"
+close_swarm_called && bad "grok busy blocks: close-swarm must not run" "$(cat "$STUB/calls.log")" \
+  || ok "grok busy blocks: close-swarm never ran"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
