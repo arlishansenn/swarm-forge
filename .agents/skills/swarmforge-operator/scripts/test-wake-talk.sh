@@ -57,7 +57,16 @@ case $CMD in
         ;;
     esac
     exit 0 ;;
-  capture-pane) cat "$STUB/pane.txt" 2>/dev/null || true; exit 0 ;;
+  capture-pane)
+    cat "$STUB/pane.txt" 2>/dev/null || true
+    # "footer" flag (issue #58): Grok draws a static line BELOW the prompt that
+    # never contains the input and never changes on submit. Rendered here, in
+    # capture-pane, because that is where it exists — it is chrome the pane
+    # paints, not something send-keys ever writes into pane.txt.
+    if [ -f "$STUB/footer" ]; then
+      printf '\n%s\n' 'Grok 4.6 (high) · always-approve · 93K / 500K (19%) · ctrl+o transcript'
+    fi
+    exit 0 ;;
   *) exit 1 ;;
 esac
 EOF
@@ -173,6 +182,49 @@ reset_stub; touch "$STUB/live" "$STUB/consume"
 run_wake claude; run_talk grok "hello"
 ! grep -Eq '(^| )(C-m|C-j)( |$)' "$STUB/calls.log" \
   && ok "no symbolic C-m/C-j across wake+talk success runs" || bad "no symbolic C-m/C-j across wake+talk success runs" "found in calls.log"
+
+# ---------- issue #58: a static footer below the input line ----------
+
+# 7. THE RED CASE. Submit key never lands, so the text is still sitting in the
+#    input line — but a footer is drawn below it, so the text is no longer the
+#    pane's physically last line. Before this fix the consumption check read
+#    that footer, found no match, and returned success on its FIRST poll:
+#    talk role printed STATUS=SENT and exited 0 over a dispatch that was never
+#    submitted. A lost talk role is a lost dispatch, and verifying the submit
+#    is the entire reason these two scripts exist (issue #14).
+reset_stub; touch "$STUB/live" "$STUB/footer"   # no "consume": -H is a no-op
+run_talk grok "do the thing"
+check "footer + unsubmitted exit" 5 "$RC"
+check "footer + unsubmitted status" ERROR "$(val STATUS)"
+printf '%s\n' "$OUT" | grep -q "backend (grok)" \
+  && ok "footer + unsubmitted names the backend" \
+  || bad "footer + unsubmitted names the backend" "$OUT"
+
+# 7b. same through wake-role.sh — both verbs share send_and_verify.
+reset_stub; touch "$STUB/live" "$STUB/footer"
+run_wake grok
+check "footer + unsubmitted exit (wake)" 5 "$RC"
+
+# 8. footer present and the submit DID land: the input line clears, only the
+#    footer is left. Must be success — stripping the footer must not leave the
+#    check unable to tell "consumed" from "never sent".
+reset_stub; touch "$STUB/live" "$STUB/footer" "$STUB/consume"
+run_talk grok "do the thing"
+check "footer + consumed exit" 0 "$RC"
+check "footer + consumed status" SENT "$(val STATUS)"
+
+# 9. footer present AND the text is retained in transcript history with a busy
+#    line below it — issue #28's shape as it actually looks on a real Grok
+#    pane, footer included. Still success: history above the input line is not
+#    an unconsumed message. This is the case that fails if the fix reaches
+#    further up the pane instead of just skipping the footer.
+reset_stub; touch "$STUB/live" "$STUB/footer" "$STUB/consume" "$STUB/retain"
+run_talk grok "do the thing"
+check "footer + retained-history exit" 0 "$RC"
+check "footer + retained-history status" SENT "$(val STATUS)"
+grep -qF "do the thing" "$STUB/pane.txt" \
+  && ok "footer + retained-history fixture really kept the text" \
+  || bad "footer + retained-history fixture really kept the text" "$(cat "$STUB/pane.txt")"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

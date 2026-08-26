@@ -342,15 +342,88 @@ read_manifest() {
 # IDLE: a bare prompt character with nothing else on the line (claude's empty
 # input line), or the literal placeholder text inviting input ("Ask Codex to
 # do anything").
-BUSY_RE='esc to interrupt|[A-Za-z]+(ed|ing) for [0-9]+s'
+# Grok's "Waiting for response…" is the third shape: its spinner line says
+# "for response", not "for <n>s", so the participle pattern above does not
+# reach it (issue #58). The spinner glyph stays out of the marker for the same
+# reason as the others — the text after it is the part that round-trips.
+BUSY_RE='esc to interrupt|[A-Za-z]+(ed|ing) for [0-9]+s|Waiting for response'
 IDLE_RE='^(❯|>)[[:space:]]*$|Ask .* to do anything'
 
-classify() { # $1 = last non-empty pane line ("" for a blank pane)
+classify() { # $1 = one pane line ("" for nothing to classify)
   if [ -z "$1" ]; then echo UNKNOWN
   elif printf '%s' "$1" | grep -qE "$BUSY_RE"; then echo BUSY
   elif printf '%s' "$1" | grep -qE "$IDLE_RE"; then echo IDLE
   else echo UNKNOWN
   fi
+}
+
+# ---------- picking the line(s) that carry state (issue #58) ----------
+# The pane's last non-empty line is NOT reliably the input line. Grok renders a
+# static footer BELOW the prompt ("Grok 4.6 (high) · always-approve · 93K /
+# 500K (19%) · ctrl+o transcript"), so `tail -1` returned a line that carries
+# no state at all: every role read UNKNOWN, and — far worse — the consumption
+# check reported "consumed" on its very first poll whether or not the submit
+# key ever landed.
+#
+# The fix is to drop trailing static-footer lines before picking, not to widen
+# the search. Deliberately a short, named list rather than an attempt to
+# enumerate every backend's chrome: the same boundary `read swarm` already
+# draws for error text (SKILL.md). A backend that grows a new footer needs one
+# pattern added here, and the symptom that says so is talk/wake role passing
+# against a pane where the text is visibly still in the input line.
+# Bracketed `[+]` rather than a backslash escape on purpose: this string is
+# handed to awk through `-v`, which strips one level of backslash before the
+# regex ever sees it, so `\+` silently arrives as a bare `+` quantifier and
+# the pattern then matches nothing. A character class needs no escaping and
+# survives that hop unchanged.
+FOOTER_RE='ctrl[+]o transcript'
+
+# $1 = session. Non-empty pane lines with trailing footer lines removed. Only
+# TRAILING ones: the same string appearing inside transcript history higher up
+# is content, not chrome, and must not shift the input line.
+# `|| true` guards the same way read-swarm.sh's own extraction did — grep exits
+# 1 on a blank pane, which would otherwise trip `set -o pipefail`.
+pane_lines() {
+  tmux_remote capture-pane -p -t "$1" -S -12 2>/dev/null | grep -v '^$' \
+    | awk -v re="$FOOTER_RE" '
+        { a[++n] = $0 }
+        END { while (n > 0 && a[n] ~ re) n--
+              for (i = 1; i <= n; i++) print a[i] }' || true
+}
+
+# How many of those lines classification looks at. A busy Grok pane is
+# "⠙ Waiting for response…" / "❯" / footer, so the marker sits one line above
+# the input line and a single line cannot reach it. Kept small on purpose:
+# every extra line is another chance for transcript text to be read as state.
+PANE_CLASSIFY_LINES=${SF_PANE_CLASSIFY_LINES:-2}
+
+# $1 = session. Sets PANE_STATE (BUSY|IDLE|UNKNOWN) and PANE_LINE (the line
+# that decided it, for the human-facing report) — the same set-globals shape
+# resolve_role uses.
+#
+# BUSY wins over IDLE anywhere in the window, regardless of order. A busy Grok
+# pane still shows its empty prompt below the spinner, so "the first
+# classifiable line" would read IDLE off a role that is mid-request. Erring
+# toward BUSY is also the safe direction for stop swarm's preflight, which
+# refuses to stop work it is unsure about. UNKNOWN stays the default when
+# nothing matches, blank panes included — issue #15's boundary is unchanged.
+classify_pane() {
+  local lines line state
+  PANE_STATE=UNKNOWN
+  PANE_LINE=""
+  lines=$(pane_lines "$1" | tail -n "$PANE_CLASSIFY_LINES")
+  [ -n "$lines" ] || return 0
+  # What a human would see if nothing classifies, so an UNKNOWN still reports
+  # real pane text instead of an empty field.
+  PANE_LINE=$(printf '%s\n' "$lines" | tail -1)
+  while IFS= read -r line; do
+    state=$(classify "$line")
+    case $state in
+      BUSY) PANE_STATE=BUSY; PANE_LINE=$line; return 0 ;;
+      IDLE) if [ "$PANE_STATE" != IDLE ]; then PANE_STATE=IDLE; PANE_LINE=$line; fi ;;
+    esac
+  done <<< "$lines"
+  return 0
 }
 
 # Looks up $1 in sessions.tsv (columns: index, role, session, display,
@@ -377,44 +450,48 @@ CONSUME_INTERVAL=${SF_CONSUME_INTERVAL:-0.5}
 
 pane_has() { tmux_remote capture-pane -p -t "$SESSION" | grep -qF -- "$1"; }
 
-# Whole-pane presence, scoped to the pane's LAST NON-EMPTY LINE — same
-# extraction read-swarm.sh's classification loop uses before calling
-# classify() (issue #15). The input line is always that last non-empty
-# line; once a backend redraws with new content below the submitted text
-# (transcript echo, a busy marker, the next prompt — anything), the text
-# stops being the last line even though whole-pane `pane_has` still finds
-# it higher up in scrollback. `|| true` matches read-swarm.sh's own guard:
-# grep exits 1 on no match, which would otherwise trip `set -o pipefail`.
-last_line_has() {
-  local last
-  last=$(tmux_remote capture-pane -p -t "$SESSION" | grep -v '^$' | tail -1 || true)
-  printf '%s' "$last" | grep -qF -- "$1"
+# Presence of $1 in the pane's input line — the last non-empty line once
+# trailing static footers are removed. Once a backend redraws with new content
+# below the submitted text (transcript echo, a busy marker, the next prompt),
+# the text stops being that line, even though whole-pane `pane_has` still finds
+# it higher in scrollback.
+#
+# Still exactly ONE line, same as before issue #58, so issue #28's guarantee is
+# untouched: text parked in transcript history above the input line does not
+# count as unconsumed. What changed is only which line "the last one" means on
+# a backend that renders chrome beneath the prompt. Renamed off last_line_has
+# because it is no longer the pane's physically last line, and a name that says
+# otherwise is what someone reads at 3am.
+input_line_has() {
+  pane_lines "$SESSION" | tail -1 | grep -qF -- "$1"
 }
 
 # Type $1, confirm it arrived, submit with the backend's own key encoding
 # (never symbolic C-m/C-j — see submit-keys in handoffd.bb), then confirm
-# the text is no longer the pane's last non-empty line. Dies ERROR/5 on
-# either failure to wait.
+# the text has left the pane's input line area. Dies ERROR/5 on either
+# failure to wait.
 #
 # issue #28: consumption used to be judged by whole-pane `pane_has`, which
 # stays true forever on backends (Grok observed live on podsum) that move
 # submitted text into persisted transcript history rather than erasing it —
 # a false negative on a message that was actually sent and already running.
-# last_line_has is immune to that: history sitting above the last line
+# input_line_has is immune to that: history sitting above the input area
 # doesn't matter, only whether the text is still what's currently in the
 # editable input position. This also naturally covers the issue's "输入框为
 # 空或 role 已进入 BUSY" success condition — both a cleared input line and a
-# BUSY marker redraw change the last line away from $text, so no separate
+# BUSY marker redraw move $text out of that area, so no separate
 # classify()/BUSY_RE check is needed here; that classifier is documented
 # (SKILL.md, `read swarm`'s boundary paragraph) as intentionally incomplete
 # across backends and would just trade one false negative for another.
 #
-# Residual assumption, inherited from that same read-swarm.sh convention:
-# a backend that renders a static footer/hint line below the input — one
-# that never contains the input and doesn't change on submit — would make
-# last_line_has report "consumed" on the very first poll, whether or not
-# the submit key actually landed. No currently supported backend does
-# this; if one ever does, this is the false positive to watch for.
+# The residual assumption this comment used to record — "a backend that
+# renders a static footer below the input would make the check report
+# consumed on the very first poll; no currently supported backend does this"
+# — stopped being hypothetical when issue #38 made grok the Pack default.
+# Grok does exactly that, and every talk/wake role against a Grok pane
+# returned STATUS=SENT without ever confirming the submit key landed
+# (issue #58). The fix is the bounded input-line area above, not a wider
+# search: widening it back toward whole-pane restores #28's false negative.
 send_and_verify() {
   local text=$1 i
   tmux_remote send-keys -t "$SESSION" -l "$text"
@@ -432,7 +509,7 @@ send_and_verify() {
   fi
 
   for ((i = 0; i < CONSUME_TRIES; i++)); do
-    last_line_has "$text" || return 0
+    input_line_has "$text" || return 0
     sleep "$CONSUME_INTERVAL"
   done
   die ERROR \

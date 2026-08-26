@@ -404,12 +404,20 @@ Exit codes / STATUS line:
 
 `STATE` is one of:
 
-- `IDLE` — the pane's last non-empty line confidently matches a known idle
-  prompt (a bare `❯`/`>` with nothing after it, or a literal "ask me
-  anything" placeholder).
-- `BUSY` — it confidently matches a known busy marker (a codex-style
-  "esc to interrupt" banner, or a claude-style "participle + for Ns"
-  spinner line).
+The judgment reads the last couple of non-empty lines, after dropping any
+trailing static footer (issue #58). Grok draws one below the prompt — `Grok
+4.6 (high) · always-approve · 93K / 500K · ctrl+o transcript` — that carries
+no state and never changes, so stopping at the pane's physically last line
+reported `UNKNOWN` for every Grok role. `BUSY` wins over `IDLE` anywhere in
+that window, because a busy pane still shows its empty prompt below the
+spinner.
+
+- `IDLE` — a line there confidently matches a known idle prompt (a bare
+  `❯`/`>` with nothing after it, or a literal "ask me anything" placeholder),
+  and no busy marker is present.
+- `BUSY` — a line there confidently matches a known busy marker (a codex-style
+  "esc to interrupt" banner, a claude-style "participle + for Ns" spinner, or
+  Grok's "Waiting for response").
 - `UNKNOWN` — neither. This also covers a **blank pane** (no non-empty line
   in the captured scrollback at all) — blank does not mean idle, since a role
   stuck on an error, a rate limit, or a confirmation prompt can leave an
@@ -475,7 +483,13 @@ Exit codes / STATUS line: same table as `wake role` (`0` `SENT`, `2` `USAGE`,
 naming the backend for a mismatch.
 
 **Boundary:** a lost `talk role` message is a lost dispatch, not just a missed
-poke — the verified-submit step matters more here than for `wake role`. New
+poke — the verified-submit step matters more here than for `wake role`. That
+step judges the input line, which is the last non-empty line **after** any
+trailing static footer is dropped. Reading the physically last line instead is
+what made every Grok dispatch report `STATUS=SENT` without confirming the
+submit key had landed (issue #58); reading further up the pane instead brings
+back issue #28, where text parked in transcript history reads as unsent. It is
+that one line, and the footer is the only thing skipped. New
 work enters through the `master` row from `roles.tsv`; no role name such as
 `specifier` or `coder` is universally the intake role. Normal task intake is
 Dashboard New Task, not `talk role`: New Task creates the Board card and

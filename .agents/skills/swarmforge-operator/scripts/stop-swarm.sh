@@ -70,10 +70,8 @@ tmux_remote list-sessions >/dev/null 2>&1 \
 BUSY_LIST='' UNKNOWN_LIST=''
 while IFS=$'\t' read -r _index role session _display _agent; do
   [ -n "$role" ] || continue
-  LINE=$(tmux_remote capture-pane -p -t "$session" -S -12 2>/dev/null \
-    | grep -v '^$' | tail -1 || true)
-  STATE=$(classify "$LINE")
-  case $STATE in
+  classify_pane "$session"
+  case $PANE_STATE in
     BUSY) BUSY_LIST="$BUSY_LIST $role" ;;
     UNKNOWN) UNKNOWN_LIST="$UNKNOWN_LIST $role" ;;
   esac

@@ -51,13 +51,11 @@ tmux_remote list-sessions >/dev/null 2>&1 \
 printf 'STATUS=READ\n'
 while IFS=$'\t' read -r _index role session _display _agent; do
   [ -n "$role" ] || continue
-  LINE=$(tmux_remote capture-pane -p -t "$session" -S -12 2>/dev/null \
-    | grep -v '^$' | tail -1 || true)
-  STATE=$(classify "$LINE")
-  if [ -n "$LINE" ]; then
-    printf '%-16s %-7s | %s\n' "$role" "$STATE" "$LINE"
+  classify_pane "$session"
+  if [ -n "$PANE_LINE" ]; then
+    printf '%-16s %-7s | %s\n' "$role" "$PANE_STATE" "$PANE_LINE"
   else
-    printf '%-16s %-7s | (blank pane)\n' "$role" "$STATE"
+    printf '%-16s %-7s | (blank pane)\n' "$role" "$PANE_STATE"
   fi
 done <<< "$SESSIONS"
 
