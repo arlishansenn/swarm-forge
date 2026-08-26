@@ -666,7 +666,9 @@ Six steps, in this order:
    waiting on a human. Then create the branch from `BASE`.
 5. `POST {dashboard-url}/api/tasks` once, then poll the Board lane until
    `done`.
-6. `accept work` for the commit, `git push`, `gh pr create --base BASE`.
+6. `accept work` for the commit — **retried until the delivery record is
+   actually visible**, not read once — then `git push` and
+   `gh pr create --base BASE`.
 
 ### Stacked branches, and why `main` is left alone
 
@@ -713,6 +715,15 @@ between calls.**
 - **A poll timeout is not a failure.** It exits `5` `ERROR` saying the task may
   still be running, and **never re-posts** — a re-post would create a second
   card and a second chain.
+- **Board `done` and `accept work` are two different events, not one.**
+  `handoffd` marks the card `done` the moment it *delivers* a terminal-shaped
+  handoff, while `accept work` reads only the master's `inbox/completed/`, so
+  for as long as the master is still working that file in `inbox/in_process/`
+  the task is `done` on the Board and invisible to the report. The script
+  retries `accept work` across that window (`SF_RUN_ISSUE_DELIVERY_SECONDS`,
+  default 600s) instead of reading it once. Issue #63: reading once made
+  `#60`'s live run on podsum `#30` exit `5` with nothing pushed and no PR, on
+  a run whose work had in fact completed.
 
 ### One issue per call
 
@@ -731,9 +742,10 @@ Exit codes / STATUS line:
   Nothing runs at all.
 - `5` `ERROR` — `dashboard-url`/`roles.tsv` missing, `gh`/`git`/`curl` failed,
   the poll ceiling was reached (`SF_RUN_ISSUE_TIMEOUT_SECONDS`, default
-  7200s), or the Board says `done` but `accept work` reports no terminal
-  handoff for that task — never open a PR from a branch whose commit was not
-  confirmed.
+  7200s), or the Board said `done` but the delivery record stayed invisible to
+  `accept work` for the whole delivery window (`SF_RUN_ISSUE_DELIVERY_SECONDS`,
+  default 600s) — never open a PR from a branch whose commit was not confirmed.
+  Neither ceiling ever pushes, opens a PR, or re-posts the task.
 - `6` `UNSAFE` — a card by that name already exists, or a pending
   clarification/approval is blocking. Both name the thing to clear. Nothing
   was created in the duplicate case.
@@ -755,7 +767,9 @@ can read it, and a copy goes stale.
 
 **This verb blocks for the whole chain — minutes to hours. That is not a hang.**
 It polls every `SF_RUN_ISSUE_POLL_SECONDS` (default 15s) up to
-`SF_RUN_ISSUE_TIMEOUT_SECONDS` (default 7200s). The loop is plain shell: two
+`SF_RUN_ISSUE_TIMEOUT_SECONDS` (default 7200s), plus up to
+`SF_RUN_ISSUE_DELIVERY_SECONDS` (default 600s) more after the Board turns
+`done`, waiting for the delivery record. The loop is plain shell: two
 short round trips per round (`curl /api/state`, `cat tasks.tsv`) and **no model
 call**, so the wait costs no tokens no matter how long it runs. What costs
 tokens is the swarm's own agents on the target host, and that is unaffected by
@@ -935,7 +949,12 @@ still `coder`/`cleaner` (keeps waiting, and `work_in_flight` never appears
 outside comments in the script), the poll ceiling (exit 5, exactly one POST,
 no PR), and the PR argv itself: `--base`/`--head`/`--title`/`--body` present,
 `Closes #N` and `accept work`'s `commit:` in the body, and `--merge`,
-`--auto`, `--fill` absent. Its `accept work` stub prints a `WARN=` line and a
+`--auto`, `--fill` absent. Two cases cover issue #63's delivery window, using
+an `accept work` stub that reports successfully while omitting the current
+task's block for a set number of calls: one where the record appears on the
+third call (exit 0, exactly one push, exactly one `gh pr create`, and still
+only one POST) and one where it never appears (exit 5 naming `in_process`, no
+push, no PR, no re-post). Its `accept work` stub prints a `WARN=` line and a
 decoy task block first, so a parser that reads by line offset instead of by
 `task:` prefix fails. Run them after any change to the scripts or the stub
 contracts.

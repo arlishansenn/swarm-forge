@@ -45,6 +45,12 @@ ROOT='' ISSUE='' LOCAL=0
 # Overridable for tests, same trick as accept-work.sh's staleness thresholds.
 POLL_SECONDS=${SF_RUN_ISSUE_POLL_SECONDS:-15}
 TIMEOUT_SECONDS=${SF_RUN_ISSUE_TIMEOUT_SECONDS:-7200}
+# Separate, much shorter ceiling for the gap between the Board saying `done`
+# and the delivery record becoming visible to `accept work` (issue #63). That
+# is the master finishing ONE handoff, not the swarm doing a task, so it is
+# minutes at most; folding it into TIMEOUT_SECONDS would let a stuck master
+# look like a two-hour task.
+DELIVERY_SECONDS=${SF_RUN_ISSUE_DELIVERY_SECONDS:-600}
 # Overridable so tests can point step 5 at a stub instead of the real report,
 # same trick as start-swarm.sh's SWARM_LAUNCHER.
 ACCEPT_WORK=${ACCEPT_WORK:-$HERE/accept-work.sh}
@@ -215,20 +221,38 @@ done
 # (issue #50's Board cross-check WARNs on ordinary runs), then one
 # task/commit/completed_at block per unshipped task. Read it by prefix and by
 # task name; line offsets are wrong the moment a WARN appears.
+#
+# Retried, not read once (issue #63, found by #60's live run on podsum #30).
+# The Board lane and this report are two DIFFERENT lifecycle events with a
+# normal processing window between them: handoffd marks the card `done` the
+# moment it DELIVERS a terminal-shaped handoff, while `accept work` reads only
+# the master's inbox/completed/ — so while the master is still working that
+# file in inbox/in_process/, the task is `done` on the Board and invisible to
+# this report. Reading once turned that window into a hard ERROR/5 that pushed
+# nothing and opened no PR, on a run that had in fact succeeded.
 AW_ARGS=(--root "$ROOT")
 if [ "$LOCAL" = 1 ]; then AW_ARGS+=(--local); else AW_ARGS+=(--target "$TARGET" --key "$KEY"); fi
-AW=$("$ACCEPT_WORK" "${AW_ARGS[@]}") \
-  || die ERROR "accept work failed for $ROOT — cannot resolve the commit for $TASK_NAME" 5
 
 aw_field() { # $1 = header name -> its value inside $TASK_NAME's block
   printf '%s\n' "$AW" | awk -v t="$TASK_NAME" -v f="$1: " '
     index($0, "task: ") == 1 { cur = substr($0, 7); next }
     cur == t && index($0, f) == 1 { print substr($0, length(f) + 1); exit }'
 }
-COMMIT=$(aw_field commit)
-COMPLETED=$(aw_field completed_at)
-[ -n "$COMMIT" ] || die ERROR \
-  "$TASK_NAME is done on the Board but accept work reports no terminal handoff for it — do not open a PR from an unverified branch" 5
+
+DELIVERY_DEADLINE=$(( $(date -u +%s) + DELIVERY_SECONDS ))
+while :; do
+  AW=$("$ACCEPT_WORK" "${AW_ARGS[@]}") \
+    || die ERROR "accept work failed for $ROOT — cannot resolve the commit for $TASK_NAME" 5
+  COMMIT=$(aw_field commit)
+  COMPLETED=$(aw_field completed_at)
+  [ -n "$COMMIT" ] && break
+  # Nothing is pushed and no PR exists yet at this point, so waiting repeats
+  # nothing; the task is never re-posted here either.
+  if [ "$(date -u +%s)" -ge "$DELIVERY_DEADLINE" ]; then
+    die ERROR "$TASK_NAME is done on the Board but its delivery record is still invisible to accept work after ${DELIVERY_SECONDS}s — the terminal handoff is probably still in $ROOT/.swarmforge/handoffs/inbox/in_process/, or its commit already reached origin/main; nothing was pushed and the task was NOT re-posted" 5
+  fi
+  sleep "$POLL_SECONDS"
+done
 
 # ---------- step 8: push, then open the PR ----------
 in_root "git push -u origin $(printf '%q' "$BRANCH")" \

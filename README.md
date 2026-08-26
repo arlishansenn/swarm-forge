@@ -398,7 +398,7 @@ If the backend cannot open sessions at all, set both capability functions to `re
 | `talk <role>` | 给指定角色发一条行为切片，同样验证送达且被提交，不是发了就算 |
 | `onboard project` | 把 upstream 的 two-pack/four-pack/six-pack 装进一个项目目录；拒绝 `main`，目标非空时零写入拒绝；改写 `ARCHIVE_URL` 默认值指向本 fork，装完不启动 |
 | `accept work` | 人工验收：**只读 master worktree**（按 `roles.tsv` 第 2 列 `worktree-name == master` 定位，不认 role 名，不是恰好一条就报错）的终端 handoff 报 `task`/`commit`，别的 worktree 的中间跳不再被当成结果；缺字段的记录 `WARN=` 点名而不静默丢弃；同时扫 `inbox/new`/`inbox/in_process` 的滞留，卡链了会 `WARN=` 报出来，不再跟"没活干"读起来一样 |
-| `run issue <root> --issue <N>` | 把**一张** issue 走完「投 task → 轮询 → 开 PR」：读 `dashboard-url`（端口每次起 server 会变，永远现读）→ `gh issue view` 取 slug，分支 `feat/issue-<N>-<slug>` 与 task name `issue-<N>-<slug>` 同源 → BASE 取最新 open PR 的 head branch（无则 `main`，**stacked 在上一张票上，`main` 只被人 merge 推进**）→ board 已有同名 card 拒绝（退出 6，零 POST、零写入，因为 `pack_web` 的 `create-task!` 不去重）→ `/api/state` 有 pending clarification/approval 拒绝（退出 6，报出 id 与问题原文，**这是连投时唯一会自动停的人闸**）→ POST 一次 task → 轮询 board lane 到 `done`（**只认 lane，不看 `work_in_flight` 的 idle**，链路中途 coder 会短暂 idle）→ `accept work` 拿 commit → push → `gh pr create` 显式 `--title/--body`（**从不** `--merge`/`--auto`/`--fill`）；超时报 `ERROR`（退出 5）并明说可能还在跑，**绝不重投** |
+| `run issue <root> --issue <N>` | 把**一张** issue 走完「投 task → 轮询 → 开 PR」：读 `dashboard-url`（端口每次起 server 会变，永远现读）→ `gh issue view` 取 slug，分支 `feat/issue-<N>-<slug>` 与 task name `issue-<N>-<slug>` 同源 → BASE 取最新 open PR 的 head branch（无则 `main`，**stacked 在上一张票上，`main` 只被人 merge 推进**）→ board 已有同名 card 拒绝（退出 6，零 POST、零写入，因为 `pack_web` 的 `create-task!` 不去重）→ `/api/state` 有 pending clarification/approval 拒绝（退出 6，报出 id 与问题原文，**这是连投时唯一会自动停的人闸**）→ POST 一次 task → 轮询 board lane 到 `done`（**只认 lane，不看 `work_in_flight` 的 idle**，链路中途 coder 会短暂 idle）→ `accept work` 拿 commit（**重试到 delivery record 真的可见为止**，board `done` 只代表 handoff 已送达，master 还可能在处理，issue #63）→ push → `gh pr create` 显式 `--title/--body`（**从不** `--merge`/`--auto`/`--fill`）；超时报 `ERROR`（退出 5）并明说可能还在跑，**绝不重投** |
 | `stop swarm` | 停机前先 preflight：有角色 `BUSY`/`UNKNOWN` 或 worktree 有未提交改动就拒绝停机（退出 6），全干净才走 `close-swarm`；`--force` 跳过 preflight 复现今天的裸停机 |
 
 默认远端是 `admin@100.64.0.4`，可用 `--target`/`--key` 覆盖；`--local` 改走本地文件系统。
@@ -443,12 +443,15 @@ for n in 28 29 30; do run-issue.sh --root <root> --issue "$n" || break; done
 
 退出码：`0` PR_OPENED（输出带 `issue:`/`task:`/`branch:`/`base:`/`commit:`/`url:`）；
 `2` USAGE（缺 `--root`/`--issue`，或 `--issue` 不是数字，什么都不做）；
-`5` ERROR（runtime 文件缺失、`gh`/`git`/`curl` 失败、轮询超时、或 board 说 `done` 但
-`accept work` 报不出终端 handoff）；`6` UNSAFE（同名 card 已存在，或有 pending
-clarification/approval，两者都点名要清什么）。
+`5` ERROR（runtime 文件缺失、`gh`/`git`/`curl` 失败、轮询超时、或 board 说 `done` 后
+delivery record 在整个等待窗口里始终对 `accept work` 不可见）；`6` UNSAFE（同名 card
+已存在，或有 pending clarification/approval，两者都点名要清什么）。**两种超时都不会
+push、不会开 PR、不会重投 task。**
 
 **它会阻塞整条链路，几分钟到几小时，这不是卡死。** 默认每 15 秒轮一次
-（`SF_RUN_ISSUE_POLL_SECONDS`），上界 7200 秒（`SF_RUN_ISSUE_TIMEOUT_SECONDS`）。
+（`SF_RUN_ISSUE_POLL_SECONDS`），上界 7200 秒（`SF_RUN_ISSUE_TIMEOUT_SECONDS`）；
+board 变 `done` 之后还会再等 delivery record 最多 600 秒
+（`SF_RUN_ISSUE_DELIVERY_SECONDS`）。
 轮询是纯 shell，每轮两次短往返、**不调用任何 LLM**，等多久都不烧 token。
 
 从 agent 会话里发起时，怎么起取决于 harness 的 shell tool：**pi** 的 `bash` tool
