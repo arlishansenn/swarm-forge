@@ -99,11 +99,25 @@ EOF
 # Prints a WARN= line and a decoy task block before the real one: the parser
 # must select by `task:` prefix, never by line offset — issue #50 gave
 # accept-work.sh WARN= lines on ordinary successful runs.
+#
+# $STUB/aw-hide holds how many more calls must OMIT the current task's block
+# while still reporting successfully. That is the issue #63 window exactly:
+# the Board already says `done`, but the terminal handoff is still in the
+# master's inbox/in_process/, so accept-work.sh legitimately reports nothing
+# for this task yet.
 cat > "$WORK/bin/fake-accept-work.sh" <<'EOF'
 #!/usr/bin/env bash
+STUB=${STUB:?}
+printf 'aw-call\n' >> "$STUB/calls.log"
+hide=0
+[ -s "$STUB/aw-hide" ] && hide=$(cat "$STUB/aw-hide")
 printf 'STATUS=REPORTED\n'
 printf 'WARN=1 handoffs are stuck in inbox/new in cleaner — the chain is not moving\n'
 printf 'task: issue-11-decoy\ncommit: deadbeefdeadbeef\ncompleted_at: 2026-08-01T00:00:00Z\n\n'
+if [ "$hide" -gt 0 ]; then
+  printf '%s\n' "$((hide - 1))" > "$STUB/aw-hide"
+  exit 0
+fi
 printf 'task: %s\ncommit: %s\ncompleted_at: 2026-08-26T12:34:56Z\n\n' \
   "${TASK_UNDER_TEST:?}" "${FAKE_COMMIT:-abc1234}"
 EOF
@@ -116,6 +130,9 @@ export SF_RUN_ISSUE_POLL_SECONDS=0
 # regression that stops the loop from ever finishing would hang this suite
 # for two hours instead of failing.
 export SF_RUN_ISSUE_TIMEOUT_SECONDS=5
+# Same reasoning for issue #63's separate delivery-record ceiling: real default
+# is 600s, which would stall this suite instead of failing it.
+export SF_RUN_ISSUE_DELIVERY_SECONDS=5
 
 ROOT=$WORK/proj
 export BOARD_FILE=$ROOT/.swarmforge/board/tasks.tsv
@@ -281,6 +298,37 @@ check "timeout posts exactly one task" "1" "$(count curl-post)"
 has "timeout says the task may still be running" "$out" "may still be running"
 check "timeout never opens a PR" "no" \
   "$([ -f "$STUB/pr-create.argvlines" ] && echo yes || echo no)"
+
+# ---------- 10. Board `done` before the delivery record is visible ----------
+# Issue #63, found by #60's live run on podsum #30: handoffd marks the card
+# `done` when it DELIVERS the terminal handoff, but `accept work` reads only
+# the master's inbox/completed/, so the record is invisible until the master
+# finishes it. Reading once made a successful run exit 5 with no PR.
+reset
+printf 'done\n' > "$STUB/lane-script"
+printf '2\n' > "$STUB/aw-hide"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "delayed delivery record still exits 0" 0 "$rc"
+check "delayed delivery record STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
+check "waited and retried accept work" "3" "$(count aw-call)"
+check "pushed exactly once" "1" "$(grep -c 'git <push>' "$STUB/calls.log" || true)"
+check "opened exactly one PR" "1" "$(grep -c 'gh <pr> <create>' "$STUB/calls.log" || true)"
+check "never re-posted the task" "1" "$(count curl-post)"
+has "PR still carries the commit" "$(cat "$STUB/pr-create.argv")" "commit: abc1234"
+
+# ---------- 11. delivery record never appears: ERROR, no push, no PR ----------
+reset
+printf 'done\n' > "$STUB/lane-script"
+printf '999\n' > "$STUB/aw-hide"
+out=$(SF_RUN_ISSUE_DELIVERY_SECONDS=0 "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "invisible delivery record exits 5" 5 "$rc"
+check "invisible delivery record STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
+has "invisible delivery record names in_process" "$out" "in_process"
+check "invisible delivery record never pushes" "0" \
+  "$(grep -c 'git <push>' "$STUB/calls.log" || true)"
+check "invisible delivery record never opens a PR" "no" \
+  "$([ -f "$STUB/pr-create.argvlines" ] && echo yes || echo no)"
+check "invisible delivery record never re-posts" "1" "$(count curl-post)"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
