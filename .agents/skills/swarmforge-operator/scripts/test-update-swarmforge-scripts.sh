@@ -42,6 +42,18 @@ exit 1
 EOF
 chmod +x "$WORK/bin/tmux"
 
+# ---------- stub tar (issue #69): records whether COPYFILE_DISABLE was set
+# for each invocation, then execs the real tar so the transfer still happens
+# for real. Both ends of the pipe go through it — the pack side directly, the
+# extract side via the ssh stub's `bash -c` — so assertions key off argv.
+cat > "$WORK/bin/tar" <<'EOF'
+#!/usr/bin/env bash
+STUB=${STUB:?}
+printf 'tar COPYFILE_DISABLE=%s --%s\n' "${COPYFILE_DISABLE:-unset}" "$*" >> "$STUB/calls.log"
+exec /usr/bin/tar "$@"
+EOF
+chmod +x "$WORK/bin/tar"
+
 cat > "$WORK/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 STUB=${STUB:?}
@@ -433,6 +445,29 @@ grep -q '^ARCHIVE_URL=.*arlishansenn/swarm-forge' "$ROOT/swarm" \
 TAR_CALLS=$(grep -c '^ssh .*tar -C' "$STUB/calls.log" || true)
 [ "${TAR_CALLS:-0}" -ge 1 ] && ok "remote: tar-over-ssh transfer actually invoked" \
   || bad "remote: tar-over-ssh transfer actually invoked" "$(cat "$STUB/calls.log")"
+
+# issue #69: the PACK side of that pipe must run with COPYFILE_DISABLE=1.
+# macOS bsdtar otherwise packs an AppleDouble `._<name>` companion for every
+# file, and GNU tar on a Linux target extracts those as ordinary files. The
+# manifest DIGEST is computed on the LOCAL staged tree and never recomputed
+# after transfer, so those extra files make the remote tree permanently
+# unequal to it: `update SwarmForge scripts` reports UPDATED, and the very
+# next `start swarm` reports DRIFT, on every single run. Seen live on
+# pi-governance: 44 extra `._*` files, `start swarm` exit 4, forever.
+#
+# The extraction half cannot be reproduced here — both ends of the stub pipe
+# are the same tar, and bsdtar reads AppleDouble entries back into xattrs
+# instead of writing files — so what is nailed is the one thing that prevents
+# it: the environment on the pack command. Drop `COPYFILE_DISABLE=1` from
+# update-swarmforge-scripts.sh and this goes red.
+PACK_TAR=$(grep '^tar COPYFILE_DISABLE=' "$STUB/calls.log" | grep -- '-cf' | head -1)
+[ -n "$PACK_TAR" ] \
+  && ok "remote: the pack side of the transfer ran" \
+  || bad "remote: the pack side of the transfer ran" "$(grep '^tar ' "$STUB/calls.log" || echo '(no tar calls logged)')"
+case $PACK_TAR in
+  'tar COPYFILE_DISABLE=1 '*) ok "remote: pack tar runs with COPYFILE_DISABLE=1 (no AppleDouble)" ;;
+  *) bad "remote: pack tar runs with COPYFILE_DISABLE=1 (no AppleDouble)" "$PACK_TAR" ;;
+esac
 
 # 12. default source resolution (no SF_SOURCE_ROOT set): every case above
 #     isolates via SF_SOURCE_ROOT, so the actual production fallback path —
