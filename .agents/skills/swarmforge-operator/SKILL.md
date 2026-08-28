@@ -360,43 +360,121 @@ tailnet, below), confirms the port is owned by *this* project's own
 with a browser surface on the resulting URL. `TUNNEL=` in the report says
 which path was taken: `created`, `reused`, `tailnet`, or `local`.
 
-**Report the `URL=` line back to the user.** Every run prints it; a reply of
-"opened it" alone is not the verb done. With `--tailnet` that address works on
-the user's phone, tablet and every other machine, and it is the thing they
-actually need to take away — say it out loud, do not make them go read the
-report.
+### How to run it
 
-### `--tailnet`: no tunnel at all
+Set these once, then run the steps in order. `SF` is this skill's `scripts/`
+directory. For a dashboard on the machine you are already on, follow the
+`# local:` comments: `REMOTE=(--local)`, and read the file without `ssh`.
 
-Without the flag the script builds an SSH local-forward to that port (reusing
-a working one; preferred port first, any free port on bind conflict). That
+```sh
+SF=.agents/skills/swarmforge-operator/scripts
+ROOT=/Users/admin/project/podsum          # the MANAGED project's root, on its host
+TARGET=admin@100.64.0.4                   # omit for a local root
+KEY=~/.ssh/tailscale_key                  # omit for a local root
+REMOTE=(--target "$TARGET" --key "$KEY")  # local: REMOTE=(--local)
+```
+
+**Step 1 — read the port.**
+
+```sh
+PORT=$(ssh -n -i "$KEY" "$TARGET" "cat $ROOT/.swarmforge/dashboard-url" | sed 's#.*:##; s#/##')
+# local: PORT=$(sed 's#.*:##; s#/##' "$ROOT/.swarmforge/dashboard-url")
+echo "$PORT"
+```
+
+**Step 2 — branch on it.**
+
+```sh
+case $PORT in
+  778[0-9]) echo "fixed   -> step 3" ;;
+  *)        echo "random  -> step 5" ;;
+esac
+```
+
+**Step 3 — fixed port: open it over the tailnet.**
+
+```sh
+"$SF"/open-dashboard.sh --root "$ROOT" "${REMOTE[@]}" --tailnet
+```
+
+Expect `TUNNEL=tailnet`. On `5` `ERROR` naming an unpublished port, run step 6a
+once and repeat this step. Then go to step 4.
+
+**Step 4 — done. Print the report's `URL=` line in your reply.** Not "opened
+it" — the address itself, because that is what opens on the user's phone.
+
+**Step 5 — random port: open it over the ssh tunnel, then stop.**
+
+```sh
+"$SF"/open-dashboard.sh --root "$ROOT" "${REMOTE[@]}"
+```
+
+Expect `TUNNEL=created` or `reused`. Print the `URL=` line **and** say it works
+only on this machine and dies when the laptop sleeps. Offer step 6; do not run
+it. Step 6b interrupts running work, so it is the user's call.
+
+**Step 6 — switch this project to a fixed port. Only after the user agrees.**
+
+```sh
+# 6a. publish the range — ONE-TIME PER HOST; skip if `serve status` lists it.
+#     Writing serve config needs root on a Linux target (reading does not):
+#     "Access denied: serve config denied" means run the loop under `sudo`,
+#     or do `sudo tailscale set --operator=$USER` once and re-run as yourself.
+ssh -i "$KEY" "$TARGET" 'for p in $(seq 7780 7789); do tailscale serve --bg --tcp $p tcp://127.0.0.1:$p; done'
+ssh -i "$KEY" "$TARGET" 'tailscale serve status'
+
+# 6b. show what stopping would interrupt, then stop  (ASK FIRST)
+"$SF"/read-swarm.sh  --root "$ROOT" "${REMOTE[@]}"
+"$SF"/stop-swarm.sh  --root "$ROOT" "${REMOTE[@]}"
+
+# 6c. start again on this project's port from the table below (7780, 7781, ...)
+"$SF"/start-swarm.sh --root "$ROOT" "${REMOTE[@]}" --terminal none --dashboard-port <N>
+
+# 6d. go back to step 3
+```
+
+`start swarm` refuses an already-running swarm with `6` `UNSAFE` and has no
+override, so 6b cannot be skipped. `tailscale serve --bg` survives reboots and
+`tailscale down`/`up`, and `--tcp` takes one port (no range syntax), which is
+why 6a is a loop run once per host.
+
+**Never expose the dashboard any other way.** 6a is the only sanctioned path.
+Do not write a port forwarder or a proxy, do not add an `ssh -L` of your own,
+do not change what `pack_web` binds to. It binds `127.0.0.1` on purpose, so a
+host without tailscale behaves exactly as before; anything in front of that
+publishes a Teardown button to everyone who can reach it. If these steps do
+not get there, say so and stop — do not improvise a route.
+
+### Dashboard port allocation
+
+`7780`-`7789` is reserved for dashboards, one number per project, so that the
+URL itself says which project you are looking at:
+
+| project | port |
+|---|---|
+| podsum | `7780` |
+| pi-governance (coder2) | `7781` |
+| unassigned | `7782`-`7789` |
+
+Ports do not actually collide across hosts — this table exists so a human
+reading a URL knows what it is. It is a convention this fork's operator keeps
+by hand: nothing derives it, nothing enforces it, and `--dashboard-port` does
+not range-check against it. Give a new project the next free number and add a
+row here.
+
+### Why `--tailnet` exists
+
+Without the flag the script builds an SSH local-forward to the port. That
 tunnel lives on the operator's laptop: **it dies when the laptop sleeps**, and
-no other device can use it.
+no other device can use it. `--tailnet` skips it, takes the target's tailscale
+IP straight out of `--target`, checks `http://<ip>:<port>/` answers 200, and
+points the browser surface there.
 
-`--tailnet` (issue #78) skips it entirely. The managed hosts are already on
-the tailnet, so the script takes the target's tailscale IP straight out of
-`--target`, checks `http://<ip>:<port>/` answers 200, and points the browser
-surface there. Two things it needs:
-
-1. **A fixed port**, from `start swarm --dashboard-port <N>` — a random port
-   has no stable URL to publish.
-2. **That port published on the tailnet**, once, by the operator:
-
-   ```sh
-   tailscale serve --bg --tcp 7780 tcp://127.0.0.1:7780
-   ```
-
-   `--bg` mappings resume by themselves after a reboot and after
-   `tailscale down`/`up`, so this really is one-time.
-
-**The verb never runs any `tailscale` command.** It does not create that
-config, does not repair it and does not clean it up — it only observes the
-result over HTTP. When the port does not answer, it exits `5` `ERROR` cleanly
-with the target URL and the exact command to run, having created no
-workspace and no tunnel. `--tailnet` with `--local` is `2` `USAGE`: there is
-no target host to reach over the tailnet.
-
-`--tailnet` is not the default. The ssh path stays exactly as it was.
+The verb runs **no `tailscale` command** — it only observes over HTTP, and on a
+port that does not answer it exits `5` `ERROR` with the command to run, having
+created no workspace and no tunnel. `--tailnet` with `--local` is `2` `USAGE`:
+there is no target host to reach over the tailnet. It is not the default; the
+ssh path is unchanged.
 
 Port ownership: HTTP 200 only proves something answers on the port, not
 that it is this project's dashboard — on a host running several managed
