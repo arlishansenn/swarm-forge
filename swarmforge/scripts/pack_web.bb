@@ -137,11 +137,17 @@
 (defn inject-role! [root role text]
   (try
     (let [socket (tmux-socket root)
-          target (when-let [row (role-row root role)]
-                   (pane-target row))]
+          row (role-row root role)
+          target (when row (pane-target row))]
       (when-not (and socket target)
         (throw (ex-info "missing tmux target" {:role role :socket socket})))
-      (inject-target! socket target text))
+      ;; D-3 (docs/fork-deltas.md): inject-target! takes the agent, because the
+      ;; submit-key encoding differs per backend. upstream's call site passes
+      ;; three arguments, and the arity error that produces is swallowed whole
+      ;; by the catch below — the injection simply never happens and nothing is
+      ;; reported. Column 6 of roles.tsv is the backend; `codex` is the default
+      ;; for a row that predates the column.
+      (inject-target! socket target (nth row 5 "codex") text))
     (catch Exception e
       (binding [*out* *err*]
         (println (str "inject failed role=" role

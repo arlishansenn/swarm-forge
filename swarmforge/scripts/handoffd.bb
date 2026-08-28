@@ -421,7 +421,13 @@
   (when (and (approved-git-handoff? headers)
              (sender-ready-work? roles sender-role)
              (not (contains? (set (recipient-list headers)) sender-role)))
-    (notify! socket (get-in roles [sender-role :session]))
+    ;; D-3 (docs/fork-deltas.md): notify! is [socket session agent], because
+    ;; the submit-key encoding differs per backend. upstream's new call site
+    ;; here passes two arguments; the arity error is caught by deliver!'s
+    ;; handler and the sender is simply never woken.
+    (notify! socket
+             (get-in roles [sender-role :session])
+             (get-in roles [sender-role :agent]))
     (log! "notified-unblocked-sender" sender-role)))
 
 (defn deliver! [roles socket sender-role path]

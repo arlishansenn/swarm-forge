@@ -976,8 +976,13 @@
         (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))
         (is (str/includes? (str (last (first argv))) "use an RNG"))
         (is (empty? (filter #(str/includes? (fs/file-name %) "New_Task") notes)))
-        (is (= "C-m" (last (second argv))))
-        (is (= "C-j" (last (nth argv 2))))))))
+        ;; D-2 (docs/fork-deltas.md): this fork submits with a literal byte
+        ;; (-H 0d) or CSI-u, never the symbolic C-m/C-j upstream asserts here.
+        ;; tmux re-encodes a symbolic key name for a TUI that negotiated
+        ;; extended keys, and the pane then never submits — silently. One
+        ;; submit entry, so argv is two, not three.
+        (is (= ["-H" "0d"] (take-last 2 (second argv))))
+        (is (= 2 (count argv)))))))
 
 (deftest pack-web-lists-every-role-in-the-work-queue
   ;; Given a six-pack with no in_process mail

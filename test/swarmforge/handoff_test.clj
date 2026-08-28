@@ -116,6 +116,26 @@
 (defn head-sha [root]
   (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD"))))
 
+;; D-5 (docs/fork-deltas.md): the two helpers below drive this fork's
+;; handoffd reconciliation/retry tests. upstream has neither the daemon
+;; behaviour nor these helpers, so `git merge -X theirs` dropped them while
+;; keeping the fork-only deftests that call them. Restored verbatim from the
+;; pre-merge fork version.
+(defn read-argv
+  "Read a SWARMFORGE_TMUX_STUB file back into a vector of argv vectors."
+  [path]
+  (if (fs/exists? path)
+    (->> (str/split-lines (read-file path))
+         (remove str/blank?)
+         (mapv read-string))
+    []))
+
+(defn run-handoffd-once!
+  "One daemon pass with tmux replaced by an argv recorder."
+  [root argv-file]
+  (run {:dir root :env {"SWARMFORGE_TMUX_STUB" (str argv-file)}}
+       "bb" (script "handoffd.bb") "--once" (str root)))
+
 (defn board-audit-count [root task-name]
   (let [file (fs/path root ".swarmforge/board/tasks.tsv")]
     (when (fs/regular-file? file)

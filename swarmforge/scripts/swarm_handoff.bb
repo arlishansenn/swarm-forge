@@ -108,6 +108,15 @@
 (defn board-card-named [name]
   (some #(when (= name (:name %)) %) (board-cards)))
 
+(defn git-cwd []
+  (or (not-empty (str (handoff-lib/role-worktree (sender-role))))
+      (git-root)
+      "."))
+
+;; The inbox is the sender's own, resolved from its worktree column in
+;; roles.tsv rather than from the process working directory. handoffd delivers
+;; using that same column, so reading the inbox any other way gives the two
+;; sides different answers and the chain stops with neither one reporting it.
 (defn in-process-dir []
   (fs/path (git-cwd) ".swarmforge" "handoffs" "inbox" "in_process"))
 
