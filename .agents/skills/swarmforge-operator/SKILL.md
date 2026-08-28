@@ -1042,8 +1042,29 @@ requires a human decision before it touches tmux.
 
 ```sh
 scripts/stop-swarm.sh --root <project-root> \
-  [--target user@host] [--key <path>] [--local] [--force]
+  [--target user@host] [--key <path>] [--local] [--force] \
+  [--close-swarm <path-on-target>]
 ```
+
+### Where `close-swarm` lives (issue #82)
+
+`close-swarm` runs **on the target**, and the default path is the operator's
+own machine: `/Users/admin/project/swarm-forge/close-swarm`. A managed project
+does not ship one — it has `./swarm` but no `close-swarm`, and
+`swarmforge/scripts/` has none either — so on a target whose home is not
+`/Users/admin` you must say where it is:
+
+```sh
+# find it once per target, then pass it
+ssh -n -i <key> <target> 'ls ~/project/swarm-forge/close-swarm'
+
+scripts/stop-swarm.sh --root <root> --target <target> --key <key> \
+  --close-swarm /home/<user>/project/swarm-forge/close-swarm
+```
+
+`CLOSE_SWARM` in the environment still works; the flag wins over it. Get it
+wrong and the verb now says so — `5` `ERROR` carrying close-swarm's own
+stderr, never `STOPPED`.
 
 It reads `sessions.tsv` and classifies each role's pane exactly the way `read
 swarm` does (same `BUSY`/`IDLE`/`UNKNOWN` judgment, same shared code — the two
@@ -1051,7 +1072,14 @@ verbs must never disagree about a role's state), then reads `roles.tsv`'s
 worktree-path column and runs `git status --porcelain` against each one
 (deduplicated, since `master`/`none` rows both resolve to the project root).
 Only when every role reads `IDLE` and every worktree is clean does it run the
-same stop `close-swarm` has always done.
+same stop `close-swarm` has always done — and then **checks that it worked**.
+
+It also stops `pack_web` afterwards, by the pid in
+`$ROOT/.swarmforge/pack_web.pid`, and reports `PACK_WEB=stopped|absent`.
+`close-swarm` only knows about tmux; a dashboard left running means a later
+start on a fixed port gives one `$ROOT` two live `pack_web` processes, which
+is precisely the squatting case `dashboard`'s port-ownership check exists to
+refuse.
 
 Exit codes / STATUS line:
 
@@ -1060,7 +1088,11 @@ Exit codes / STATUS line:
 - `2` `USAGE` — missing `--root`.
 - `3` `STOPPED` — `sessions.tsv`/`roles.tsv`/`tmux-socket` missing, or the
   socket has no tmux server; nothing to stop.
-- `5` `ERROR` — the verb itself failed to run.
+- `5` `ERROR` — the verb itself failed to run, **or `close-swarm` did not**
+  (issue #82). The body carries close-swarm's own stderr and the path that
+  was tried. The swarm is still up; nothing was stopped. Until this was
+  checked, a `close-swarm` that did not exist on the target printed
+  `STATUS=STOPPED` and exited `0` with every tmux session still alive.
 - `6` `UNSAFE` — a role read `BUSY` or `UNKNOWN`, or a worktree was dirty (or
   its status could not be verified at all — treated as unsafe, never as
   clean). **Nothing was changed**: no `kill-session`, no `close-swarm` call.
@@ -1079,9 +1111,10 @@ DIRTY=.worktrees/cleaner (12 files)
 ```
 
 **`--force` skips the preflight gate entirely** — no state files read, no
-tmux reached for anything but the stop itself — reproducing today's
-unconditional behavior exactly. It is a human's explicit call to interrupt
-whatever is running; the script never assumes it.
+tmux reached for anything but the stop itself. It is a human's explicit call
+to interrupt whatever is running; the script never assumes it. It waives the
+preflight only: whether the stop actually ran is still checked, so `--force`
+can still exit `5` `ERROR`.
 
 **Boundary:** this verb does not implement graceful per-agent shutdown — no
 `/exit` sent to any backend, no wait for it to wind down. It only surfaces
