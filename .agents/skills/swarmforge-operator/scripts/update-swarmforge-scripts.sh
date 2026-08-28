@@ -258,7 +258,11 @@ else
 
   XFER_CMD=$(printf '%q' mkdir)$(printf ' %q' -p "$REMOTE_STAGE")
   XFER_CMD="$XFER_CMD && $(printf '%q' tar)$(printf ' %q' -C "$REMOTE_STAGE" -xf -)"
-  if ! tar -C "$STAGED" -cf - . | ssh -i "$KEY" "$TARGET" "$XFER_CMD"; then
+  # COPYFILE_DISABLE=1: macOS bsdtar otherwise packs an AppleDouble `._<name>`
+  # companion for every file, which GNU tar on Linux extracts as a real file.
+  # The manifest digest is computed over the STAGED tree, so those phantom
+  # files made every macOS-to-Linux install fail start-swarm's drift check.
+  if ! COPYFILE_DISABLE=1 tar -C "$STAGED" -cf - . | ssh -i "$KEY" "$TARGET" "$XFER_CMD"; then
     rm -rf "$STAGED"
     die ERROR "failed to transfer staged scripts to $TARGET:$REMOTE_STAGE" 5
   fi
