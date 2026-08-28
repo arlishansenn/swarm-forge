@@ -122,6 +122,11 @@ if [ -n "\${SWARMFORGE_TERMINAL:-}" ]; then
 else
   echo NOT_SET > "$STUB/launcher.env"
 fi
+if [ -n "\${SWARMFORGE_DASHBOARD_PORT:-}" ]; then
+  printf 'SWARMFORGE_DASHBOARD_PORT=%s\n' "\$SWARMFORGE_DASHBOARD_PORT" > "$STUB/launcher.port"
+else
+  echo NOT_SET > "$STUB/launcher.port"
+fi
 sleep "\${SF_TEST_DELAY:-2}"
 printf '%s\n' "$STUB/fake.sock" > "$ROOT/.swarmforge/tmux-socket"
 touch "$STUB/live"
@@ -541,6 +546,72 @@ check "managed-timeout exit" 5 "$RC"
 [ -d "$ROOT/.swarmforge/update-lock" ] \
   && bad "managed-timeout: lock released as before" "update-lock still held on a managed project" \
   || ok "managed-timeout: lock released as before"
+
+# 24. --dashboard-port reaches the launcher as SWARMFORGE_DASHBOARD_PORT
+#     (issue #78). A fixed port is what makes the dashboard reachable at a
+#     tailnet URL that survives a restart.
+reset_stub
+rm -rf "$ROOT/.swarmforge/update-lock"
+reset_scripts_fixture
+write_matching_manifest
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh SF_START_READY_TRIES=10 SF_START_READY_INTERVAL=0.3 SF_TEST_DELAY=0.5 \
+  run --local --root "$ROOT" --terminal none --dashboard-port 7780
+check "dashboard-port exit" 0 "$RC"
+[ "$(cat "$STUB/launcher.port")" = "SWARMFORGE_DASHBOARD_PORT=7780" ] \
+  && ok "dashboard-port: SWARMFORGE_DASHBOARD_PORT=7780 reached the launcher" \
+  || bad "dashboard-port reached the launcher" "$(cat "$STUB/launcher.port")"
+
+# 25. omitting it exports nothing — the pre-#78 behaviour, byte for byte
+reset_stub
+rm -rf "$ROOT/.swarmforge/update-lock"
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh SF_START_READY_TRIES=10 SF_START_READY_INTERVAL=0.3 SF_TEST_DELAY=0.5 \
+  run --local --root "$ROOT" --terminal none
+check "no dashboard-port exit" 0 "$RC"
+[ "$(cat "$STUB/launcher.port")" = NOT_SET ] \
+  && ok "no --dashboard-port: nothing exported, pack_web keeps its random port" \
+  || bad "no --dashboard-port: nothing exported" "$(cat "$STUB/launcher.port")"
+
+# 26. --terminal AND --dashboard-port together: BOTH survive. The old
+#     `LAUNCH_ARGV=("$SWARM_LAUNCHER"); [ auto ] || LAUNCH_ARGV=(env ...)`
+#     shape is an either/or assignment, so a second variable added the same
+#     way silently drops the first. This case is the one that must go red
+#     against that shape.
+reset_stub
+rm -rf "$ROOT/.swarmforge/update-lock"
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh SF_START_READY_TRIES=10 SF_START_READY_INTERVAL=0.3 SF_TEST_DELAY=0.5 \
+  run --local --root "$ROOT" --terminal ghostty --dashboard-port 7781
+check "both-flags exit" 0 "$RC"
+[ "$(cat "$STUB/launcher.env")" = "SWARMFORGE_TERMINAL=ghostty" ] \
+  && ok "both flags: SWARMFORGE_TERMINAL survived alongside the port" \
+  || bad "both flags: SWARMFORGE_TERMINAL survived" "$(cat "$STUB/launcher.env")"
+[ "$(cat "$STUB/launcher.port")" = "SWARMFORGE_DASHBOARD_PORT=7781" ] \
+  && ok "both flags: SWARMFORGE_DASHBOARD_PORT survived alongside the terminal" \
+  || bad "both flags: SWARMFORGE_DASHBOARD_PORT survived" "$(cat "$STUB/launcher.port")"
+
+# 27. --terminal auto AND --dashboard-port: auto still means "export no
+#     SWARMFORGE_TERMINAL at all", and the port still gets through
+reset_stub
+rm -rf "$ROOT/.swarmforge/update-lock"
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh SF_START_READY_TRIES=10 SF_START_READY_INTERVAL=0.3 SF_TEST_DELAY=0.5 \
+  run --local --root "$ROOT" --terminal auto --dashboard-port 7782
+check "auto+port exit" 0 "$RC"
+[ "$(cat "$STUB/launcher.env")" = NOT_SET ] \
+  && ok "auto+port: SWARMFORGE_TERMINAL still never exported" \
+  || bad "auto+port: SWARMFORGE_TERMINAL still never exported" "$(cat "$STUB/launcher.env")"
+[ "$(cat "$STUB/launcher.port")" = "SWARMFORGE_DASHBOARD_PORT=7782" ] \
+  && ok "auto+port: the port still reached the launcher" \
+  || bad "auto+port: the port reached the launcher" "$(cat "$STUB/launcher.port")"
+
+# 28. a non-numeric --dashboard-port is 2 USAGE and starts nothing. Only the
+#     shape is checked, never the range: which ports a host hands out is that
+#     host's convention, not something SwarmForge gets to have an opinion on.
+reset_stub
+rm -rf "$ROOT/.swarmforge/update-lock"
+OUT=$(bash "$START" --local --root "$ROOT" --terminal none --dashboard-port 77a0 2>&1); RC=$?
+check "bad dashboard-port exit" 2 "$RC"
+check "bad dashboard-port status" "STATUS=USAGE" "$(status_line)"
+! launcher_ran && ok "bad --dashboard-port: launcher never ran" \
+  || bad "bad --dashboard-port: launcher never ran" "$STUB"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

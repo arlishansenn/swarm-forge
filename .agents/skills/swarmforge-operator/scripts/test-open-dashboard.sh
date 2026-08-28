@@ -133,15 +133,31 @@ exit 0
 EOF
 chmod +x "$WORK/bin/ssh"
 
-# curl stub: 200 iff a tunnel marker exists for the URL's port
+# curl stub: 200 iff the matching marker exists. Loopback answers off a
+# tunnel marker (an ssh forward is up), any other host off a tailnet marker
+# (the port is published on the tailnet) — two separate facts, as live.
 cat > "$WORK/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 STUB=${STUB:?}
-URL=$(printf '%s\n' "$@" | grep -o 'http://127.0.0.1:[0-9]*' | head -1)
-PORT=${URL##*:}
-[ -n "$PORT" ] && [ -f "$STUB/tunnel-$PORT" ] && echo 200 || { echo 000; exit 7; }
+URL=$(printf '%s\n' "$@" | grep -o 'http://[0-9.]*:[0-9]*' | head -1)
+HOSTPORT=${URL#http://}
+HOST=${HOSTPORT%%:*}
+PORT=${HOSTPORT##*:}
+MARK=tunnel; [ "$HOST" = 127.0.0.1 ] || MARK=tailnet
+[ -n "$PORT" ] && [ -f "$STUB/$MARK-$PORT" ] && echo 200 || { echo 000; exit 7; }
 EOF
 chmod +x "$WORK/bin/curl"
+
+# tailscale stub: exists only so "the verb never runs it" is checkable rather
+# than assumed. Publishing a port is a one-time operator action; a verb that
+# shelled out to tailscale would be managing serve config it does not own.
+cat > "$WORK/bin/tailscale" <<'EOF'
+#!/usr/bin/env bash
+STUB=${STUB:?}
+printf 'tailscale %s\n' "$*" >> "$STUB/calls.log"
+exit 1
+EOF
+chmod +x "$WORK/bin/tailscale"
 
 reset_stub() {
   rm -rf "$STUB"; mkdir -p "$STUB"
@@ -298,6 +314,65 @@ run piddead
 check "pid-dead exit" 3 "$RC"
 check "pid-dead status" STOPPED "$(val STATUS)"
 check "pid-dead no cmux" 0 "$(grep -c '^cmux' "$STUB/calls.log" || true)"
+
+# 11 --tailnet (issue #78): no ssh tunnel, no tailscale command, and the URL
+#    handed to cmux is the tailnet address — the one that also works from a
+#    phone, and that does not die when the operator's laptop sleeps.
+reset_stub
+: > "$STUB/tailnet-54870"
+run gov --tailnet
+check "tailnet exit" 0 "$RC"
+check "tailnet status" OPENED "$(val STATUS)"
+check "tailnet tunnel" tailnet "$(val TUNNEL)"
+check "tailnet url" "http://100.64.0.4:54870/" "$(val URL)"
+check "tailnet built no ssh tunnel" 0 "$(tunnelcount)"
+check "tailnet ran no tailscale command" 0 "$(grep -c '^tailscale' "$STUB/calls.log" || true)"
+check "tailnet one ws" 1 "$(mutcount)"
+check "tailnet surface url" "http://100.64.0.4:54870/" "$(python3 -c 'import json;s=json.load(open("'$STUB'/state.json"));print(next(x["url"] for x in s["surfaces"] if x["type"]=="browser"))')"
+
+# 12 --tailnet on a port nobody published: clean exit that hands the operator
+#    the exact command to run. `tailscale serve --bg` survives reboots and
+#    down/up on its own, so this really is a one-time action, not a repair
+#    the verb should be doing on every call.
+reset_stub
+run gov --tailnet
+check "unpublished exit" 5 "$RC"
+check "unpublished status" ERROR "$(val STATUS)"
+printf '%s\n' "$OUT" | grep -qF "http://100.64.0.4:54870/" \
+  && ok "unpublished names the URL that failed" || bad "unpublished names the URL" "$OUT"
+printf '%s\n' "$OUT" | grep -qF "tailscale serve --bg --tcp 54870 tcp://127.0.0.1:54870" \
+  && ok "unpublished prints the command to run verbatim" || bad "unpublished prints the command" "$OUT"
+check "unpublished no workspace" 0 "$(mutcount)"
+check "unpublished no tunnel" 0 "$(tunnelcount)"
+check "unpublished no cmux at all" 0 "$(grep -c '^cmux' "$STUB/calls.log" || true)"
+check "unpublished ran no tailscale command" 0 "$(grep -c '^tailscale' "$STUB/calls.log" || true)"
+
+# 13 --tailnet does not weaken the issue #18 ownership check: a fixed port is
+#    MORE likely to be squatted by another project than a random one was.
+reset_stub
+: > "$STUB/tailnet-54871"
+run squat --tailnet
+check "tailnet squat exit" 4 "$RC"
+check "tailnet squat status" DRIFT "$(val STATUS)"
+printf '%s\n' "$OUT" | grep -qF "$WORK/fixtures/other-project" \
+  && ok "tailnet squat names actual root" || bad "tailnet squat names actual root" "$OUT"
+check "tailnet squat no workspace" 0 "$(mutcount)"
+
+# 14 --tailnet with --local is a contradiction: there is no target host to
+#    reach over the tailnet. Rejected rather than silently ignored.
+reset_stub
+run gov --tailnet --local
+check "tailnet+local exit" 2 "$RC"
+check "tailnet+local no cmux" 0 "$(grep -c '^cmux' "$STUB/calls.log" || true)"
+
+# 15 without --tailnet the ssh path is untouched: still a tunnel, still a
+#    loopback URL, still no tailscale command.
+reset_stub
+: > "$STUB/tailnet-54870"
+run gov
+check "no-flag still tunnels" created "$(val TUNNEL)"
+check "no-flag url still loopback" "http://127.0.0.1:54870/" "$(val URL)"
+check "no-flag one tunnel" 1 "$(tunnelcount)"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

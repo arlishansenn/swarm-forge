@@ -14,7 +14,8 @@
 # Contract details live in ../SKILL.md (verb: start swarm).
 #
 # Usage: start-swarm.sh --root <project-root> --terminal <value> \
-#   [--target user@host] [--key <path>] [--local] [--force]
+#   [--target user@host] [--key <path>] [--local] [--force] \
+#   [--dashboard-port <N>]
 #
 # issue #29: before launch, this script also acquires a project-scoped lock
 # (excluding a concurrent `update SwarmForge scripts`) and checks the
@@ -34,13 +35,22 @@
 # literal string "auto"); it means this script does not export
 # SWARMFORGE_TERMINAL at all, letting detect-terminal-backend's own
 # osascript/wt.exe fallback chain run exactly as it does today.
+#
+# --dashboard-port <N> (issue #78) is forwarded as SWARMFORGE_DASHBOARD_PORT,
+# which pack_web binds instead of asking the kernel for a random one. A random
+# port cannot be published on a tailnet, because there is no stable URL to
+# publish; a fixed one gives `dashboard --tailnet` an address that survives a
+# restart. Omitted, nothing is exported and pack_web behaves exactly as before.
+# Only the SHAPE is validated (digits): which ports a host hands out is that
+# host's own convention, and a range check here would be noise in anyone
+# else's fork.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib-wake-talk.sh"
 
 TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
-ROOT='' TERMINAL='' LOCAL=0 FORCE=0
+ROOT='' TERMINAL='' LOCAL=0 FORCE=0 DASHBOARD_PORT=''
 
 # Canonical --terminal value set: the basenames of
 # swarmforge/scripts/terminal-adapters/*.sh (today: ghostty, iterm2, none,
@@ -61,7 +71,7 @@ TERMINAL_VALUES='ghostty iterm2 none terminal-app windows-terminal auto'
 # Verb contract: a scripted verb prints STATUS=<WORD> as its first line —
 # same pattern onboard-project.sh's usage_error() uses (issue #29 review
 # round 4 finding).
-usage() { printf 'STATUS=USAGE\n'; sed -n '2,36p' "$0"; exit 2; }
+usage() { printf 'STATUS=USAGE\n'; sed -n '2,46p' "$0"; exit 2; }
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -71,6 +81,7 @@ while [ $# -gt 0 ]; do
     --key) KEY=$2; shift 2 ;;
     --local) LOCAL=1; shift ;;
     --force) FORCE=1; shift ;;
+    --dashboard-port) DASHBOARD_PORT=${2:-}; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -80,6 +91,9 @@ case " $TERMINAL_VALUES " in
   *" $TERMINAL "*) ;;
   *) usage ;;
 esac
+if [ -n "$DASHBOARD_PORT" ]; then
+  case $DASHBOARD_PORT in *[!0-9]*) usage ;; esac
+fi
 
 # Overridable so tests can point the launch at a stub instead of a real
 # `./swarm`/swarmforge.bb pipeline — same trick as stop-swarm.sh's
@@ -175,8 +189,16 @@ fi
 # `auto` never reaches SWARMFORGE_TERMINAL as a literal value (see header);
 # every other accepted value is already swarmforge.bb's own canonical form,
 # so it passes through unchanged.
+# Accumulated, not assigned (issue #78). The previous shape was a two-way
+# choice — plain launcher, or `env SWARMFORGE_TERMINAL=... launcher` — and a
+# second variable written the same way would have overwritten the first
+# instead of joining it. There is exactly one `env` prefix, built once, from
+# however many variables are actually set.
+LAUNCH_ENV=()
+[ "$TERMINAL" = auto ] || LAUNCH_ENV+=("SWARMFORGE_TERMINAL=$TERMINAL")
+[ -z "$DASHBOARD_PORT" ] || LAUNCH_ENV+=("SWARMFORGE_DASHBOARD_PORT=$DASHBOARD_PORT")
 LAUNCH_ARGV=("$SWARM_LAUNCHER")
-[ "$TERMINAL" = auto ] || LAUNCH_ARGV=(env "SWARMFORGE_TERMINAL=$TERMINAL" "$SWARM_LAUNCHER")
+[ ${#LAUNCH_ENV[@]} -eq 0 ] || LAUNCH_ARGV=(env "${LAUNCH_ENV[@]}" "$SWARM_LAUNCHER")
 
 run_detached "$ROOT/$LOG" "${LAUNCH_ARGV[@]}"
 

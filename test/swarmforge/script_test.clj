@@ -1,5 +1,6 @@
 (ns swarmforge.script-test
   (:require [babashka.fs :as fs]
+            [babashka.process :as process]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]))
@@ -285,6 +286,59 @@
     (is (= "1500" (str/trim (:out default-result))))
     (is (= "2750" (str/trim (:out configured-result))))
     (is (= "1500" (str/trim (:out invalid-result))))))
+
+(deftest swarmforge-dashboard-port-is-configurable
+  ;; Unset must produce the exact argv that shipped before the option existed:
+  ;; three tokens, no port, so pack_web keeps asking the kernel for one.
+  (let [default-result (run {:dir repo-root}
+                            (script "swarmforge.bb")
+                            "--test-pack-web-argv" "/proj")
+        blank-result (run {:dir repo-root
+                           :env {"SWARMFORGE_DASHBOARD_PORT" ""}}
+                          (script "swarmforge.bb")
+                          "--test-pack-web-argv" "/proj")
+        fixed-result (run {:dir repo-root
+                           :env {"SWARMFORGE_DASHBOARD_PORT" "7780"}}
+                          (script "swarmforge.bb")
+                          "--test-pack-web-argv" "/proj")]
+    (is (= "pack_web.sh --serve /proj" (str/trim (:out default-result))))
+    (is (= "pack_web.sh --serve /proj" (str/trim (:out blank-result))))
+    (is (= "pack_web.sh --serve /proj 7780" (str/trim (:out fixed-result))))))
+
+(defn free-port []
+  (with-open [s (java.net.ServerSocket. 0)]
+    (.getLocalPort s)))
+
+(defn wait-for-path [path timeout-ms]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (cond
+        (fs/exists? path) true
+        (> (System/currentTimeMillis) deadline) false
+        :else (do (Thread/sleep 50) (recur))))))
+
+(deftest pack-web-writes-the-dashboard-url-for-the-port-it-was-given
+  ;; The end of the chain --dashboard-port starts: what actually gets
+  ;; published on a tailnet is this file's contents. Started for real,
+  ;; because "the argv was right" does not prove the URL is.
+  ;;
+  ;; One process, one bind. Stability across restarts follows from the URL
+  ;; being a pure function of the argument — there is no randomness left in
+  ;; it — and re-binding the same port inside one test would only buy a
+  ;; TIME_WAIT race.
+  (let [root (tmp-dir)
+        port (free-port)
+        url-file (fs/path root ".swarmforge" "dashboard-url")
+        proc (process/process [(script "pack_web.bb") "--serve" (str root) (str port)]
+                              {:out :string :err :string})]
+    (try
+      (is (wait-for-path url-file 20000)
+          "pack_web never wrote .swarmforge/dashboard-url")
+      (is (= (str "http://127.0.0.1:" port)
+             (str/trim (slurp (str url-file)))))
+      (finally
+        (process/destroy-tree proc)
+        (fs/delete-tree root)))))
 
 (deftest swarmforge-sleep-prevention-can-be-disabled
   (let [result (run {:dir repo-root

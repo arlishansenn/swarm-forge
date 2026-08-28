@@ -401,10 +401,10 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 | 动词 | 作用 |
 |---|---|
-| `start swarm <root> --terminal <值>` | 从停机状态显式启动 swarm；`--terminal` 必传（`ghostty`/`iterm2`/`none`/`terminal-app`/`windows-terminal`/`auto`），杜绝 #10 那次靠自动探测踩中 watchdog 拆除的坑；已在跑（socket 探活成功）拒绝重复启动（退出 6，无 override）；启动前还会取 project lock 并比对已装 `swarmforge/scripts` 与其 manifest 的 digest，manifest 缺失或不一致报 `STATUS=DRIFT`（退出 4），锁被 `update SwarmForge scripts` 占用同样报 `UNSAFE`（退出 6）——`--force` 可越过锁占用与 DRIFT，但越不过「已在跑」；本地/远端都走 `nohup` 脱离终端启动，回读 runtime 文件确认后才报 `STATUS=STARTED` |
+| `start swarm <root> --terminal <值>` | 从停机状态显式启动 swarm；`--dashboard-port <N>` 可选，转成 `SWARMFORGE_DASHBOARD_PORT` 让 pack_web 绑固定端口（不传则一字不变地保持随机端口；只校验是数字，不校验范围；与 `--terminal` 累积进同一个 `env` 前缀，两者同时生效）；`--terminal` 必传（`ghostty`/`iterm2`/`none`/`terminal-app`/`windows-terminal`/`auto`），杜绝 #10 那次靠自动探测踩中 watchdog 拆除的坑；已在跑（socket 探活成功）拒绝重复启动（退出 6，无 override）；启动前还会取 project lock 并比对已装 `swarmforge/scripts` 与其 manifest 的 digest，manifest 缺失或不一致报 `STATUS=DRIFT`（退出 4），锁被 `update SwarmForge scripts` 占用同样报 `UNSAFE`（退出 6）——`--force` 可越过锁占用与 DRIFT，但越不过「已在跑」；本地/远端都走 `nohup` 脱离终端启动，回读 runtime 文件确认后才报 `STATUS=STARTED` |
 | `update SwarmForge scripts <root>` | 把 operator 自己这份源码checkout 的 `swarmforge/scripts` 装进被管项目，替换前先落地临时目录并按 `swarmforge.bb` 同款 required-helpers/terminal-adapters 清单校验，三件套（scripts 树、manifest、旧版 `./swarm` 启动器）原子替换、任一步失败整体回滚；已在跑拒绝（退出 6，无 override），源码checkout 有未提交改动同样拒绝（退出 5，无 override，永不可越过）；抢同一把 project lock，被 `start swarm` 占用报 `UNSAFE`，`--force` 只越过锁占用；成功报 `STATUS=UPDATED` 并带 `DIGEST=`/`SOURCE_COMMIT=` |
 | `open swarm <root>` | 把运行中的 swarm 以 cmux workspace 打开；停机时报原因，命中 window watchdog 拆除会点名，绝不代人启动 |
-| `dashboard <root>` | 建 SSH 隧道开 browser workspace 连 pack_web 看板；额外校验端口后面真是本项目的 `pack_web`（`--serve` 参数比对），不是同机别的项目撞上来的 |
+| `dashboard <root>` | 开 browser workspace 连 pack_web 看板；默认建 SSH 隧道，`--tailnet` 则不建隧道、直接打 target 的 tailscale IP（笔记本一睡隧道就断，且只有那台机器能看；tailnet URL 手机平板都能开）；额外校验端口后面真是本项目的 `pack_web`（`--serve` 参数比对），不是同机别的项目撞上来的；**跑完要把报文里的 `URL=` 转述给用户，不能只回「已打开」** |
 | `attach <role>` | 临时附加到某个角色的 tmux session |
 | `read swarm` | 逐角色截屏，三态分类 `IDLE`/`BUSY`/`UNKNOWN`（认不出就是 UNKNOWN，不猜成 idle），每行都附原始 pane 文本 |
 | `wake <role>` | 唤醒：注入 `ready_for_next.sh`，按 backend 编码提交后**验证真的被消费**，没提交成功报错并点名 backend 不匹配 |
@@ -431,7 +431,23 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 看板本身是 `pack_web`：`./swarm` 启动时随 swarm 一起起的本地 HTTP 服务，页面展示并可操作 swarm 状态（agent 状态、任务/交接、approvals、chat、teardown），只监听远端 `127.0.0.1`，所以远程访问必须走隧道。
 
-`dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上）：读 `.swarmforge/dashboard-url`，确保 `-N -L` 本地转发（已有可用隧道则复用；端口被占则换空闲端口），在当前 window 开/复用 `Dashboard · <basename>` workspace（browser surface 指向隧道 URL）。退出码语义同上；`3` 表示 dashboard-url 缺失，绝不自己起 `pack_web.sh --serve`。
+`dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上，另加 `--tailnet`）：读 `.swarmforge/dashboard-url`，确保能连上那个端口，在当前 window 开/复用 `Dashboard · <basename>` workspace。退出码语义同上；`3` 表示 dashboard-url 缺失，绝不自己起 `pack_web.sh --serve`。报文里的 `TUNNEL=` 说明走了哪条路：`created`/`reused`/`tailnet`/`local`。
+
+**不带 `--tailnet`：** 建 `-N -L` 本地转发（已有可用隧道则复用；端口被占则换空闲端口），browser surface 指向隧道 URL。这条路径行为未变。
+
+**带 `--tailnet`（issue #78）：** 完全不建隧道。隧道挂在操作者笔记本上，**笔记本一睡就断**，而且只有那台机器能看。managed host 本来就在 tailnet 里，所以脚本直接从 `--target` 取 tailscale IP，确认 `http://<ip>:<port>/` 答 200，browser surface 指向它。需要两件事：**①** 端口固定，即 `start swarm --dashboard-port <N>`（随机端口没有稳定 URL 可发布）；**②** 该端口在 tailnet 上发布过一次：
+
+```sh
+tailscale serve --bg --tcp 7780 tcp://127.0.0.1:7780
+```
+
+`--bg` 的映射在设备重启与 `tailscale down`/`up` 之后自动恢复，所以是真正的一次性动作。
+
+**这个动词不执行任何 `tailscale` 命令**——不下发、不修复、不清理那份 serve 配置，只用 HTTP 观测结果。端口不答 200 时干净退出 `5` ERROR，报文里给出目标 URL 与该敲的命令原文，不建 workspace、不建隧道。`--tailnet` 配 `--local` 是 `2` USAGE（本机没有可走 tailnet 的 target）。归属检查在 `--tailnet` 这条路上照跑，而且更重要：固定端口比随机端口更容易被同机别的项目撞上。
+
+**跑完把报文里的 `URL=` 说给用户。** 每次都打印，但只回一句「已打开」不算做完——tailnet 那个地址在任何设备上都能开，那才是操作者要拿走的东西。
+
+本 fork 的端口段约定（不是代码约束）：**7780-7789** 留给 dashboard，podsum → `7780`，pi-governance（coder2）→ `7781`。跨 host 其实不冲突，给不同项目不同号只是为了看 URL 就知道是哪个项目。
 
 三条硬性禁令，agent 不越过：
 
