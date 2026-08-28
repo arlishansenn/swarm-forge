@@ -662,10 +662,11 @@ Six steps, in this order:
    the slug: `feat/issue-<N>-<slug>` for the branch, `issue-<N>-<slug>` for
    the task name, one source for both.
 3. `BASE` = the newest open PR's `headRefName`, or `main` when there is none.
-4. Refuse if the Board already has a card by that name; refuse if the swarm is
-   waiting on a human. Then create the branch from `BASE`.
-5. `POST {dashboard-url}/api/tasks` once, then poll the Board lane until
-   `done`.
+4. Read the Board: no card is a fresh run, a card with its branch is a resume,
+   a card without one is refused. Refuse too if the swarm is waiting on a
+   human. On a fresh run, create the branch from `BASE`.
+5. `POST {dashboard-url}/api/tasks` once (skipped when resuming), then poll the
+   Board lane until `done`.
 6. `accept work` for the commit — **retried until the delivery record is
    actually visible**, not read once — then `git push` and
    `gh pr create --base BASE`.
@@ -699,7 +700,10 @@ between calls.**
 - **It never posts the same task twice.** `pack_web`'s `create-task!` checks
   only that the name is non-empty, so a second POST really does create a
   second card and a second handoff note. The Board is grepped for the task
-  name *before* anything is created.
+  name *before* anything is created. An existing card does not always mean
+  "stop", though — if the matching branch is there too, the card is this verb's
+  own from an interrupted run and the second call resumes it instead (issue
+  #65, see *If the run is killed*).
 - **It stops when the swarm is waiting on a human.** A blocked agent does not
   fail — it writes a clarification request or a pending approval and waits, so
   its task never reaches `done`. `/api/state`'s `clarifications` (status
@@ -737,7 +741,8 @@ for n in 28 29 30; do run-issue.sh --root R --issue "$n" || break; done
 Exit codes / STATUS line:
 
 - `0` `PR_OPENED` — the report body carries `issue:`, `task:`, `branch:`,
-  `base:`, `commit:` and `url:`.
+  `base:`, `commit:`, `resumed:` and `url:`. `resumed: yes` means this call
+  continued an earlier interrupted run rather than posting a new task.
 - `2` `USAGE` — missing `--root` or `--issue`, or `--issue` is not a number.
   Nothing runs at all.
 - `5` `ERROR` — `dashboard-url`/`roles.tsv` missing, `gh`/`git`/`curl` failed,
@@ -746,9 +751,10 @@ Exit codes / STATUS line:
   `accept work` for the whole delivery window (`SF_RUN_ISSUE_DELIVERY_SECONDS`,
   default 600s) — never open a PR from a branch whose commit was not confirmed.
   Neither ceiling ever pushes, opens a PR, or re-posts the task.
-- `6` `UNSAFE` — a card by that name already exists, or a pending
-  clarification/approval is blocking. Both name the thing to clear. Nothing
-  was created in the duplicate case.
+- `6` `UNSAFE` — a card by that name exists **and its branch does not**, so it
+  is not this verb's card, or a pending clarification/approval is blocking.
+  Both name the thing to clear, and nothing was created in either case. A card
+  *with* its branch is resumed, not refused.
 
 The PR is always opened with explicit `--title`/`--body`. **Never `--fill`:**
 it would use the swarm's own commit messages, which carry no `Closes #N` —
@@ -775,25 +781,65 @@ call**, so the wait costs no tokens no matter how long it runs. What costs
 tokens is the swarm's own agents on the target host, and that is unaffected by
 the poll interval.
 
-How to launch it depends on the harness's shell tool, and getting this wrong
-looks like a failure that isn't one:
+**Assume your harness will kill it, and find out where.** Every agent shell
+tool this verb has met caps a call well below its 7200s ceiling, and a tool's
+own description is not a reliable statement of that cap: pi's says the timeout
+argument is optional with no default, and pi still killed a foreground call at
+**120 seconds** (issue #65). So do not take a documented default — including
+anything written here — as the real limit. Measure it once, in your own
+harness, before the first long run:
 
-- **pi** — its `bash` tool takes an optional `timeout` in seconds and has **no
-  default** (`packages/coding-agent/src/core/tools/bash.ts`), so run this verb
-  in the foreground and pass no timeout. Do not wrap it in `nohup ... &`:
-  cancelling a pi tool call kills the whole process tree, which would take a
-  detached job with it.
-- **Claude Code** — its `Bash` tool defaults to 120s and caps at **600s**, well
-  under this verb's ceiling. Use `run_in_background: true`; a foreground call
-  gets moved to the background at 10 minutes and reads as a failed run.
+```sh
+date +%s; sleep 400; date +%s
+```
 
-Either way, do not "check on it" with `read swarm` in a second call while it
-runs — the script is already polling, and a second reader tells you nothing it
-will not print itself.
+If that call comes back killed, the limit is under 400s and this verb will not
+survive a real chain in the foreground. Then pick, in this order:
 
-If a run is cancelled after the POST, **the task stays posted**. Re-running
-this verb then refuses on the card it created (`6` `UNSAFE`), which is correct:
-finish that one by hand with `accept work`, `git push` and `gh pr create`.
+1. Pass an **explicit large timeout** if the tool accepts one (pi's `bash`
+   takes `timeout` in seconds). Verify it with the same `sleep` probe rather
+   than assuming the argument lifts the cap.
+2. Use the harness's **background mode** if it has one — Claude Code's `Bash`
+   defaults to 120s, caps at 600s, and takes `run_in_background: true`.
+3. Otherwise let it be killed and **re-run the same command**. That is a
+   supported path, not a repair (see below).
+
+Do not wrap the call in `nohup ... &` to dodge the cap. Cancelling a pi tool
+call kills the whole process tree, which takes the detached job with it, and a
+detached run's output goes somewhere nobody is reading.
+
+Do not "check on it" with `read swarm` in a second call while it runs — the
+script is already polling, and a second reader tells you nothing it will not
+print itself.
+
+### If the run is killed
+
+**Re-run the exact same command.** The verb detects its own earlier run and
+continues from wherever it stopped: it never posts a second task, never creates
+a second branch, and never opens a second PR. A resumed run prints
+`resumed: yes` in its report body.
+
+What it looks at, and what it does:
+
+| Board card for `issue-<N>-<slug>` | branch `feat/issue-<N>-<slug>` | what happens |
+|---|---|---|
+| absent | — | fresh run |
+| present | present | **resume** — skip the branch and the POST, pick up at the poll |
+| present | absent | `6` `UNSAFE` — that card is not this verb's; nothing is touched |
+
+The branch is the marker because this verb always creates it *before* it posts.
+A card whose branch is missing was typed into the Dashboard by hand or made by
+something else, and continuing on it would push work this verb never scoped.
+
+To see which state you are in without running anything:
+
+```sh
+scripts/read-swarm.sh --root <project-root>          # is the swarm still working?
+ssh <target> "grep '^issue-<N>-' <root>/.swarmforge/board/tasks.tsv"
+```
+
+A card in any lane means the task is posted; re-running is then always the
+right move, whether the lane is still `coder` or already `done`.
 
 **Boundary:** this verb opens a PR and stops. It never merges (`--merge` and
 `--auto` are never passed), never answers a clarification (`read swarm` does
@@ -954,7 +1000,16 @@ an `accept work` stub that reports successfully while omitting the current
 task's block for a set number of calls: one where the record appears on the
 third call (exit 0, exactly one push, exactly one `gh pr create`, and still
 only one POST) and one where it never appears (exit 5 naming `in_process`, no
-push, no PR, no re-post). Its `accept work` stub prints a `WARN=` line and a
+push, no PR, no re-post). Issue #65's resume path is covered by running the
+script twice against one fixture: the first pass is cut off after the POST (a
+lane that never reaches `done` plus a zero poll ceiling), and the second pass
+must exit 0 with `resumed: yes` while the Board still holds exactly one card
+and the two runs together produce exactly one POST, one branch, one push and
+one `gh pr create`. A third case re-runs after a PR already exists for the
+head and asserts `gh pr create` is not called again. For these the `git` stub
+keeps a real branch registry — `checkout -b` records a name and `rev-parse
+--verify` answers from it — because a stub that always exits 0 would let both
+the resume case and the not-our-card case pass for the wrong reason. Its `accept work` stub prints a `WARN=` line and a
 decoy task block first, so a parser that reads by line offset instead of by
 `task:` prefix fails. Run them after any change to the scripts or the stub
 contracts.
