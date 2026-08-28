@@ -411,7 +411,7 @@ If the backend cannot open sessions at all, set both capability functions to `re
 | `talk <role>` | 给指定角色发一条行为切片，同样验证送达且被提交，不是发了就算 |
 | `onboard project` | 把 upstream 的 two-pack/four-pack/six-pack 装进一个项目目录；拒绝 `main`，目标非空时零写入拒绝；改写 `ARCHIVE_URL` 默认值指向本 fork，装完不启动 |
 | `accept work` | 人工验收：**只读 master worktree**（按 `roles.tsv` 第 2 列 `worktree-name == master` 定位，不认 role 名，不是恰好一条就报错）的终端 handoff 报 `task`/`commit`，别的 worktree 的中间跳不再被当成结果；缺字段的记录 `WARN=` 点名而不静默丢弃；同时扫 `inbox/new`/`inbox/in_process` 的滞留，卡链了会 `WARN=` 报出来，不再跟"没活干"读起来一样 |
-| `run issue <root> --issue <N>` | 把**一张** issue 走完「投 task → 轮询 → 开 PR」：读 `dashboard-url`（端口每次起 server 会变，永远现读）→ `gh issue view` 取 slug，分支 `feat/issue-<N>-<slug>` 与 task name `issue-<N>-<slug>` 同源 → BASE 取最新 open PR 的 head branch（无则 `main`，**stacked 在上一张票上，`main` 只被人 merge 推进**）→ 读 board 决定走哪条路：无 card 是首次运行；有 card 且同名分支在，说明是自己上次被中断的运行，**resume**（跳过建分支与 POST，直接接着轮询）；有 card 但分支不在，那不是这个动词的 card，拒绝（退出 6，零 POST、零写入，因为 `pack_web` 的 `create-task!` 不去重）→ `/api/state` 有 pending clarification/approval 拒绝（退出 6，报出 id 与问题原文，**这是连投时唯一会自动停的人闸**）→ POST 一次 task → 轮询 board lane 到 `done`（**只认 lane，不看 `work_in_flight` 的 idle**，链路中途 coder 会短暂 idle）→ `accept work` 拿 commit（**重试到 delivery record 真的可见为止**，board `done` 只代表 handoff 已送达，master 还可能在处理，issue #63）→ push → `gh pr create` 显式 `--title/--body`（**从不** `--merge`/`--auto`/`--fill`）；超时报 `ERROR`（退出 5）并明说可能还在跑，**绝不重投** |
+| `run issue <root> --issue <N>` | 把**一张** issue 走完「投 task → 轮询 → 开 PR」：读 `dashboard-url`（端口每次起 server 会变，永远现读）→ `gh issue view` 取 slug，分支 `feat/issue-<N>-<slug>` 与 task name `issue-<N>-<slug>` 同源 → BASE 取最新 open PR 的 head branch（无则 `main`，**stacked 在上一张票上，`main` 只被人 merge 推进**）→ 读 **card 与分支两个标记**决定走哪条路，四格都有出口：两个都没有是首次运行；两个都在是 **resume**（跳过建分支与 POST，直接接着轮询）；只有分支没有 card，说明上次死在建分支与 POST 之间，**resume 但补做 POST**（issue #76，旧代码在这一格必然 `5` ERROR 且每次重跑都一样）；只有 card 没分支，那不是这个动词的 card，拒绝（退出 6，零 POST、零写入，因为 `pack_web` 的 `create-task!` 不去重）→ `/api/state` 有 pending clarification/approval 拒绝（退出 6，报出 id 与问题原文，**这是连投时唯一会自动停的人闸**）→ POST 一次 task → 轮询 board lane 到 `done`（**只认 lane，不看 `work_in_flight` 的 idle**，链路中途 coder 会短暂 idle）→ `accept work` 拿 commit（**重试到 delivery record 真的可见为止**，board `done` 只代表 handoff 已送达，master 还可能在处理，issue #63）→ push → `gh pr create` 显式 `--title/--body`（**从不** `--merge`/`--auto`/`--fill`）；超时报 `ERROR`（退出 5）并明说可能还在跑，**绝不重投** |
 | `stop swarm` | 停机前先 preflight：有角色 `BUSY`/`UNKNOWN` 或 worktree 有未提交改动就拒绝停机（退出 6），全干净才走 `close-swarm`；`--force` 跳过 preflight 复现今天的裸停机 |
 
 默认远端是 `admin@100.64.0.4`，可用 `--target`/`--key` 覆盖；`--local` 改走本地文件系统。
@@ -455,11 +455,14 @@ for n in 28 29 30; do run-issue.sh --root <root> --issue "$n" || break; done
 ```
 
 退出码：`0` PR_OPENED（输出带 `issue:`/`task:`/`branch:`/`base:`/`commit:`/`url:`）；
-`2` USAGE（缺 `--root`/`--issue`，或 `--issue` 不是数字，什么都不做）；
+`2` USAGE（缺 `--root`/`--issue`，或 `--issue`/`--max-wait` 不是数字，什么都不做）；
 `5` ERROR（runtime 文件缺失、`gh`/`git`/`curl` 失败、轮询超时、或 board 说 `done` 后
 delivery record 在整个等待窗口里始终对 `accept work` 不可见）；`6` UNSAFE（同名 card
 存在**但分支不在**，即那不是本动词的 card；或有 pending clarification/approval，两者都
-点名要清什么）。**两种超时都不会 push、不会开 PR、不会重投 task。** 成功输出里的
+点名要清什么）；`7` STILL_RUNNING（`--max-wait` 到点，task 已投、swarm 还在跑，输出带
+`lane:`/`waiting_for:`，原样重跑即续）。**所有超时都不会 push、不会开 PR、不会重投 task。**
+`7` 刻意不复用 `5`：`|| break` 那条链两种都会 break，但「还在跑，再叫我一次」和「出事了」
+要的反应不同——GNU `timeout` 用 124 而不复用被测命令退出码，是同一个理由。成功输出里的
 `resumed:` 说明这次是首次运行还是续跑。
 
 **它会阻塞整条链路，几分钟到几小时，这不是卡死。** 默认每 15 秒轮一次
@@ -468,27 +471,48 @@ board 变 `done` 之后还会再等 delivery record 最多 600 秒
 （`SF_RUN_ISSUE_DELIVERY_SECONDS`）。
 轮询是纯 shell，每轮两次短往返、**不调用任何 LLM**，等多久都不烧 token。
 
-**从 agent 会话里发起时，先假定你的 harness 会把它掐掉，并测出掐在哪。** 目前遇到的
-每个 agent shell tool，单次调用上限都远低于本 verb 的 7200 秒，而且**工具自己的描述不可信**：
-pi 的 `bash` tool 写着 timeout 可选、无默认，实测仍在 **120 秒**被杀（issue #65）。
-所以别把任何写下来的默认值（包括这份文档里的）当成真实上限，先在自己的 harness 里测一次：
+**从 agent 会话里发起时，先弄清你的 harness 上限并显式传 timeout。** 咬人的是
+**client 注入的默认值**，不是 shell tool 自己的天花板：
 
-```sh
-date +%s; sleep 400; date +%s
-```
+- **pi 的 `bash`**：不传 `timeout` 就一个定时器都不 arm（`dist/core/tools/bash.js:75-80`，
+  `pi-agent-core` 的 `dist/harness/tools/bash.js:11-19` 是同一份逻辑），上限
+  `MAX_TIMEOUT_MS = 2_147_483_647` 毫秒，约 **24.8 天**（`dist/core/tools/bash.js:16`）。
+  全树没有针对 tool call 的定时 abort，`AbortController` 只被 user abort 与 session dispose
+  触发，报错文案由调用方传进来的 `timeout` 拼成，只可能打印别人送进去的数。所以 issue #65 记的
+  **120 秒不是 pi 的**，是 client 注入的默认值，显式传 `timeout` 即解除。（`@earendil-works/pi-coding-agent@0.84.3`
+  实测：不传 timeout，`sleep 150` 在 120 秒被杀；传 `timeout: 300`，同一条 `sleep 150` 跑满。）
+- **Claude Code 的 `Bash`**：默认 2 分钟（`BASH_DEFAULT_TIMEOUT_MS`），**硬上限 10 分钟**
+  （`BASH_MAX_TIMEOUT_MS`），没有参数能抬高它。
 
-被杀就说明上限低于 400 秒，前台跑不完一条真实链路。然后按顺序选：**①** 工具支持就显式传一个
-大 timeout（pi 的 `bash` 收 `timeout` 秒数），并用同一个 `sleep` 探针验证它真的抬高了上限；
-**②** 用 harness 的后台模式（Claude Code 的 `Bash` 默认 120 秒、上限 600 秒，
-传 `run_in_background`）；**③** 都不行就让它被杀，然后**原样重跑**——那是支持的路径，不是抢修。
+按顺序：**①** 工具收 timeout 就显式传一个大的（pi 的 `bash` 收秒数）；**②** 硬上限低于一条
+真实链路时（Claude Code 的 10 分钟就是），传 **`--max-wait`** 卡在上限之下，让它干净地退
+`7` STILL_RUNNING 而不是被 SIGKILL，再叫一次——干净退出会报出停在哪个 lane，被杀则什么都不报；
+**③** 有后台模式就用（Claude Code 的 `Bash` 收 `run_in_background`）；**④** 都不行就让它被杀，
+然后**原样重跑**——那是支持的路径，不是抢修。
+
+**`--max-wait <秒>` 是调用方的 deadline**，语义照抄 `kubectl wait --timeout`，不自创第四种含义：
+正数是**整条命令**的 wall-clock 预算（同时覆盖轮询与 delivery 等待），到点退 `7` STILL_RUNNING；
+`0` 只查一次就返回（该投的 task 还是会投，然后报当前 lane）；负数沿用现有上限，默认 `-1`，
+所以不传这个 flag 的行为与从前完全一致。到点是干净退出：不 push、不开 PR、绝不重投 task。
 
 **别用 `nohup ... &` 绕上限**：在 pi 里取消会杀整棵进程树，把脱离出去的 job 一起带走，
 而且脱离后的输出没人看。
 
 **被杀之后：原样重跑同一条命令。** 动词会认出自己上次的运行并接着做：不会投第二张 task、
 不会建第二条分支、不会开第二个 PR，resume 的那次会在输出里打 `resumed: yes`。判据是
-**board 有没有 card × 同名分支在不在**：都没有是首次运行；都有是 resume；有 card 没分支
-说明那不是这个动词建的（人在 Dashboard 手敲的），退出 `6` 且什么都不碰。
+**board 有没有 card × 同名分支在不在**，四格全部有定义：
+
+| Board card | 分支 | 行为 |
+|---|---|---|
+| 无 | 无 | 首次运行 |
+| 无 | **有** | **resume**：跳过建分支，补做那次没做成的 POST |
+| 有 | 有 | **resume**：跳过建分支与 POST，直接接着轮询 |
+| 有 | 无 | `6` UNSAFE：那不是这个动词建的（人在 Dashboard 手敲的），什么都不碰 |
+
+第二格正是建分支与 POST 之间那个约两次 ssh 往返宽的窗口。issue #76 之前它没有出口：没 card
+就走 fresh，`git checkout -b` 撞上已存在的分支，`5` ERROR，且每次重跑都一样，只能人工删分支。
+现在两个标记每次都读，「建不建分支」与「投不投 task」各自认自己的标记，两次写入的任何中断
+顺序都不会再产生无出口的状态。
 
 ### 测试
 

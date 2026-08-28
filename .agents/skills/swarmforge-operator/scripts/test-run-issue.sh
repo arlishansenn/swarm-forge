@@ -69,7 +69,12 @@ STUB=${STUB:?}
 { printf 'git'; printf ' <%s>' "$@"; printf '\n'; } >> "$STUB/calls.log"
 touch "$STUB/branches"
 case "$1 $2" in
-  "checkout -b") printf '%s\n' "$3" >> "$STUB/branches" ;;
+  "checkout -b")
+    # Real git fails here ("a branch named X already exists"), and issue #76's
+    # dead end is exactly that failure: a stub that always succeeded would let
+    # the branch-without-card case pass while the script was still broken.
+    grep -qxF "$3" "$STUB/branches" && exit 1
+    printf '%s\n' "$3" >> "$STUB/branches" ;;
   "rev-parse --verify")
     ref=${*: -1}
     grep -qxF "${ref#refs/heads/}" "$STUB/branches" || exit 1
@@ -411,6 +416,82 @@ printf 'done\n' > "$STUB/lane-script"
 out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
 check "fresh run exits 0" 0 "$rc"
 has "fresh run says resumed: no" "$out" "resumed: no"
+
+# ---------- 15. the branch exists but no card: post the missing task ----------
+# Issue #76. The window is between step 4 (branch) and step 5 (POST), about two
+# ssh round trips wide. The old code keyed the whole decision off the card, so
+# with no card it took the fresh path, ran `git checkout -b` onto a branch that
+# was already there, and exited 5 ERROR — on every re-run, forever, until a
+# human deleted the branch. Modelled by seeding the branch registry alone,
+# which is precisely what a run killed in that window leaves behind.
+reset
+printf 'done\n' > "$STUB/lane-script"
+printf '%s\n' "$BRANCH" > "$STUB/branches"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "orphan branch exits 0" 0 "$rc"
+check "orphan branch STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
+has "orphan branch reports itself resumed" "$out" "resumed: yes"
+check "orphan branch creates no second branch" "0" \
+  "$(grep -c 'git <checkout> <-b>' "$STUB/calls.log" || true)"
+check "orphan branch posts the task that was never posted" "1" "$(count curl-post)"
+check "orphan branch leaves exactly one card" "1" "$(grep -c "^$TASK	" "$BOARD_FILE" || true)"
+check "orphan branch pushes once" "1" "$(grep -c 'git <push>' "$STUB/calls.log" || true)"
+check "orphan branch opens exactly one PR" "1" \
+  "$(grep -c 'gh <pr> <create>' "$STUB/calls.log" || true)"
+
+# ---------- 16. --max-wait 0: report the current state, exit 7, touch nothing ----------
+# The caller's deadline, not the callee's ceiling (issue #76). `kubectl wait
+# --timeout=0` semantics: check once, return. Reaching it is not an error, so
+# it must not land on 5 ERROR — a `for ... || break` chain breaks on both but
+# has to tell "still running, re-run me" from "something broke".
+reset
+printf 'coder\n' > "$STUB/lane-script"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --max-wait 0 2>&1); rc=$?
+check "--max-wait 0 exits 7" 7 "$rc"
+check "--max-wait 0 STATUS" "STATUS=STILL_RUNNING" "$(printf '%s\n' "$out" | head -1)"
+has "--max-wait 0 reports the lane it saw" "$out" "lane: coder"
+has "--max-wait 0 says the task was not re-posted" "$out" "NOT re-posted"
+check "--max-wait 0 checked the lane exactly once" "2" "$(count curl-state)"
+check "--max-wait 0 posted exactly one task" "1" "$(count curl-post)"
+check "--max-wait 0 never pushes" "0" "$(grep -c 'git <push>' "$STUB/calls.log" || true)"
+check "--max-wait 0 never opens a PR" "no" \
+  "$([ -f "$STUB/pr-create.argvlines" ] && echo yes || echo no)"
+# and the run it left behind is resumable exactly like any other kill
+printf 'done\n' > "$STUB/lane-script"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "re-run after --max-wait 0 exits 0" 0 "$rc"
+has "re-run after --max-wait 0 says resumed" "$out" "resumed: yes"
+check "re-run after --max-wait 0 never re-posts" "1" "$(count curl-post)"
+
+# ---------- 17. --max-wait cuts the delivery wait too, on the same code ----------
+# The deadline is a budget for the whole call, so the accept-work retry window
+# (issue #63) answers to it as well — and still exits 7, not 5.
+reset
+printf 'done\n' > "$STUB/lane-script"
+printf '999\n' > "$STUB/aw-hide"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --max-wait 0 2>&1); rc=$?
+check "--max-wait during the delivery wait exits 7" 7 "$rc"
+check "--max-wait during the delivery wait STATUS" "STATUS=STILL_RUNNING" \
+  "$(printf '%s\n' "$out" | head -1)"
+check "--max-wait during the delivery wait never pushes" "0" \
+  "$(grep -c 'git <push>' "$STUB/calls.log" || true)"
+
+# ---------- 18. a negative --max-wait keeps the callee's own ceilings ----------
+reset
+printf 'coder\n' > "$STUB/lane-script"
+out=$(SF_RUN_ISSUE_TIMEOUT_SECONDS=0 \
+  "$SCRIPT" --root "$ROOT" --issue 28 --local --max-wait -1 2>&1); rc=$?
+check "negative --max-wait still exits 5 on the poll ceiling" 5 "$rc"
+check "negative --max-wait STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
+has "negative --max-wait says it may still be running" "$out" "may still be running"
+
+# ---------- 19. --max-wait must be a number ----------
+reset
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --max-wait soon 2>&1); rc=$?
+check "non-numeric --max-wait exits 2" 2 "$rc"
+check "non-numeric --max-wait STATUS" "STATUS=USAGE" "$(printf '%s\n' "$out" | head -1)"
+check "non-numeric --max-wait ran no command at all" "0" \
+  "$(wc -l < "$STUB/calls.log" | tr -d ' ')"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
