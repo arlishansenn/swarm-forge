@@ -467,6 +467,8 @@ scripts/start-swarm.sh --root <root> --target <target> --key <key> \
 scripts/open-dashboard.sh --root <root> --target <target> --key <key> --tailnet
 ```
 
+**绝不用别的方式暴露 dashboard。** 第 1 步的 `tailscale serve` 是唯一被认可的路径：不要自己写端口转发或 proxy，不要自己加 `ssh -L`，不要改 `pack_web` 绑定的地址。它绑 `127.0.0.1` 是刻意的，好让没有 tailscale 的环境行为不变；在它前面加任何东西，都等于把一块带 Teardown 按钮的看板发布给所有能连到的人。上面这几步走不通就说走不通，不要临时发明一条路。
+
 **第 2 步会打断 swarm 正在做的事，动手前必须问人**，并说清会打断什么（`read swarm` 能看到哪些 role 是 `BUSY`）。固定端口是便利，别人跑到一半的链路不是。第 1 步每台 host 只做一次，`tailscale serve status` 里已经有这个段就直接跳到第 2 步。
 
 #### dashboard 端口分配
