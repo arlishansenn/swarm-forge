@@ -7,10 +7,14 @@
             [handoff-lib :as hl]))
 
 (def script-dir (fs/parent *file*))
+(load-file (str (fs/path script-dir "ready_for_next_guard.bb")))
 
 (defn timestamp []
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
            (java.time.Instant/now)))
+
+(defn current-head []
+  (str/trim (:out (sh/sh "git" "rev-parse" "--short=10" "HEAD"))))
 
 (defn handoff-files [dir]
   (if (fs/exists? dir)
@@ -69,13 +73,16 @@
     (fs/move tmp file {:replace-existing true})))
 
 (defn print-task [file]
-  (let [task-name (header-field file "task")]
+  (let [task-name (header-field file "task")
+        task-id (header-field file "task_id")]
     (println "TASK:" (str file))
     (println "FROM:" (header-value file "from" "unknown"))
     (println "TYPE:" (header-value file "type" "unknown"))
     (println "PRIORITY:" (header-value file "priority" "50"))
     (when task-name
       (println "TASK_NAME:" task-name))
+    (when task-id
+      (println "TASK_ID:" task-id))
     (println "PAYLOAD:")
     (print (body file))))
 
@@ -116,6 +123,9 @@
           (merge-git-handoff! file)
           (print-task file))
         (let [new-files (handoff-files new-dir)]
+          (when-let [active (seq (ready-for-next-guard/active-outbound-git-files
+                                  (ready-for-next-guard/current-role)))]
+            (apply fail! 2 (ready-for-next-guard/wait-message active)))
           (if (empty? new-files)
             (println "NO_TASK")
             (let [source-file (first new-files)
@@ -124,6 +134,7 @@
                 (fail! 2 (str "AMBIGUOUS_TASK_STATE: target in-process file already exists: " target-file)))
               (fs/move source-file target-file)
               (set-header! target-file "dequeued_at" (timestamp))
+              (set-header! target-file "task_base_commit" (current-head))
               (merge-git-handoff! target-file)
               (print-task target-file))))))))
 

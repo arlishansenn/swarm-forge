@@ -2,4 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec bb --classpath "$SCRIPT_DIR" "$SCRIPT_DIR/pack_web.bb" "$@"
+if [[ "${1:-}" == --test-* ]]; then
+  exec bb "$SCRIPT_DIR/pack_web_test.bb" "$@"
+else
+  exec bb "$SCRIPT_DIR/pack_web.bb" "$@"
+fi

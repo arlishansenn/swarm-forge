@@ -1,5 +1,11 @@
 .DS_Store
 .env
 .claude/
+.cpcache/
+.superpowers/
 .swarmforge/
 .worktrees/
+target/
+node_modules/
+test-results/
+playwright-report/

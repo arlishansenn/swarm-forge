@@ -87,6 +87,10 @@
   (let [mode (nth (role-row role-name) 6 "")]
     (if (str/blank? mode) "task" mode)))
 
+(defn role-propagation [role-name]
+  (let [mode (nth (role-row role-name) 7 "")]
+    (if (str/blank? mode) "forward-only" mode)))
+
 (defn timestamp []
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
            (java.time.Instant/now)))
@@ -138,13 +142,16 @@
     (fs/move tmp file {:replace-existing true})))
 
 (defn print-task [file]
-  (let [task-name (header-field file "task")]
+  (let [task-name (header-field file "task")
+        task-id (header-field file "task_id")]
     (println "TASK:" (str file))
     (println "FROM:" (or (header-field file "from") "unknown"))
     (println "TYPE:" (or (header-field file "type") "unknown"))
     (println "PRIORITY:" (or (header-field file "priority") "50"))
     (when task-name
       (println "TASK_NAME:" task-name))
+    (when task-id
+      (println "TASK_ID:" task-id))
     (println "PAYLOAD:")
     (print (body file))))
 
@@ -187,7 +194,12 @@
 (defn finish-done! []
   (try
     (archive-current-role!)
-    (catch Exception _))
+    (catch Exception e
+      (binding [*out* *err*]
+        (println (str "archive failed role=" (try (role) (catch Exception _ "?"))
+                      " root=" (try (str (project-root)) (catch Exception _ "?"))
+                      " error=" (.getMessage e)))
+        (flush))))
   (announce-follow-up!))
 
 (defn next-sequence []
@@ -222,6 +234,7 @@
       "role-known" (System/exit (if (role-known? (second args)) 0 1))
       "role-worktree-name" (println (role-worktree-name (second args)))
       "role-receive-mode" (println (role-receive-mode (second args)))
+      "role-propagation" (println (role-propagation (second args)))
       "timestamp" (println (timestamp))
       "id-timestamp" (println (id-timestamp))
       "valid-priority" (System/exit (if (valid-priority? (second args)) 0 1))
@@ -243,8 +256,5 @@
         (println (ex-message e)))
       (System/exit (or (:exit (ex-data e)) 1)))))
 
-;; Only run the CLI when this file is the script bb was invoked with. Without the
-;; guard, requiring this namespace would execute the CLI and exit, which is why
-;; every sibling script kept its own copy of these helpers instead of sharing them.
-(when (= *file* (System/getProperty "babashka.file"))
+(when (= (str *file*) (System/getProperty "babashka.file"))
   (apply -main *command-line-args*))

@@ -83,9 +83,9 @@
                (str/join "\n" (map #(str "- " %) in-process-files))))
       (let [source-file (first in-process-files)
             target-file (fs/path completed-dir (fs/file-name source-file))]
-        (set-header! source-file "completed_at" (timestamp))
         (when (fs/exists? target-file)
-          (fail! 2 (str "AMBIGUOUS_TASK_STATE: completed file already exists: " target-file)))
+          (fs/delete target-file))
+        (set-header! source-file "completed_at" (timestamp))
         (fs/move source-file target-file)
         (println "COMPLETED:" (str target-file))
         (finish-done!)))))

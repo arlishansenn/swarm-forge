@@ -8,9 +8,10 @@
 :root{--bg:#eef0eb;--panel:#fbfbf8;--ink:#1e221f;--muted:#68726c;--line:#d5d9d2;--line-soft:#e8ebe5;--accent:#3d5a45;--amber:#c9851a;--amber-bg:#fff6e5;--red:#9b1c1c;--green:#2f6b3a;--green-bg:#e7f3ea;--chip:#e8eee9;--card:#fffef9;--rail:340px;--card-min-w:148px;--card-min-h:72px;--card-max-w:200px;font-family:ui-sans-serif,system-ui,sans-serif}
 *{box-sizing:border-box}html,body{height:100%;margin:0}
 body{background:#cfd4cc;color:var(--ink);height:100vh;display:flex;flex-direction:column;overflow:hidden}
-.cockpit{flex:1;min-height:0;margin:10px;background:var(--bg);border:1px solid #b8bfb6;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
+.cockpit{flex:1;min-width:0;min-height:0;width:calc(100% - 20px);margin:10px;background:var(--bg);border:1px solid #b8bfb6;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
 header.top{display:flex;gap:12px;align-items:center;padding:10px 14px;background:#f4f5f1;border-bottom:1px solid var(--line);flex-wrap:wrap}
 header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.meta .dot{color:var(--green)}.spacer{flex:1}
+.pack-identity,.pack-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .error{color:var(--red);padding:0 14px;font-size:12px;min-height:1em}
 .btn{border:1px solid #9aa59e;background:#fff;color:var(--ink);padding:5px 10px;border-radius:7px;font-size:12px;cursor:pointer}
 .btn:hover,.btn:focus-visible{background:#f0f2ee;color:var(--ink);border-color:#8a9188}
@@ -22,13 +23,19 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .btn-sm{padding:4px 8px;font-size:11px}
 .btn-approve{background:#2f6b3a;border-color:#2f6b3a;color:#fff}
 .btn-approve:hover{background:#3d8a4a;border-color:#3d8a4a;color:#fff}
+.btn:disabled,.btn[disabled]{opacity:.45;cursor:not-allowed;transform:none}
+.btn:disabled:hover,.btn[disabled]:hover{background:#fff;border-color:#9aa59e;color:var(--ink)}
+.btn-approve:disabled:hover,.btn-approve[disabled]:hover{background:#2f6b3a;border-color:#2f6b3a;color:#fff}
 .attention{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;padding:8px 14px;background:var(--amber-bg);border-bottom:1px solid #efd7a8;font-size:12px;max-height:120px;overflow:auto;position:relative;z-index:30}
 .attention .tag{font-weight:700;text-transform:uppercase;font-size:10px;color:#8a5a0a;padding-top:4px}
 .att-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:rgba(255,255,255,.65);border:1px solid #efd7a8;border-radius:6px;padding:4px 8px;margin:0 0 4px}
 .menu{position:relative;display:inline-block}
 .menu-list{display:none;position:fixed;z-index:200;min-width:12rem;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,.12);padding:4px 0}
 .menu.open .menu-list{display:block}
-.menu-list button{display:block;width:100%;text-align:left;border:0;background:none;padding:6px 10px;font:inherit;font-size:11px;cursor:pointer}
+.menu-list button{display:flex;align-items:center;gap:6px;width:100%;text-align:left;border:0;background:none;padding:6px 10px;font:inherit;font-size:11px;cursor:pointer}
+.doc-mark{flex:0 0 auto;width:1em;font-weight:700;line-height:1}
+.doc-mark-ok{color:var(--green)}
+.doc-mark-bad{color:var(--red)}
 .menu-list button:hover{background:#f0f2ee}
 .batch-more{margin-left:2px;color:var(--muted);font-weight:700;cursor:default;vertical-align:baseline}
 .menu-list .batch-item{display:block;padding:6px 10px;font-size:11px;white-space:nowrap}
@@ -45,8 +52,10 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .batch{display:flex;flex-direction:column;gap:0;width:max-content;min-width:var(--card-min-w)}
 .card{background:var(--card);border:1px solid #d0cbb8;border-radius:8px;padding:7px 8px;font-size:11px;width:max-content;max-width:var(--card-max-w);min-width:var(--card-min-w);min-height:var(--card-min-h);cursor:pointer;display:flex;flex-direction:column;gap:3px}
 .card:hover{border-color:#a89f7e}
-.card .title{font-weight:700;font-size:12px}
-.card .title .name{overflow:hidden;text-overflow:ellipsis;max-width:11rem;display:block}
+.card .title{font-weight:700;font-size:12px;display:flex;align-items:flex-start;gap:6px;width:100%;min-width:0}
+.card .title .name{overflow:hidden;text-overflow:ellipsis;max-width:11rem;display:block;flex:1;min-width:0}
+.audit-count{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto;color:var(--muted);font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.2}
+.audit-icon{font-size:10px}
 .card .status{color:var(--muted);font-size:10px;white-space:normal;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
 .card-rejected .status{color:var(--red);font-weight:700;-webkit-line-clamp:1}
 .card-del{margin-left:auto;padding:1px 6px;font-size:10px;line-height:1.2}
@@ -77,7 +86,7 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .wif-therm[data-heat="5"] .bar:nth-child(-n+5),
 .wif-therm[data-heat="6"] .bar:nth-child(-n+6){background:var(--green)}
 .ts-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}.ts-head h2{margin:0;flex:1}
-.history{flex:1;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;overflow:auto;display:flex;flex-direction:column;justify-content:flex-end;gap:8px;font-size:11px}
+.history{flex:1;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;overflow:auto;display:flex;flex-direction:column;gap:8px;font-size:11px}
 .att-row input[type=text]{flex:1;min-width:8rem;border:1px solid #c6cbc5;border-radius:6px;padding:4px 6px;font:inherit;font-size:11px}
 .bubble-you{border-left:3px solid #6b7c72;padding-left:8px;white-space:pre-wrap}
 .bubble-ts{color:#4a4f4c;padding-left:12px;font-style:italic;white-space:pre-wrap}
@@ -93,17 +102,31 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .float textarea{min-height:140px;resize:vertical}
 .float .actions{display:flex;gap:8px;justify-content:flex-end}
 .note{font-size:11px;color:var(--muted);margin:-4px 0 10px}
-.doc-body{max-height:min(60vh,480px);overflow:auto;white-space:pre-wrap;font-size:11px;background:#f4f5f1;border:1px solid var(--line);border-radius:6px;padding:8px}
+@media (max-width:700px){
+  header.top{align-items:flex-start;flex-direction:column}
+  header.top .spacer{display:none}
+  .board-toolbar span:last-child{display:none}
+  .body{display:flex;flex-direction:column;overflow:auto}
+  .splitter{display:none}
+  .board{flex:0 0 390px;min-height:390px}
+  .rail{flex:0 0 580px;min-height:580px;border-top:1px solid var(--line)}
+  .rail section.work-sec{flex:0 0 220px}
+  .rail section.ts{flex:1 1 auto}
+}
 </style>
 </head>
 <body>
 <div class="cockpit">
   <header class="top">
-    <h1 id="pack-title">SwarmForge Pack</h1>
-    <span class="meta" id="pack-meta"><span class="dot">●</span> live</span>
+    <div class="pack-identity">
+      <h1 id="pack-title">SwarmForge Pack</h1>
+      <button class="btn btn-danger btn-sm" type="button" id="teardown-btn">Teardown</button>
+      <span class="meta" id="pack-meta"><span class="dot">●</span> live</span>
+    </div>
     <span class="spacer"></span>
-    <button class="btn btn-primary" type="button" id="btn-new-task">New Task</button>
-    <button class="btn btn-danger" type="button" id="teardown-btn">Teardown</button>
+    <div class="pack-actions">
+      <button class="btn btn-primary" type="button" id="btn-new-task">New Task</button>
+    </div>
   </header>
   <p id="error" class="error"></p>
 
@@ -152,27 +175,16 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
   </div>
 </div>
 
-<div class="float-layer" id="doc-layer">
-  <div class="float" role="dialog" aria-labelledby="doc-title">
-    <div class="titlebar" id="doc-title">Document</div>
-    <div class="body-pad">
-      <pre id="doc-body" class="doc-body"></pre>
-      <div class="actions">
-        <button type="button" class="btn" id="doc-close">Close</button>
-      </div>
-    </div>
-  </div>
-</div>
-
 <div class="float-layer" id="reject-layer">
   <div class="float" role="dialog" aria-labelledby="rt-title">
     <div class="titlebar" id="rt-title">Rejected task</div>
     <div class="body-pad">
-      <label for="rt-text">Task</label>
-      <textarea id="rt-text"></textarea>
+      <label for="rt-text">Comments</label>
+      <textarea id="rt-text" placeholder="Audit comments for retry…"></textarea>
       <div class="actions">
         <button type="button" class="btn btn-danger" id="rt-delete">Delete</button>
         <button type="button" class="btn btn-primary" id="rt-retry">Retry</button>
+        <button type="button" class="btn btn-approve" id="rt-accept">Accept Unchanged</button>
       </div>
     </div>
   </div>
@@ -215,22 +227,20 @@ function cardEl(task, opts) {
   name.className = "name";
   name.textContent = task.name;
   title.appendChild(name);
+  const audit = document.createElement("span");
+  audit.className = "audit-count";
+  audit.title = "Audit count: " + (task.audit_count || 0);
+  const auditIcon = document.createElement("span");
+  auditIcon.className = "audit-icon";
+  auditIcon.setAttribute("role", "img");
+  auditIcon.setAttribute("aria-label", "Audit count");
+  auditIcon.title = "Audit count";
+  auditIcon.textContent = "\u2713";
+  const auditValue = document.createElement("span");
+  auditValue.textContent = String(task.audit_count || 0);
+  audit.append(auditIcon, auditValue);
+  title.appendChild(audit);
   card.appendChild(title);
-  if (task.status === "REJECTED") {
-    const foot = document.createElement("div");
-    foot.className = "foot";
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "btn btn-sm card-del";
-    edit.textContent = "Edit";
-    edit.title = "Edit rejected card";
-    edit.onclick = (event) => {
-      event.stopPropagation();
-      openRejectEdit(task.name);
-    };
-    foot.appendChild(edit);
-    card.appendChild(foot);
-  }
   if (!thin && task.status) {
     const status = document.createElement("div");
     status.className = "status";
@@ -238,8 +248,7 @@ function cardEl(task, opts) {
     card.appendChild(status);
   }
   card.onclick = () => {
-    if (task.status === "REJECTED") openRejectEdit(task.name);
-    else openGrowable("/task?name=" + encodeURIComponent(task.name || ""), "task-" + (task.name || ""));
+    openGrowable("/task?name=" + encodeURIComponent(task.name || ""), "task-" + (task.name || ""));
   };
   return card;
 }
@@ -336,16 +345,18 @@ function workRow(item) {
   tr.dataset.workRole = item.role || "";
   const task = document.createElement("td");
   const names = item.tasks && item.tasks.length ? item.tasks : (item.task ? [item.task] : []);
+  const batchNames = item.batch_tasks && item.batch_tasks.length ? item.batch_tasks : [];
   task.dataset.tasks = names.join("\n");
+  task.dataset.batchTasks = batchNames.join("\n");
   task.append(names[0] || "");
-  if (names.length > 1) {
+  if (batchNames.length > 1) {
     const more = document.createElement("span");
     more.className = "menu batch-more";
     const mark = document.createElement("span");
     mark.textContent = "+";
     const list = document.createElement("div");
     list.className = "menu-list";
-    names.forEach((name) => {
+    batchNames.forEach((name) => {
       const row = document.createElement("div");
       row.className = "batch-item";
       row.textContent = name;
@@ -409,8 +420,10 @@ function renderWork(data) {
       return;
     }
     const names = item.tasks && item.tasks.length ? item.tasks : (item.task ? [item.task] : []);
+    const batchNames = item.batch_tasks && item.batch_tasks.length ? item.batch_tasks : [];
     const key = names.join("\n");
-    if (tr.children[0].dataset.tasks !== key) {
+    const batchKey = batchNames.join("\n");
+    if (tr.children[0].dataset.tasks !== key || tr.children[0].dataset.batchTasks !== batchKey) {
       tr.replaceWith(workRow(item));
       return;
     }
@@ -430,18 +443,91 @@ async function postApproval(id, action) {
   loadState();
 }
 
-async function viewDoc(path) {
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function fillDocWindow(win, name, text, comments) {
+  win.document.open();
+  win.document.write(
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>" +
+    escapeHtml(name) + "</title>" +
+    "<style>html,body{height:100%;margin:0;display:flex;flex-direction:column;background:#f8f8f5;color:#1e221f;font-family:ui-sans-serif,system-ui,sans-serif}" +
+    "header{display:flex;align-items:center;gap:8px;padding:8px 10px;background:linear-gradient(180deg,#eceee8,#e0e3dc);border-bottom:1px solid #d5d9d2;flex:0 0 auto}" +
+    "h1{margin:0;font-size:14px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+    "pre{flex:1;min-height:0;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;font:12px/1.4 ui-monospace,Menlo,monospace}" +
+    ".comments{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-top:1px solid #d5d9d2;background:#fffef9}" +
+    "label{font-size:10px;text-transform:uppercase;font-weight:700;color:#68726c}" +
+    "textarea{width:100%;min-height:7rem;max-height:40vh;overflow:auto;resize:vertical;white-space:pre-wrap;overflow-wrap:anywhere;word-wrap:break-word;border:1px solid #c6cbc5;border-radius:6px;padding:8px;font:12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
+    ".actions{display:flex;gap:8px;justify-content:flex-end}" +
+    "button{border:1px solid #9aa59e;background:#fff;padding:5px 10px;border-radius:7px;font-size:12px;cursor:pointer}" +
+    "#doc-save{background:#3d5a45;border-color:#3d5a45;color:#fff}</style></head><body>" +
+    "<header><h1>" + escapeHtml(name) + "</h1></header>" +
+    "<pre>" + escapeHtml(text) + "</pre>" +
+    "<div class=\"comments\"><label for=\"doc-comments\">Comments</label>" +
+    "<textarea id=\"doc-comments\">" + escapeHtml(comments || "") + "</textarea>" +
+    "<div class=\"actions\">" +
+    "<button type=\"button\" id=\"doc-cancel\">Cancel</button>" +
+    "<button type=\"button\" id=\"doc-save\">Save</button></div></div>" +
+    "</body></html>"
+  );
+  win.document.close();
+}
+
+function hasRemedialComments(item) {
+  const reviews = (item && item.reviews) || {};
+  return Object.keys(reviews).some((path) => String(reviews[path] || "").trim());
+}
+
+function docMark(path, reviews) {
+  const mark = document.createElement("span");
+  mark.className = "doc-mark";
+  if (!reviews || !Object.prototype.hasOwnProperty.call(reviews, path)) {
+    mark.textContent = "\u2610";
+    mark.title = "Not read";
+  } else if (!String(reviews[path] || "").trim()) {
+    mark.className += " doc-mark-ok";
+    mark.textContent = "\u2713";
+    mark.title = "No comments";
+  } else {
+    mark.className += " doc-mark-bad";
+    mark.textContent = "\u2717";
+    mark.title = "Has comments";
+  }
+  return mark;
+}
+
+async function viewDoc(path, approvalId, comments) {
   const res = await fetch("/doc?path=" + encodeURIComponent(path));
-  const text = await res.text();
-  $("doc-title").textContent = fileName(path);
-  $("doc-body").textContent = text;
-  $("doc-layer").classList.add("open");
+  const text = res.ok ? await res.text() : "Not found";
+  const name = fileName(path);
+  const win = window.open("about:blank", "doc-" + encodeURIComponent(path), "resizable=yes,scrollbars=yes,width=780,height=560");
+  if (!win) return;
+  fillDocWindow(win, name, text, comments);
+  win.document.getElementById("doc-cancel").onclick = () => win.close();
+  win.document.getElementById("doc-save").onclick = async () => {
+    if (approvalId) {
+      await fetch("/api/approvals/" + encodeURIComponent(approvalId) + "/comments", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({path, comments: win.document.getElementById("doc-comments").value})
+      });
+    }
+    win.close();
+    loadState();
+  };
 }
 
 const openDocMenus = new Set();
 const clarDrafts = {};
 
-function artifactMenu(paths, id) {
+function artifactMenu(paths, item) {
+  const id = item && item.id ? item.id : "";
+  const reviews = (item && item.reviews) || {};
   const wrap = document.createElement("div");
   wrap.className = "menu";
   wrap.dataset.docId = id || "";
@@ -452,16 +538,18 @@ function artifactMenu(paths, id) {
   const list = document.createElement("div");
   list.className = "menu-list";
   (paths || []).forEach((path) => {
-    const item = document.createElement("button");
-    item.type = "button";
-    item.textContent = fileName(path);
-    item.onclick = (event) => {
+    const choice = document.createElement("button");
+    choice.type = "button";
+    const name = document.createElement("span");
+    name.textContent = fileName(path);
+    choice.append(docMark(path, reviews), name);
+    choice.onclick = (event) => {
       event.stopPropagation();
       wrap.classList.remove("open");
       if (id) openDocMenus.delete(id);
-      viewDoc(path);
+      viewDoc(path, id, Object.prototype.hasOwnProperty.call(reviews, path) ? reviews[path] : "");
     };
-    list.appendChild(item);
+    list.appendChild(choice);
   });
   const place = () => {
     const box = btn.getBoundingClientRect();
@@ -504,11 +592,15 @@ function attentionRow(item) {
   const summary = document.createElement("span");
   summary.textContent = item.gate + " · " + item.task;
   row.append(pill, summary);
-  if ((item.artifacts || []).length) row.appendChild(artifactMenu(item.artifacts, item.id));
-  row.append(
-    approvalButton(item, "approve", "Approve", "btn btn-sm btn-approve"),
-    approvalButton(item, "reject", "Reject", "btn btn-sm")
-  );
+  if ((item.artifacts || []).length) row.appendChild(artifactMenu(item.artifacts, item));
+  const reject = document.createElement("button");
+  reject.type = "button";
+  reject.className = "btn btn-sm";
+  reject.textContent = "Reject";
+  reject.onclick = () => openRejectDialog(item);
+  const approve = approvalButton(item, "approve", "Approve", "btn btn-sm btn-approve");
+  approve.disabled = hasRemedialComments(item);
+  row.append(approve, reject);
   return row;
 }
 
@@ -633,40 +725,50 @@ async function deleteTask(name) {
   loadState();
 }
 
-let rejectName = "";
-function closeRejectEdit() {
+let rejectApprovalId = "";
+let rejectHasComments = false;
+function closeRejectDialog() {
   $("reject-layer").classList.remove("open");
-  rejectName = "";
+  rejectApprovalId = "";
+  rejectHasComments = false;
 }
 
-async function openRejectEdit(name) {
-  rejectName = name || "";
-  $("rt-title").textContent = rejectName;
+function openRejectDialog(item) {
+  rejectApprovalId = item && item.id ? item.id : "";
+  rejectHasComments = hasRemedialComments(item);
+  $("rt-title").textContent = (item && item.task) || "Rejected task";
   $("rt-text").value = "";
   $("reject-layer").classList.add("open");
-  try {
-    const res = await fetch("/task?name=" + encodeURIComponent(rejectName), {cache: "no-store"});
-    if (!res.ok) return;
-    const raw = await res.text();
-    $("rt-text").value = raw.replace(/^[^\n]*\n\n/, "");
-  } catch (_) {}
 }
 
 async function retryRejected() {
-  if (!rejectName) return;
+  if (!rejectApprovalId) return;
   await fetch("/api/tasks/retry", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: rejectName, text: $("rt-text").value})
+    body: JSON.stringify({id: rejectApprovalId, comments: $("rt-text").value})
   });
-  closeRejectEdit();
+  closeRejectDialog();
   loadState();
 }
 
 async function deleteRejected() {
-  if (!rejectName) return;
-  await deleteTask(rejectName);
-  closeRejectEdit();
+  if (!rejectApprovalId) return;
+  await fetch("/api/tasks/delete", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({id: rejectApprovalId})
+  });
+  closeRejectDialog();
+  loadState();
+}
+
+async function acceptRejected() {
+  if (!rejectApprovalId) return;
+  if (rejectHasComments && !confirm("Remedial comments will be ignored.")) return;
+  await fetch("/api/approvals/" + encodeURIComponent(rejectApprovalId) + "/approve", {method: "POST"});
+  closeRejectDialog();
+  loadState();
 }
 
 function bindSplitter() {
@@ -785,8 +887,8 @@ $("nt-cancel").onclick = closeNewTask;
 $("nt-ok").onclick = submitNewTask;
 $("rt-delete").onclick = deleteRejected;
 $("rt-retry").onclick = retryRejected;
+$("rt-accept").onclick = acceptRejected;
 bindSplitter();
-$("doc-close").onclick = () => $("doc-layer").classList.remove("open");
 $("teardown-btn").onclick = teardownSwarm;
 $("chat-input").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
