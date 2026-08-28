@@ -41,7 +41,14 @@ STUB=${STUB:?}
 { printf 'gh'; printf ' <%s>' "$@"; printf '\n'; } >> "$STUB/calls.log"
 case "$1 $2" in
   "issue view") printf '%s\n' "${GH_ISSUE_TITLE:?}" ;;
-  "pr list")    [ -n "${GH_OPEN_HEAD:-}" ] && printf '%s\n' "$GH_OPEN_HEAD"; exit 0 ;;
+  "pr list")
+    # Two different lookups share this subcommand: BASE resolution (no --head)
+    # and the issue #65 "does a PR already exist for our branch" check.
+    case " $* " in
+      *" --head "*) [ -n "${GH_EXISTING_PR:-}" ] && printf '%s\n' "$GH_EXISTING_PR" ;;
+      *) [ -n "${GH_OPEN_HEAD:-}" ] && printf '%s\n' "$GH_OPEN_HEAD" ;;
+    esac
+    exit 0 ;;
   "pr create")  printf '%s\n' "$*" > "$STUB/pr-create.argv"
                 printf '<%s>\n' "$@" > "$STUB/pr-create.argvlines"
                 [ -n "${GH_PR_FAILS:-}" ] && exit 1
@@ -51,10 +58,23 @@ esac
 EOF
 
 # ---------- stub git ----------
+# Keeps a real branch registry in $STUB/branches: `checkout -b` adds a name and
+# `rev-parse --verify refs/heads/<name>` answers from it. Issue #65's whole
+# resume decision hinges on whether the branch exists, so a stub that always
+# exits 0 would make both the resume case and the not-our-card case pass for
+# the wrong reason.
 cat > "$WORK/bin/git" <<'EOF'
 #!/usr/bin/env bash
 STUB=${STUB:?}
 { printf 'git'; printf ' <%s>' "$@"; printf '\n'; } >> "$STUB/calls.log"
+touch "$STUB/branches"
+case "$1 $2" in
+  "checkout -b") printf '%s\n' "$3" >> "$STUB/branches" ;;
+  "rev-parse --verify")
+    ref=${*: -1}
+    grep -qxF "${ref#refs/heads/}" "$STUB/branches" || exit 1
+    ;;
+esac
 exit 0
 EOF
 
@@ -157,6 +177,7 @@ reset() { # $@ = extra board rows, each "name<TAB>lane"
   printf 'a handoff\n' > "$ROOT/.swarmforge/handoffs/inbox/new/x.handoff"
   : > "$STUB/calls.log"
   : > "$STUB/lane-script"
+  : > "$STUB/branches"
   printf '%s\n' "$STATE_CLEAN" > "$STUB/state.json"
 }
 tree_digest() {
@@ -184,19 +205,22 @@ out=$("$SCRIPT" --root "$ROOT" --issue twenty-eight --local 2>&1); rc=$?
 check "non-numeric --issue exits 2" 2 "$rc"
 check "usage path ran no command at all" "0" "$(wc -l < "$STUB/calls.log" | tr -d ' ')"
 
-# ---------- 2. duplicate Board card ----------
+# ---------- 2. a Board card this verb did not create ----------
 # pack_web's create-task! only checks that the name is non-empty, so a second
 # POST of the same name really does produce a second card. This gate is the
-# verb's own responsibility.
+# verb's own responsibility. With no branch of that name in the project, the
+# card cannot have come from this verb (it always branches before it posts),
+# so there is nothing to resume — refuse (issue #65).
 reset "${TASK}${TAB}coder"
 before=$(tree_digest)
 out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
-check "duplicate card exits 6" 6 "$rc"
-check "duplicate card STATUS" "STATUS=UNSAFE" "$(printf '%s\n' "$out" | head -1)"
-has "duplicate card names the card" "$out" "$TASK"
-check "duplicate card posts nothing" "0" "$(count curl-post)"
-check "duplicate card leaves board+handoffs byte-identical" "$before" "$(tree_digest)"
-check "duplicate card creates no branch" "0" \
+check "foreign card exits 6" 6 "$rc"
+check "foreign card STATUS" "STATUS=UNSAFE" "$(printf '%s\n' "$out" | head -1)"
+has "foreign card names the card" "$out" "$TASK"
+has "foreign card says the branch is missing" "$out" "$BRANCH does not exist"
+check "foreign card posts nothing" "0" "$(count curl-post)"
+check "foreign card leaves board+handoffs byte-identical" "$before" "$(tree_digest)"
+check "foreign card creates no branch" "0" \
   "$(grep -c 'git <checkout>' "$STUB/calls.log" || true)"
 
 # ---------- 3. pending clarification before the POST ----------
@@ -329,6 +353,64 @@ check "invisible delivery record never pushes" "0" \
 check "invisible delivery record never opens a PR" "no" \
   "$([ -f "$STUB/pr-create.argvlines" ] && echo yes || echo no)"
 check "invisible delivery record never re-posts" "1" "$(count curl-post)"
+
+# ---------- 12. killed after the POST: re-running resumes ----------
+# Issue #65, seen live on podsum #86: pi's shell tool killed the run at 120s,
+# after the branch and the POST but before the poll finished. The card was on
+# the Board, the swarm kept working, and the old code refused to continue.
+# Modelled here by running the first pass with a lane script that never
+# reaches `done` and a zero poll ceiling, then re-running with the same
+# arguments against the state it left behind.
+reset
+printf 'coder\n' > "$STUB/lane-script"
+out=$(SF_RUN_ISSUE_TIMEOUT_SECONDS=0 "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "interrupted first pass exits 5" 5 "$rc"
+check "first pass created the branch" "1" \
+  "$(grep -c 'git <checkout> <-b>' "$STUB/calls.log" || true)"
+check "first pass posted once" "1" "$(count curl-post)"
+first_cards=$(grep -c "^$TASK	" "$BOARD_FILE" || true)
+
+printf 'done\n' > "$STUB/lane-script"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "resumed run exits 0" 0 "$rc"
+check "resumed run STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
+has "resumed run says so" "$out" "resumed: yes"
+has "resumed run prints the PR URL" "$out" "https://github.com/o/r/pull/99"
+check "no second card on the Board" "1" "$(grep -c "^$TASK	" "$BOARD_FILE" || true)"
+check "no second card, checked against the first pass" "$first_cards" \
+  "$(grep -c "^$TASK	" "$BOARD_FILE" || true)"
+check "no second POST across both runs" "1" "$(count curl-post)"
+check "no second branch across both runs" "1" \
+  "$(grep -c 'git <checkout> <-b>' "$STUB/calls.log" || true)"
+check "pushed exactly once across both runs" "1" \
+  "$(grep -c 'git <push>' "$STUB/calls.log" || true)"
+check "opened exactly one PR across both runs" "1" \
+  "$(grep -c 'gh <pr> <create>' "$STUB/calls.log" || true)"
+
+# ---------- 13. killed after the push: the PR is not opened twice ----------
+# The same kill one step later. `gh pr create` would fail on an existing head,
+# so the resume path asks first.
+reset
+printf 'done\n' > "$STUB/lane-script"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "first run before the PR-exists case exits 0" 0 "$rc"
+printf 'done\n' > "$STUB/lane-script"
+# The assignment must sit INSIDE the substitution: `A=1 out=$(...)` is two
+# variable assignments, not a command with an environment prefix, so the stub
+# would never see it.
+out=$(GH_EXISTING_PR='https://github.com/o/r/pull/99' \
+  "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "re-run with an existing PR exits 0" 0 "$rc"
+has "re-run reports the existing PR" "$out" "https://github.com/o/r/pull/99"
+check "gh pr create was not called a second time" "1" \
+  "$(grep -c 'gh <pr> <create>' "$STUB/calls.log" || true)"
+
+# ---------- 14. a fresh run reports itself as not resumed ----------
+reset
+printf 'done\n' > "$STUB/lane-script"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "fresh run exits 0" 0 "$rc"
+has "fresh run says resumed: no" "$out" "resumed: no"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

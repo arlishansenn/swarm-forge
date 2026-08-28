@@ -12,6 +12,16 @@
 # never merges (no --merge/--auto), never answers a clarification, and never
 # re-posts a task it already posted.
 #
+# RESUMABLE (issue #65). This verb blocks for as long as the swarm takes, so
+# sooner or later an agent harness kills it mid-run — pi's shell tool did, at
+# 120s, right after the POST. That left the worst possible state: the card was
+# on the Board and the swarm was working, but the poll, the accept, the push
+# and the PR had never run, and re-running refused on the card it had just
+# created. So a second run with the same --root/--issue now CONTINUES the first
+# one: it detects its own card, skips the branch and the POST, and picks up at
+# the poll. Re-running is the recovery procedure; there is nothing else to
+# remember.
+#
 # The branch is stacked on the newest open PR's head, not on `main`. podsum's
 # issues form a strict linear `blocked by` chain, so the next issue's coder
 # has to see the previous issue's commits, which are not on `main` until a
@@ -27,6 +37,8 @@
 #
 # Exit codes / STATUS line:
 #   0 PR_OPENED   2 USAGE   5 ERROR   6 UNSAFE
+# The report body carries `resumed: yes|no` so a caller can tell a fresh run
+# from a continued one.
 # Contract details live in ../SKILL.md (verb: run issue).
 #
 # Usage: run-issue.sh --root <project-root> --issue <N> \
@@ -55,7 +67,7 @@ DELIVERY_SECONDS=${SF_RUN_ISSUE_DELIVERY_SECONDS:-600}
 # same trick as start-swarm.sh's SWARM_LAUNCHER.
 ACCEPT_WORK=${ACCEPT_WORK:-$HERE/accept-work.sh}
 
-usage() { printf 'STATUS=USAGE\n'; sed -n '2,33p' "$0"; exit 2; }
+usage() { printf 'STATUS=USAGE\n'; sed -n '2,45p' "$0"; exit 2; }
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -116,19 +128,37 @@ BASE=$(in_root "gh pr list --state open --json headRefName --jq '.[].headRefName
 BASE=${BASE%$'\n'}
 [ -n "$BASE" ] || BASE=main
 
-# ---------- step 3: idempotence ----------
+# ---------- step 3: fresh run, resume, or refuse ----------
 # pack_web's create-task! validates only that the name is non-empty; posting
 # the same name twice really does create two cards, and two cards mean two
 # handoff notes into the master's inbox. Nothing upstream will catch that, so
 # this verb owns the check — and it runs before anything is created.
+#
+# A card that already exists is not automatically someone else's, though
+# (issue #65). This verb always creates the branch BEFORE it posts, so the
+# branch is the marker of its own earlier run:
+#
+#   no card                  -> fresh run
+#   card + our branch        -> resume: skip the branch and the POST
+#   card, no branch          -> not this verb's card; refuse (6 UNSAFE)
+#
+# The branch is checked as a ref, not by name matching, because the name alone
+# is derived from the issue and would be identical for a card a human typed
+# into the Dashboard by hand.
 BOARD_FILE="$ROOT/.swarmforge/board/tasks.tsv"
 board_lane() { # $1 = task name -> its lane, empty when the card is absent
   run_remote "cat '$BOARD_FILE' 2>/dev/null" \
     | awk -F'\t' -v t="$1" '$1 == t { print $2; exit }' || true
 }
+RESUMING=0
 EXISTING_LANE=$(board_lane "$TASK_NAME")
-[ -z "$EXISTING_LANE" ] || die UNSAFE \
-  "$BOARD_FILE already has a card named $TASK_NAME (lane $EXISTING_LANE) — refusing to post a duplicate; delete that card, or accept the work it already produced" 6
+if [ -n "$EXISTING_LANE" ]; then
+  if in_root "git rev-parse --verify --quiet $(printf '%q' "refs/heads/$BRANCH")" >/dev/null 2>&1; then
+    RESUMING=1
+  else
+    die UNSAFE "$BOARD_FILE already has a card named $TASK_NAME (lane $EXISTING_LANE) but $BRANCH does not exist in $ROOT — that card was not created by this verb; delete or rename it, or accept the work it already produced" 6
+  fi
+fi
 
 # ---------- the pending gate ----------
 # A blocked agent does not fail: it writes a clarification request or a
@@ -164,10 +194,18 @@ sys.stdout.write("\n".join(out))
 }
 refuse_if_blocked
 
+# ---------- steps 4 and 5: the branch, then the task ----------
+# Skipped wholesale when resuming (issue #65): the branch is already there —
+# that is how we recognised our own card — and the task is already on the
+# Board. Everything from step 6 down is shared by both paths, so a resumed run
+# and a fresh one cannot drift apart.
+if [ "$RESUMING" = 0 ]; then
+
 # ---------- step 4: the branch ----------
 # Created before the task is posted: the swarm commits onto whatever HEAD the
 # master worktree is on, and merge_and_process.bb never names a branch, so the
-# branch simply has to exist first.
+# branch simply has to exist first. It is also what a later run reads as
+# "this card is mine".
 in_root "git checkout $(printf '%q' "$BASE") && git checkout -b $(printf '%q' "$BRANCH")" \
   || die ERROR "could not create $BRANCH from $BASE in $ROOT" 5
 
@@ -198,6 +236,8 @@ case $POST_OUT in
   *'"ok":true'*) ;;
   *) die ERROR "POST $URL/api/tasks did not return {\"ok\":true}: $POST_OUT" 5 ;;
 esac
+
+fi  # end of the fresh-run-only block
 
 # ---------- step 6: poll the Board lane ----------
 # The Board lane is the ONLY completion judge. /api/state's work_in_flight
@@ -264,11 +304,21 @@ in_root "git push -u origin $(printf '%q' "$BRANCH")" \
 # carries pointers, not a diff copy.
 PR_BODY=$(printf 'Closes #%s\n\ntask: %s\ncommit: %s\ncompleted_at: %s\n' \
   "$ISSUE" "$TASK_NAME" "$COMMIT" "$COMPLETED")
-PR_OUT=$(in_root "gh pr create --base $(printf '%q' "$BASE") --head $(printf '%q' "$BRANCH") --title $(printf '%q' "$TITLE") --body $(printf '%q' "$PR_BODY")") \
-  || die ERROR "gh pr create failed for $BRANCH -> $BASE in $ROOT" 5
-PR_URL=$(printf '%s\n' "$PR_OUT" | grep -o 'https://[^[:space:]]*' | tail -1 || true)
-[ -n "$PR_URL" ] || die ERROR "gh pr create returned no PR URL: $PR_OUT" 5
+# A run killed between the push and the PR would otherwise try to open a
+# second PR for the same head on the next attempt, and `gh pr create` would
+# fail with a message about the existing one. Resuming has to be idempotent at
+# every step, not only at the POST.
+PR_URL=$(in_root "gh pr list --head $(printf '%q' "$BRANCH") --state open --json url --jq '.[].url' | head -1") \
+  || PR_URL=''
+PR_URL=${PR_URL%$'\n'}
+if [ -z "$PR_URL" ]; then
+  PR_OUT=$(in_root "gh pr create --base $(printf '%q' "$BASE") --head $(printf '%q' "$BRANCH") --title $(printf '%q' "$TITLE") --body $(printf '%q' "$PR_BODY")") \
+    || die ERROR "gh pr create failed for $BRANCH -> $BASE in $ROOT" 5
+  PR_URL=$(printf '%s\n' "$PR_OUT" | grep -o 'https://[^[:space:]]*' | tail -1 || true)
+  [ -n "$PR_URL" ] || die ERROR "gh pr create returned no PR URL: $PR_OUT" 5
+fi
 
-printf 'STATUS=PR_OPENED\nissue: %s\ntask: %s\nbranch: %s\nbase: %s\ncommit: %s\nurl: %s\n' \
-  "$ISSUE" "$TASK_NAME" "$BRANCH" "$BASE" "$COMMIT" "$PR_URL"
+printf 'STATUS=PR_OPENED\nissue: %s\ntask: %s\nbranch: %s\nbase: %s\ncommit: %s\nresumed: %s\nurl: %s\n' \
+  "$ISSUE" "$TASK_NAME" "$BRANCH" "$BASE" "$COMMIT" \
+  "$([ "$RESUMING" = 1 ] && echo yes || echo no)" "$PR_URL"
 exit 0
