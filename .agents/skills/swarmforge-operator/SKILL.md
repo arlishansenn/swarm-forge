@@ -416,7 +416,10 @@ it. Step 6b interrupts running work, so it is the user's call.
 **Step 6 — switch this project to a fixed port. Only after the user agrees.**
 
 ```sh
-# 6a. publish the range — ONE-TIME PER HOST; skip if `serve status` lists it
+# 6a. publish the range — ONE-TIME PER HOST; skip if `serve status` lists it.
+#     Writing serve config needs root on a Linux target (reading does not):
+#     "Access denied: serve config denied" means run the loop under `sudo`,
+#     or do `sudo tailscale set --operator=$USER` once and re-run as yourself.
 ssh -i "$KEY" "$TARGET" 'for p in $(seq 7780 7789); do tailscale serve --bg --tcp $p tcp://127.0.0.1:$p; done'
 ssh -i "$KEY" "$TARGET" 'tailscale serve status'
 

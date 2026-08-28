@@ -452,6 +452,9 @@ If the backend cannot open sessions at all, set both capability functions to `re
 #    `tailscale serve` 没有 range 语法（`--tcp` 只收单个端口），所以一个端口一条；
 #    `--bg` 的映射在重启与 `tailscale down`/`up` 之后自动恢复，
 #    所以是**每个端口一辈子一次**，不是每次运行一次。
+#    Linux target 上写 serve 配置要 root（读不用）：报
+#    `Access denied: serve config denied` 就整条加 `sudo`，
+#    或先 `sudo tailscale set --operator=$USER` 一次再以自己身份跑。
 ssh -i <key> <target> \
   'for p in $(seq 7780 7789); do tailscale serve --bg --tcp $p tcp://127.0.0.1:$p; done'
 ssh -i <key> <target> 'tailscale serve status'    # 确认十个都在
