@@ -17,6 +17,12 @@ bash swarmforge/scripts/test-sync-worktree-scripts.sh   # 不在 bb test 里，�
 # 然后走一遍本表，逐条确认，并把新出现的差异补进来
 ```
 
+**`main` 只是一半。** 三条 Pack 分支（`two-pack`/`four-pack`/`six-pack`）供的是 swarm
+launcher 与角色拓扑，从不合进 `main`，要各自 merge upstream 的同名分支，各走各的 PR
+（一条出问题不该挡住另外两条）。它们的钉子是分支自带的 `test-swarm-launcher.sh`，**不在
+`bb test` 里**，而且每次都要跑一遍 RED 探针：把 `swarm` 换成 upstream 同名分支的版本，
+测试必须红。详见 D-9。
+
 A 类差异的钉子在 `.agents/skills/swarmforge-operator/scripts/test-*.sh`，也不在
 `bb test` 里。**跑它们时把输出重定向到文件，不要用 `$(...)` 捕获**：
 `test-start-swarm.sh` 一类会留下后台进程持有那根管道，命令替换等不到 EOF，会一直挂着，
@@ -265,8 +271,34 @@ upstream 的 bootstrap 是 `rm -rf` 目标再 `cp -R`，不是崩溃安全的；
 skill，所以它自己抄了一份 `scripts_digest`。两边一旦漂移，症状是 bootstrap 之后第一次
 `start swarm` 报 DRIFT。`test-swarm-launcher.sh` 里那份参考实现就是钉这个的。
 
+**issue #71 的 Pack 同步结论（2026-08-28）：** 三条 Pack 分支各自从 upstream 同名分支
+合了一轮（`two-pack` 5 个 commit / PR #72，`four-pack` 5 个 / PR #73，`six-pack` 6 个 /
+PR #74），fork 的三件事全部保留。三条分支的 `swarm` 文件**都没有冲突**——upstream 这一轮
+改的是 `swarmforge.conf` 与 role prompt，不是 launcher。没有任何 fork 差异被 upstream
+采纳，表里没有可删的条目。
+
+**`b933d68` 没有采纳：six-pack 六个角色继续全部跑 grok。** upstream 把它拆成
+specifier/architect/QA 用 grok、coder/cleaner/hardender 退回 Codex。不采纳的理由：issue
+#38 统一到 grok 的决定没有被推翻；同一轮之后 `two-pack` 与 `four-pack` 都是全 grok，采纳
+会让三个 Pack 的 backend 策略不一致；「哪个角色跑哪个 agent」是产品决定，不该作为跟随
+upstream 的副作用发生。翻案只需改 `swarmforge.conf` 里那三行的 agent 列。
+
+**下次 merge 必须重新确认这一格。** upstream 再动 backend 分配就会再次冲突，而且
+`-X theirs` 会默默把它按 upstream 的分法合掉——这条差异没有测试钉得住，因为「哪个角色跑
+哪个 agent」两种配置都是合法配置。
+
+`--yolo` 只加在 codex 行，grok 行一个都不加。这是 upstream 自己在 six-pack 的 conf 注释里
+写明的规则（`Grok yolo is --permission-mode bypassPermissions, added by the launcher`），
+三条分支照此处理；`two-pack`/`four-pack` 在 upstream 侧全是 codex，所以看起来像「全都加
+了」，不要照那个表象抄。
+
+**这一轮的钉子数：** 三条分支的 `test-swarm-launcher.sh` 各 **29 PASS / 0 FAIL**；RED 探针
+（把该分支的 `swarm` 换成 upstream 同名分支的版本）各 **7 项变红**。issue #71 票面里写的
+「43 条」是数源码里断言函数出现次数数错了，以跑出来的 29 为准。
+
 **代价：** upstream 对 `swarmforge/scripts/` 的更新不再自动到达 managed project，需要
-人主动同步进本 fork 的 `main`——**也就是本文档描述的这件事**。
+人主动同步进本 fork 的 `main`——**也就是本文档描述的这件事**。Pack 分支是**另一件事**：
+它们供的是 swarm launcher 与角色拓扑，从不合进 `main`，要各自跟 upstream 同名分支同步。
 
 **遗留：** `update SwarmForge scripts` 保留它自己那份 `ARCHIVE_URL` 改写与回滚逻辑，
 **有意不删**：那是给本次改动之前 onboard 的项目用的 legacy 修复路径，那批项目的 launcher
