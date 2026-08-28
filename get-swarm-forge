@@ -2,7 +2,12 @@
 set -euo pipefail
 
 valid_agents=(claude codex copilot grok)
-default_repo_url="https://github.com/unclebob/swarm-forge"
+# D-9 (docs/fork-deltas.md, ADR-0001/0002): a managed project must get its
+# script snapshot from THIS fork. Installing upstream's tree hands the
+# project a snapshot whose handoff chain deadlocks — neither D-1 (inbox
+# resolved from roles.tsv) nor D-5 (handoffd reconciliation and retry) is
+# upstream. Override with SWARMFORGE_REPO_URL to install any other tree.
+default_repo_url="https://github.com/arlishansenn/swarm-forge"
 
 usage() {
   echo "usage: get-swarm-forge <branch> [agent] [extra-cli-args...]" >&2

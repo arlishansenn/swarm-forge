@@ -158,6 +158,24 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest get-swarm-forge-installs-this-fork-by-default
+  ;; Given the installer shipped in this repository
+  ;; When it is read
+  ;; Then its default repository is this fork, not upstream
+  ;;
+  ;; D-9 (docs/fork-deltas.md): upstream added this installer in e5b7f9e with an
+  ;; unclebob default. A managed project installed that way silently receives a
+  ;; snapshot whose handoff chain deadlocks, because D-1 and D-5 are not
+  ;; upstream — the same trap ADR-0001 exists to close for `onboard project`.
+  (let [installer (slurp (str (fs/path repo-root "get-swarm-forge")))]
+    (is (str/includes? installer
+                       "default_repo_url=\"https://github.com/arlishansenn/swarm-forge\"")
+        "the default install source must be this fork")
+    (is (not (str/includes? installer "default_repo_url=\"https://github.com/unclebob/"))
+        "no upstream default may remain")
+    (is (str/includes? installer "SWARMFORGE_REPO_URL")
+        "the override must stay, so another tree can still be installed on purpose")))
+
 (deftest swarmforge-required-helpers-include-pack-scripts
   ;; Given the launcher required-helpers list
   ;; When --test-required-helpers

@@ -22,9 +22,14 @@ A 类差异的钉子在 `.agents/skills/swarmforge-operator/scripts/test-*.sh`�
 `test-start-swarm.sh` 一类会留下后台进程持有那根管道，命令替换等不到 EOF，会一直挂着，
 看起来像测试卡死，其实测试早就跑完了。
 
+**用 `bash` 调，不要用 `zsh`**：这些脚本 shebang 是 bash，里面有 `local path=`，zsh 会把
+`path` 绑到 `$PATH` 报 `inconsistent type for assignment`。而且**一次只跑一个**，别用 `for`
+循环包起来——重定向到文件也救不了（issue #60 这次，循环在 `test-accept-work.sh` 之后 15
+分钟没往下走；拆开跑立刻全部跑完）。
+
 ```sh
 cd .agents/skills/swarmforge-operator/scripts
-for t in test-*.sh; do zsh "$t" > "/tmp/$t.out" 2>&1 && echo "PASS $t" || echo "FAIL $t"; done
+bash test-run-issue.sh > /tmp/t.out 2>&1; tail -1 /tmp/t.out
 ```
 
 `-X theirs` 与 `git checkout --theirs` 不是一回事。后者取整个文件，会把自动合并成功
@@ -33,7 +38,15 @@ for t in test-*.sh; do zsh "$t" > "/tmp/$t.out" 2>&1 && echo "PASS $t" || echo "
 
 **攒够 3-5 个 upstream commit 就合一次，别攒。** issue #45 攒了 19 个，
 `swarm_handoff.bb` 的 hunk 因为跨了另外 17 个 commit 引入的 helper 层而完全落不下去，
-被迫改成全量 merge。
+被迫改成全量 merge。**issue #67 又攒到了 20 个**，代价具体是：merge 零冲突、干净通过，
+`bb test` 却是 **103 failures / 82 errors**，因为四处「定义被 upstream 的版本取代、调用点
+还是 fork 的」——其中 `swarm_handoff.bb` 的 `git-cwd` 定义直接没了而 5 个调用点还在，
+文件根本不解析。
+
+**这一类伤有固定形状，认出来就好修：** merge 后先看有没有「用了但没定义」的符号。
+issue #67 的四处全是这个形状（`git-cwd`、`read-argv`、`run-handoffd-once!`，以及两处
+arity 对不上的 `notify!` / `inject-target!` 调用点）。arity 那两处最阴——异常被调用点自己的
+`catch` 吞掉，注入和唤醒静默不发生，**日志里只有一行 `Cannot call notify! with 2 arguments`**。
 
 ## 两类差异，merge 成本差一个数量级
 
@@ -213,7 +226,16 @@ ADR 0001 原来的实现手段是「onboard 解压后改写 `ARCHIVE_URL`」，�
 upstream 的 bootstrap 是 `rm -rf` 目标再 `cp -R`，不是崩溃安全的；fork 的 launcher 改成
 先在同级 staging 装好再 rename 换入，manifest 一定写在原子安装之后。
 
+**issue #67 新增的一条暴露面：** upstream 在 `e5b7f9e` 加了 `get-swarm-forge` 安装器，
+默认 `default_repo_url="https://github.com/unclebob/swarm-forge"`。它绕过 `onboard project`
+与 Pack 分支，直接从 upstream 拉一整棵树——**正是 ADR-0001 要堵的那个陷阱的新入口**：这样
+装出来的 managed project 拿到的 snapshot 里没有 D-1，也没有 D-5，handoff 链会卡死而不报错。
+本 fork 把默认值改为 `arlishansenn/swarm-forge`，保留 `SWARMFORGE_REPO_URL` 覆盖，
+所以「有意装别的树」仍然可以，只是不再是默认。
+
 **钉子：**
+- `script_test.clj` 的 `get-swarm-forge-installs-this-fork-by-default`（issue #67）：
+  默认源是本 fork、没有 unclebob 默认残留、`SWARMFORGE_REPO_URL` 覆盖仍在
 - `test-onboard-project.sh`：`launcher bytes preserved from the archive, not patched`、
   `launcher still executable after onboarding`、`launcher mode preserved from the archive`、
   `onboard downloads the pack from the fork`、`no upstream URL left in onboard-project.sh`
