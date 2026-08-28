@@ -183,6 +183,24 @@ add/add 冲突，upstream 侧只有 `test-ensure-codex-trust!`）。被测的
 `sync-worktree-scripts!` / `scripts-mirror-matches?` 本体没事，但测试无法调用。补回后
 14/14 PASS。
 
+### D-10 `start-pack-web!` 读 `SWARMFORGE_DASHBOARD_PORT`
+
+**差异：** `swarmforge.bb` 把 `pack_web.sh --serve <root>` 的 argv 构造抽成纯函数
+`pack-web-argv`，变量非空时追加第三个参数（端口）。upstream 只传两个参数，第三位永远空，
+`pack_web.bb` 的 `parse-port` 把空当 `0`，于是内核每次随机分配。配套测试接缝
+`--test-pack-web-argv`。
+
+**为什么：** `dashboard --tailnet` 要一个重启后不变的 URL 才能发布到 tailnet 上；随机端口
+没有稳定 URL 可发布。变量不设时**一个参数都不多传**，行为与 upstream 一字不差——这是这条
+delta 能做得这么小、merge 冲突面这么窄的原因。来源 issue #78。
+
+**钉子：** `test/swarmforge/script_test.clj` 的
+`swarmforge-dashboard-port-is-configurable`（不设、设空、设 7780 三种）。
+
+**merge 注意：** 冲突只可能落在 `start-pack-web!` 那一个 `process/process` 调用上。
+upstream 若改了那行，保留 fork 的 `(pack-web-argv script (:working-dir ctx))` 形状，把
+upstream 的其余改动并进 `pack-web-argv` 里。
+
 ---
 
 ## A 类：落在 upstream 没有的文件里，merge 不碰

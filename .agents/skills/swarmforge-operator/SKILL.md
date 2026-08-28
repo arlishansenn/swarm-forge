@@ -167,7 +167,8 @@ has reproduced twice under manual operation.
 
 ```sh
 scripts/start-swarm.sh --root <project-root> --terminal <value> \
-  [--target user@host] [--key <path>] [--local] [--force]
+  [--target user@host] [--key <path>] [--local] [--force] \
+  [--dashboard-port <N>]
 ```
 
 `--terminal` is **required**, not an optional env passthrough — unlike
@@ -182,6 +183,16 @@ accepts — one per file in `swarmforge/scripts/terminal-adapters/*.sh`) plus
 simply does not export that variable at all when `auto` is chosen, letting
 `detect-terminal-backend`'s own fallback chain run exactly as it does today.
 Any other value is `2` `USAGE`, same as a missing `--root`.
+
+`--dashboard-port <N>` (issue #78) is forwarded as `SWARMFORGE_DASHBOARD_PORT`,
+which `pack_web` binds instead of asking the kernel for a random one. Omit it
+and nothing is exported — `pack_web` keeps the random port it has always
+picked, byte for byte. A fixed port is what `dashboard --tailnet` needs: a
+random one cannot be published on a tailnet, because there is no stable URL
+to publish. Only the shape is validated (digits, `2` `USAGE` otherwise);
+which ports a host hands out is that host's own convention, not something
+SwarmForge has an opinion about. `--terminal` and `--dashboard-port`
+accumulate into one `env` prefix, so both reach the launcher together.
 
 Before touching anything, it checks whether the swarm is already running —
 the same socket-liveness read `stop-swarm.sh`/`open-swarm.sh` use, inverted:
@@ -238,8 +249,9 @@ reporting success just because the launch command was issued.
 Exit codes / STATUS line:
 
 - `0` `STARTED` — the swarm came up; `SOCK`/`TERMINAL` are reported.
-- `2` `USAGE` — missing `--root`, missing `--terminal`, or `--terminal` not
-  one of the accepted values. Nothing is attempted.
+- `2` `USAGE` — missing `--root`, missing `--terminal`, `--terminal` not one
+  of the accepted values, or a non-numeric `--dashboard-port`. Nothing is
+  attempted.
 - `4` `DRIFT` — installed `swarmforge/scripts/` do not match
   `$ROOT/.swarmforge/scripts-manifest`, or it's missing (issue #29). The
   launcher is never invoked; re-run `update SwarmForge scripts` first, or
@@ -334,18 +346,57 @@ start" — this verb is the "update" half, never the "start" half.
 
 ## Verb: `dashboard`
 
-Run the bundled script; it tunnels and opens the pack_web dashboard page:
+Run the bundled script; it opens the pack_web dashboard page as a cmux
+browser workspace:
 
 ```sh
 scripts/open-dashboard.sh --root "$ROOT" [--window <ref>] \
-  [--target admin@host] [--key ~/.ssh/key] [--local]
+  [--target admin@host] [--key ~/.ssh/key] [--local] [--tailnet]
 ```
 
-It reads `$ROOT/.swarmforge/dashboard-url`, ensures an SSH local-forward
-tunnel to that port (reuses a working one; preferred port first, any free
-port on bind conflict), confirms the port is owned by *this* project's own
-`pack_web` (below), then opens or reuses one workspace named
-`Dashboard · <basename>` with a browser surface on the tunneled URL.
+It reads `$ROOT/.swarmforge/dashboard-url`, reaches the port (tunnel or
+tailnet, below), confirms the port is owned by *this* project's own
+`pack_web`, then opens or reuses one workspace named `Dashboard · <basename>`
+with a browser surface on the resulting URL. `TUNNEL=` in the report says
+which path was taken: `created`, `reused`, `tailnet`, or `local`.
+
+**Report the `URL=` line back to the user.** Every run prints it; a reply of
+"opened it" alone is not the verb done. With `--tailnet` that address works on
+the user's phone, tablet and every other machine, and it is the thing they
+actually need to take away — say it out loud, do not make them go read the
+report.
+
+### `--tailnet`: no tunnel at all
+
+Without the flag the script builds an SSH local-forward to that port (reusing
+a working one; preferred port first, any free port on bind conflict). That
+tunnel lives on the operator's laptop: **it dies when the laptop sleeps**, and
+no other device can use it.
+
+`--tailnet` (issue #78) skips it entirely. The managed hosts are already on
+the tailnet, so the script takes the target's tailscale IP straight out of
+`--target`, checks `http://<ip>:<port>/` answers 200, and points the browser
+surface there. Two things it needs:
+
+1. **A fixed port**, from `start swarm --dashboard-port <N>` — a random port
+   has no stable URL to publish.
+2. **That port published on the tailnet**, once, by the operator:
+
+   ```sh
+   tailscale serve --bg --tcp 7780 tcp://127.0.0.1:7780
+   ```
+
+   `--bg` mappings resume by themselves after a reboot and after
+   `tailscale down`/`up`, so this really is one-time.
+
+**The verb never runs any `tailscale` command.** It does not create that
+config, does not repair it and does not clean it up — it only observes the
+result over HTTP. When the port does not answer, it exits `5` `ERROR` cleanly
+with the target URL and the exact command to run, having created no
+workspace and no tunnel. `--tailnet` with `--local` is `2` `USAGE`: there is
+no target host to reach over the tailnet.
+
+`--tailnet` is not the default. The ssh path stays exactly as it was.
 
 Port ownership: HTTP 200 only proves something answers on the port, not
 that it is this project's dashboard — on a host running several managed
@@ -361,7 +412,9 @@ workspaces, or the port is owned by another project's `pack_web` — in the
 ownership case, someone else's dashboard is squatting the recorded port and
 a human decides, the script never auto-repairs it; exit 5 ERROR. `--local`
 expects the dashboard to already listen on this machine and runs the same
-ownership check locally; no tunnel is created.
+ownership check locally; no tunnel is created. The ownership check runs on
+the `--tailnet` path too, and matters more there: a fixed port is a far
+likelier collision target than a random one was.
 
 ## Verb: `attach role`
 

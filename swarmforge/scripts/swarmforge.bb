@@ -720,10 +720,26 @@
   (when (and (open-browser?) (command-exists? "open"))
     (process/sh {:continue true} "open" url)))
 
+;; pack_web.bb's serve! takes the port as its third argument and treats a
+;; blank one as 0 (kernel-assigned). Omitting the argument entirely when
+;; SWARMFORGE_DASHBOARD_PORT is unset is what keeps the default behaviour
+;; byte-identical to before this option existed: nothing new is passed, so
+;; nothing new can go wrong on a host that never sets the variable.
+;;
+;; A fixed port is what makes the dashboard reachable over the tailnet at a
+;; URL that survives a restart; with a random port there is nothing stable to
+;; publish. The value is not range-checked here — port allocation is a
+;; convention of whoever runs the host, not a property of SwarmForge, and the
+;; `start swarm` verb already rejects a non-numeric one at the CLI boundary.
+(defn pack-web-argv [script working-dir]
+  (let [port (System/getenv "SWARMFORGE_DASHBOARD_PORT")]
+    (cond-> [script "--serve" (str working-dir)]
+      (not (str/blank? port)) (conj port))))
+
 (defn start-pack-web! [ctx]
   (let [script (str (fs/path (:script-dir ctx) "pack_web.sh"))
         log (fs/path (:state-dir ctx) "dashboard.log")]
-    (process/process [script "--serve" (str (:working-dir ctx))]
+    (process/process (pack-web-argv script (:working-dir ctx))
                      {:out (str log) :err :out})
     (when-not (wait-for-file (dashboard-url-file ctx) 5000)
       (fail! (str red "Error:" reset " Dashboard did not start.")))
@@ -915,6 +931,7 @@
                                      (drop 2 args))
     "--test-install-hooks" (test-install-hooks! (second args))
     "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
+    "--test-pack-web-argv" (println (str/join " " (pack-web-argv "pack_web.sh" (or (second args) "/root"))))
     "--test-sleep-inhibitor-prefix" (test-sleep-inhibitor-prefix!)
     "--test-ensure-codex-trust" (test-ensure-codex-trust! (second args))
     "--test-sync-worktree-scripts" (test-sync-worktree-scripts! (or (second args) (System/getProperty "user.dir")))

@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
 # open-dashboard.sh — open the running SwarmForge pack_web dashboard as a
-# cmux browser workspace, with an SSH local-forward tunnel when remote.
+# cmux browser workspace, over an SSH local-forward tunnel or, with
+# --tailnet, straight at the target's tailscale IP.
 #
 # Exit codes / STATUS line: 0 OPENED|REUSED   3 STOPPED   4 DRIFT   5 ERROR
+# TUNNEL= reports which path was taken: local | created | reused | tailnet.
 # Contract: ../SKILL.md (verb: dashboard). Never starts pack_web or the
 # swarm, never closes anything, never creates a macOS window.
+#
+# --tailnet (issue #78) skips the tunnel. An ssh forward lives on the
+# operator's laptop: it dies when the laptop sleeps, and no other device can
+# use it. The managed hosts are already on the tailnet, so the dashboard's own
+# host:port is reachable from every device the operator owns — as long as the
+# port is fixed (see start-swarm.sh --dashboard-port) and published.
+#
+# This verb runs NO tailscale command, ever. Publishing a port is a one-time
+# operator action whose config the verb does not own, does not create and must
+# not clean up; the verb only observes the result over HTTP and, when the port
+# does not answer, prints the command to run rather than running it.
 set -euo pipefail
 
 TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
-ROOT='' WINDOW='' LOCAL=0
+ROOT='' WINDOW='' LOCAL=0 TAILNET=0
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -18,10 +31,15 @@ while [ $# -gt 0 ]; do
     --target) TARGET=$2; shift 2 ;;
     --key) KEY=$2; shift 2 ;;
     --local) LOCAL=1; shift ;;
+    --tailnet) TAILNET=1; shift ;;
     *) sed -n '2,4p' "$0"; exit 2 ;;
   esac
 done
 [ -n "$ROOT" ] || { sed -n '2,4p' "$0"; exit 2; }
+# --local means "the dashboard is on this machine"; there is then no target
+# host to reach over the tailnet. Rejected rather than quietly ignored, which
+# would hand back a loopback URL to someone who asked for a shareable one.
+[ "$LOCAL" = 1 ] && [ "$TAILNET" = 1 ] && { sed -n '2,4p' "$0"; exit 2; }
 
 BASE=$(basename "$ROOT")
 HOSTPART=local; [ "$LOCAL" = 0 ] && HOSTPART=${TARGET#*@}
@@ -44,14 +62,20 @@ RPORT=$(python3 -c 'import re,sys; m=re.match(r"^http://127\.0\.0\.1:(\d+)/?$", 
 [ -n "$RPORT" ] || die ERROR "dashboard-url has unexpected format: $URL" 5
 
 # ---------- tunnel ----------
-curl_200() { # $1 port → 0 iff HTTP 200
-  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$1/" 2>/dev/null)" = 200 ]
+curl_200() { # $1 url → 0 iff HTTP 200
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$1" 2>/dev/null)" = 200 ]
 }
 
 TUNNEL=local
-if [ "$LOCAL" = 0 ]; then
+if [ "$TAILNET" = 1 ]; then
+  # The tailscale IP is already in $TARGET; HOSTPART pulled it out above.
+  URL="http://${HOSTPART}:${RPORT}/"
+  curl_200 "$URL" || die ERROR "$(printf '%s does not answer 200 — that port is not published on the tailnet.\nRun this once on %s:\n  tailscale serve --bg --tcp %s tcp://127.0.0.1:%s\nIt survives reboots and tailscale down/up, so it is a one-time action.' \
+    "$URL" "$TARGET" "$RPORT" "$RPORT")" 5
+  TUNNEL=tailnet
+elif [ "$LOCAL" = 0 ]; then
   LPORT=$RPORT
-  if curl_200 "$LPORT"; then
+  if curl_200 "http://127.0.0.1:$LPORT/"; then
     TUNNEL=reused
   else
     # ponytail: two attempts only — preferred port, then any free port
@@ -61,13 +85,13 @@ if [ "$LOCAL" = 0 ]; then
         || die ERROR "ssh local-forward $LPORT→$RPORT failed for $TARGET" 5
     fi
     up=0
-    for _ in $(seq 1 20); do curl_200 "$LPORT" && { up=1; break; }; sleep 0.5; done
+    for _ in $(seq 1 20); do curl_200 "http://127.0.0.1:$LPORT/" && { up=1; break; }; sleep 0.5; done
     [ "$up" = 1 ] || die ERROR "tunnel up but http://127.0.0.1:$LPORT/ did not return 200 in 10s" 5
     TUNNEL=created
   fi
   URL="http://127.0.0.1:${LPORT}/"
 else
-  curl_200 "$RPORT" || die ERROR "dashboard-url says port $RPORT but it does not answer locally" 5
+  curl_200 "http://127.0.0.1:$RPORT/" || die ERROR "dashboard-url says port $RPORT but it does not answer locally" 5
 fi
 
 # ---------- port ownership (issue #18) ----------
