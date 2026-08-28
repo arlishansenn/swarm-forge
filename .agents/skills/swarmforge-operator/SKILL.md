@@ -360,74 +360,87 @@ tailnet, below), confirms the port is owned by *this* project's own
 with a browser surface on the resulting URL. `TUNNEL=` in the report says
 which path was taken: `created`, `reused`, `tailnet`, or `local`.
 
-### How to run it, step by step
+### How to run it
 
-**1 — Read the port.**
-
-```sh
-ssh -n -i <key> <target> "cat <root>/.swarmforge/dashboard-url"
-```
-
-**2 — Is that port in `7780`-`7789`?** (Allocation table below.) Yes → step 3.
-No → step 5. Decide from this file and that one reading, nothing else: a past
-report, a URL someone quoted, or the flag being available tell you nothing
-about whether this project's port is fixed.
-
-**3 — Fixed port. Run with `--tailnet`.**
+Set these once, then run the steps in order. `SF` is this skill's `scripts/`
+directory. For a dashboard on the machine you are already on, follow the
+`# local:` comments: `REMOTE=(--local)`, and read the file without `ssh`.
 
 ```sh
-scripts/open-dashboard.sh --root <root> --target <target> --key <key> --tailnet
+SF=.agents/skills/swarmforge-operator/scripts
+ROOT=/Users/admin/project/podsum          # the MANAGED project's root, on its host
+TARGET=admin@100.64.0.4                   # omit for a local root
+KEY=~/.ssh/tailscale_key                  # omit for a local root
+REMOTE=(--target "$TARGET" --key "$KEY")  # local: REMOTE=(--local)
 ```
 
-Expect `TUNNEL=tailnet`. If it exits `5` saying the port is not published, do
-step 6a once, then repeat this step.
-
-**4 — Say the `URL=` line in your own reply, then stop.** That address opens on
-the user's phone and every other device; it is what they came for. "Opened it"
-alone is not this verb done.
-
-**5 — Random port. Run WITHOUT `--tailnet`.**
+**Step 1 — read the port.**
 
 ```sh
-scripts/open-dashboard.sh --root <root> --target <target> --key <key>
+PORT=$(ssh -n -i "$KEY" "$TARGET" "cat $ROOT/.swarmforge/dashboard-url" | sed 's#.*:##; s#/##')
+# local: PORT=$(sed 's#.*:##; s#/##' "$ROOT/.swarmforge/dashboard-url")
+echo "$PORT"
 ```
 
-Expect `TUNNEL=created` or `reused`. Say the `URL=` line, and say in the same
-reply that it works only on this machine and dies when the laptop sleeps.
-Then offer step 6 and **stop**. Step 6b interrupts running work, so starting
-it is the user's call, never yours.
-
-**6 — Switch the project to a fixed port. Only after the user agrees.**
+**Step 2 — branch on it.**
 
 ```sh
-# 6a. Publish the range on the target. ONE-TIME PER HOST: `tailscale serve`
-#     has no range syntax (`--tcp` takes one port), and --bg mappings come
-#     back by themselves after a reboot and after `tailscale down`/`up`.
-#     Skip this if `tailscale serve status` already lists the range.
-ssh -i <key> <target> \
-  'for p in $(seq 7780 7789); do tailscale serve --bg --tcp $p tcp://127.0.0.1:$p; done'
-ssh -i <key> <target> 'tailscale serve status'
-
-# 6b. Stop the swarm. INTERRUPTS RUNNING WORK — run `read swarm` first and
-#     tell the user which roles are BUSY. This step cannot be skipped:
-#     `start swarm` refuses an already-running swarm with `6` `UNSAFE` and
-#     has no override for it.
-scripts/stop-swarm.sh --root <root> --target <target> --key <key>
-
-# 6c. Start it again on this project's assigned port.
-scripts/start-swarm.sh --root <root> --target <target> --key <key> \
-  --terminal <value> --dashboard-port 7780
-
-# 6d. Go back to step 3.
+case $PORT in
+  778[0-9]) echo "fixed   -> step 3" ;;
+  *)        echo "random  -> step 5" ;;
+esac
 ```
 
-**Never expose the dashboard any other way.** Step 6a is the only sanctioned
-path. Do not write a port forwarder or a proxy, do not add an `ssh -L` of your
-own, do not change what `pack_web` binds to. It binds `127.0.0.1` on purpose,
-so that a host without tailscale behaves exactly as it did before; anything
-you put in front of that publishes a Teardown button to everyone who can reach
-it. If steps 1-6 cannot be completed, say so and stop — do not improvise a
-route.
+**Step 3 — fixed port: open it over the tailnet.**
+
+```sh
+"$SF"/open-dashboard.sh --root "$ROOT" "${REMOTE[@]}" --tailnet
+```
+
+Expect `TUNNEL=tailnet`. On `5` `ERROR` naming an unpublished port, run step 6a
+once and repeat this step. Then go to step 4.
+
+**Step 4 — done. Print the report's `URL=` line in your reply.** Not "opened
+it" — the address itself, because that is what opens on the user's phone.
+
+**Step 5 — random port: open it over the ssh tunnel, then stop.**
+
+```sh
+"$SF"/open-dashboard.sh --root "$ROOT" "${REMOTE[@]}"
+```
+
+Expect `TUNNEL=created` or `reused`. Print the `URL=` line **and** say it works
+only on this machine and dies when the laptop sleeps. Offer step 6; do not run
+it. Step 6b interrupts running work, so it is the user's call.
+
+**Step 6 — switch this project to a fixed port. Only after the user agrees.**
+
+```sh
+# 6a. publish the range — ONE-TIME PER HOST; skip if `serve status` lists it
+ssh -i "$KEY" "$TARGET" 'for p in $(seq 7780 7789); do tailscale serve --bg --tcp $p tcp://127.0.0.1:$p; done'
+ssh -i "$KEY" "$TARGET" 'tailscale serve status'
+
+# 6b. show what stopping would interrupt, then stop  (ASK FIRST)
+"$SF"/read-swarm.sh  --root "$ROOT" "${REMOTE[@]}"
+"$SF"/stop-swarm.sh  --root "$ROOT" "${REMOTE[@]}"
+
+# 6c. start again on this project's port from the table below (7780, 7781, ...)
+"$SF"/start-swarm.sh --root "$ROOT" "${REMOTE[@]}" --terminal none --dashboard-port <N>
+
+# 6d. go back to step 3
+```
+
+`start swarm` refuses an already-running swarm with `6` `UNSAFE` and has no
+override, so 6b cannot be skipped. `tailscale serve --bg` survives reboots and
+`tailscale down`/`up`, and `--tcp` takes one port (no range syntax), which is
+why 6a is a loop run once per host.
+
+**Never expose the dashboard any other way.** 6a is the only sanctioned path.
+Do not write a port forwarder or a proxy, do not add an `ssh -L` of your own,
+do not change what `pack_web` binds to. It binds `127.0.0.1` on purpose, so a
+host without tailscale behaves exactly as before; anything in front of that
+publishes a Teardown button to everyone who can reach it. If these steps do
+not get there, say so and stop — do not improvise a route.
 
 ### Dashboard port allocation
 
