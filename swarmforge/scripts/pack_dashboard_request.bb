@@ -109,7 +109,8 @@
        (when-not (str/blank? role) (str "role: " role "\n"))
        "created_at: " created_at "\n"
        (when updated_at (str "updated_at: " updated_at "\n"))
-       (when-not (str/blank? response) (str "response: " (str/replace response #"\n" "\\n") "\n"))
+       (when-not (str/blank? response)
+         (str "response: " (str/replace response #"\n" (constantly "\\n")) "\n"))
        "\n"
        (or body "")
        (when-not (str/ends-with? (or body "") "\n") "\n")))
@@ -185,14 +186,13 @@
     (when (fs/regular-file? file)
       file)))
 
-(defn answer-request! [root id answer-file]
-  (when (str/blank? id)
-    (exit! 1 "Missing request id"))
-  (when-not (fs/regular-file? answer-file)
-    (exit! 1 (str "Answer file not found: " answer-file)))
-  (let [src (or (find-pending root id)
-                (exit! 1 (str "Unknown pending request: " id)))
-        text (str/trim (slurp (str answer-file)))
+(defn find-done-clarification [root id]
+  (let [file (clar-file (clar-done-dir root) id)]
+    (when (fs/regular-file? file)
+      file)))
+
+(defn complete-pending-request! [root id src answer-file]
+  (let [text (str/trim (slurp (str answer-file)))
         now (timestamp)
         dest (request-file (done-dir root) id)
         entry (request-entry src)]
@@ -205,6 +205,17 @@
                                       "updated_at" now}))
     (fs/delete-if-exists src)
     (println "ANSWERED:" id)))
+
+(defn answer-request! [root id answer-file]
+  (when (str/blank? id)
+    (exit! 1 "Missing request id"))
+  (when-not (fs/regular-file? answer-file)
+    (exit! 1 (str "Answer file not found: " answer-file)))
+  (if-let [src (find-pending root id)]
+    (complete-pending-request! root id src answer-file)
+    (if (find-done-clarification root id)
+      (println "ANSWERED:" id)
+      (exit! 1 (str "Unknown pending request: " id)))))
 
 (defn -main [& args]
   (case (first args)

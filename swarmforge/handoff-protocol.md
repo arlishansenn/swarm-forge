@@ -46,13 +46,16 @@ the audit trail and restart state.
 `swarmforge.conf` window lines may include an optional receive mode:
 
 ```text
-window <role> <agent> <worktree> [task|batch] [extra-cli-args...]
+window <role> <agent> <worktree> [task|batch] [forward-only|back-one|back-all] [extra-cli-args...]
 ```
 
-When omitted, receive mode defaults to `task`. Any fields after the receive
-mode are passed to the agent CLI as additional arguments. The launcher writes the
-normalized mode into `.swarmforge/roles.tsv`, and agent-facing receive helpers
-read that runtime file rather than reparsing `swarmforge.conf`.
+When omitted, receive mode defaults to `task`. An optional propagation token
+after receive-mode defaults to `forward-only`. `back-one` and `back-all` queue
+merge-only copies to earlier windows; they do not move the card. Any fields after
+those tokens are passed to the agent CLI as additional arguments. The launcher
+writes the normalized mode and propagation into `.swarmforge/roles.tsv`, and
+agent-facing receive helpers read that runtime file rather than reparsing
+`swarmforge.conf`.
 
 Use `batch` for roles that should consume equal-priority queued handoffs as a
 single unit, such as six-pack `cleaner`, `architect`, `hardender`, and `QA`,
@@ -245,6 +248,24 @@ Responsibilities:
 - Canonicalize valid commit abbreviations.
 - Generate `role` from the current sender role for `git_handoff`.
 - Preserve `task` from the draft for `git_handoff`.
+- On the first valid `git_handoff` call, record the exact candidate under
+  `.swarmforge/handoffs/audit_pending/`, print `AUDIT_REQUIRED`, and leave the
+  draft and current inbox item in place. Atomically increment the board card's
+  cumulative audit count for each new challenge; do not increment when the
+  unchanged candidate is submitted.
+- Direct the sender to re-read the complete inbound payload and referenced
+  sources, trace every requirement and constraint to role-appropriate work and
+  verification evidence, examine boundaries and failure cases, and fix and
+  re-audit every finding. Passing checks alone do not establish completeness.
+- Queue a `git_handoff` only when the sender repeats the unchanged candidate.
+  Any changed invocation invalidates that sender's previous challenge. Keep
+  challenges isolated between senders and remove task challenges on rejection,
+  retry, or deletion.
+- Complete the sender's current inbox item only after the audited handoff has
+  been queued. Approval, when required, occurs after this audit gate.
+- Preserve the cumulative audit count with the timestamped task ID through
+  lane changes, approval, rejection, and retry. Deletion removes it, and a new
+  timestamped task ID starts at zero even when it reuses a visible task name.
 - Generate the canonical body.
 - Atomically install the completed file into `outbox/`.
 
@@ -598,7 +619,8 @@ Alerting is configured by one more:
 
 The current daemon-backed protocol uses these helper scripts:
 
-- `swarm_handoff.sh` validates and queues outbound handoff drafts.
+- `swarm_handoff.sh` validates outbound handoff drafts, enforces the two-call
+  audit gate for Git handoffs, and queues notes or audited Git handoffs.
 - `ready_for_next.sh` dispatches to the correct ready helper for the current
   role's configured receive mode.
 - `done_with_current.sh` dispatches to the correct done helper for the current

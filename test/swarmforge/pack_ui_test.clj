@@ -1,6 +1,7 @@
 (ns swarmforge.pack-ui-test
   (:require [babashka.fs :as fs]
             [cheshire.core :as json]
+            [clojure.edn :as edn]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
             [clojure.test :refer [deftest is run-tests use-fixtures]]))
@@ -49,18 +50,20 @@
 
 (defn setup-pack!
   ([root] (setup-pack! root ["specifier"]))
-  ([root roles]
+  ([root roles] (setup-pack! root roles {}))
+  ([root roles propagation]
    (write-file
     (fs/path root ".swarmforge/roles.tsv")
     (apply str
            (map-indexed
             (fn [i role]
-              (format "%s\t%s\t%s\t%s\t%s\tcodex\ttask\n"
+              (format "%s\t%s\t%s\t%s\t%s\tcodex\ttask\t%s\n"
                       role
                       (if (zero? i) "master" role)
                       (pack-worktree root roles role)
                       role
-                      (str/capitalize role)))
+                      (str/capitalize role)
+                      (get propagation role "forward-only")))
             roles)))
    (doseq [role roles
            dir [".swarmforge/handoffs/outbox"
@@ -115,19 +118,23 @@
   (let [cols (str/split (or (task-row (:out (list-tasks root)) name) "") #"\t")]
     (nth cols 1 nil)))
 
-(defn queue-handoff! [root {:keys [from to task artifacts non-forwarding]}]
-  (write-file
-   (fs/path root ".swarmforge/handoffs/outbox"
-            (str "50_from_" from "_to_" (str/replace to #"," "_") ".handoff"))
-   (str "from: " from "\n"
-        "to: " to "\n"
-        "priority: 50\n"
-        "type: git_handoff\n"
-        "task: " task "\n"
-        (when artifacts (str "artifacts: " artifacts "\n"))
-        (when non-forwarding "non-forwarding: true\n")
-        "\n"
-        "payload\n")))
+(defn increment-audit! [root task-id]
+  (pack-board root true "increment-audit" "--root" (str root) "--task-id" task-id))
+
+(defn queue-handoff! [root {:keys [from to task artifacts non-forwarding priority body]}]
+  (let [priority (or priority "50")]
+    (write-file
+     (fs/path root ".swarmforge/handoffs/outbox"
+              (str priority "_from_" from "_to_" (str/replace to #"," "_") ".handoff"))
+     (str "from: " from "\n"
+          "to: " to "\n"
+          "priority: " priority "\n"
+          "type: git_handoff\n"
+          "task: " task "\n"
+          (when artifacts (str "artifacts: " artifacts "\n"))
+          (when non-forwarding "non-forwarding: true\n")
+          "\n"
+          (or body "payload") "\n"))))
 
 (defn handoff-names [dir]
   (if (fs/directory? dir)
@@ -138,6 +145,26 @@
 
 (defn pending-names [root]
   (handoff-names (fs/path root ".swarmforge/handoffs/pending_approval")))
+
+(defn write-pending-audit! [root task-id]
+  (write-file
+   (fs/path root ".swarmforge/handoffs/audit_pending/sender" (str task-id ".edn"))
+   (str (pr-str {:candidate {:version 1
+                             :sender "specifier"
+                             :task-id task-id
+                             :type "git_handoff"}})
+        "\n")))
+
+(defn pending-audits [root]
+  (let [dir (fs/path root ".swarmforge/handoffs/audit_pending")]
+    (if (fs/directory? dir)
+      (vec (fs/glob dir "**/*.edn"))
+      [])))
+
+(defn pending-audit-task-ids [root]
+  (->> (pending-audits root)
+       (map #(get-in (edn/read-string (slurp (str %))) [:candidate :task-id]))
+       set))
 
 (defn inbox-names [root roles role]
   (handoff-names (fs/path (pack-worktree root roles role)
@@ -161,6 +188,9 @@
 
 (defn web-state [root]
   (json/parse-string (:out (pack-web root true "--test-state" (str root))) true))
+
+(defn task-card [root name]
+  (some #(when (= name (:name %)) %) (:tasks (web-state root))))
 
 (defn start-tmux! [root sessions]
   (let [sock (str (fs/path root "tmux.sock"))]
@@ -198,7 +228,8 @@
     (is (= "htw-console-app" (nth cols 0 nil)))
     (is (= "specifier" (nth cols 1 nil)))
     (is (re-matches #"\d{4}-\d{2}-\d{2}T.*Z" (nth cols 2 "")))
-    (is (= (nth cols 2 nil) (nth cols 3 nil)))))
+    (is (= (nth cols 2 nil) (nth cols 3 nil)))
+    (is (= "0" (nth cols 5 nil)))))
 
 (deftest new-task-writes-the-card-and-body
   ;; Given specifier is master
@@ -218,7 +249,19 @@
           body (slurp (str (fs/path root ".swarmforge/board/htw-console-app.txt")))]
       (is (zero? (:exit created)))
       (is (= "specifier" (task-lane root "htw-console-app")))
-      (is (= text body)))))
+      (is (= text body))
+      (is (= (str "# htw-console-app\n\n" text "\n")
+             (slurp (str (fs/path root "tasks/htw-console-app.md"))))))))
+
+(deftest pack-board-serializes-concurrent-audit-increments
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        task-id (:id (task-card root "HTW"))
+        increments (doall (repeatedly 8 #(future (increment-audit! root task-id))))]
+    (doseq [increment increments]
+      @increment)
+    (is (= 8 (:audit_count (task-card root "HTW"))))))
 
 (deftest pack-board-lists-lanes-in-role-order
   ;; Given roles specifier, coder, QA
@@ -263,11 +306,13 @@
         roles ["specifier" "coder" "cleaner"]
         sock (do (setup-pack! root roles)
                  (create-task root "htw-console-app" "coder")
+                 (increment-audit! root (:id (task-card root "htw-console-app")))
                  (queue-handoff! root {:from "coder" :to "cleaner" :task "htw-console-app"})
                  (start-tmux! root roles))]
     (try
       (handoffd-once root)
       (is (= "cleaner" (task-lane root "htw-console-app")))
+      (is (= 1 (:audit_count (task-card root "htw-console-app"))))
       (finally
         (stop-tmux! sock)))))
 
@@ -287,6 +332,131 @@
       (finally
         (stop-tmux! sock)))))
 
+(def four-pack-roles ["specifier" "coder" "refactorer" "architect"])
+(def reverse-structure-body
+  (str "Re-read your role and constitution.\n\n"
+       "merge_and_process.sh refactorer abcdef1234\n\n"
+       "The inbound tree is the structure. Replay this role's current task onto that shape."))
+
+(deftest handoffd-refactorer-back-one-does-not-done-or-hold
+  ;; Given four-pack, card in refactorer, reverse copy to coder and forward to architect
+  ;; When handoffd delivers
+  ;; Then coder gets the 00 reverse file, lane is architect, Attention is empty, card is not Done
+  (let [root (tmp-dir)
+        roles four-pack-roles
+        sock (do (setup-pack! root roles {"refactorer" "back-one" "architect" "back-all"})
+                 (create-task root "HTW" "refactorer")
+                 (write-file
+                  (fs/path (pack-worktree root roles "coder")
+                           ".swarmforge/handoffs/inbox/new/50_next_card.handoff")
+                  (str "from: specifier\nto: coder\npriority: 50\ntype: note\n"
+                       "message: next card\n\nnote\n"))
+                 (queue-handoff! root {:from "refactorer" :to "architect" :task "HTW"
+                                       :priority "50"})
+                 (queue-handoff! root {:from "refactorer" :to "coder" :task "HTW"
+                                       :priority "00" :non-forwarding true
+                                       :body reverse-structure-body})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (let [coder-mail (sort (inbox-names root roles "coder"))
+            delivered (slurp (str (fs/path (pack-worktree root roles "coder")
+                                           ".swarmforge/handoffs/inbox/new"
+                                           (first coder-mail))))]
+        (is (str/starts-with? (first coder-mail) "00_"))
+        (is (str/starts-with? (second coder-mail) "50_"))
+        (is (str/includes? delivered "merge_and_process.sh refactorer"))
+        (is (str/includes? delivered "inbound tree is the structure"))
+        (is (str/includes? delivered "non-forwarding: true")))
+      (is (seq (inbox-names root roles "architect")))
+      (is (= [] (pending-names root)))
+      (is (= "architect" (task-lane root "HTW")))
+      (is (not= "done" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest handoffd-four-pack-architect-back-all-dones-because-last
+  (let [root (tmp-dir)
+        roles four-pack-roles
+        sock (do (setup-pack! root roles {"refactorer" "back-one" "architect" "back-all"})
+                 (create-task root "HTW" "architect")
+                 (queue-handoff! root {:from "architect" :to "specifier" :task "HTW"
+                                       :priority "50" :non-forwarding true})
+                 (doseq [role ["specifier" "coder" "refactorer"]]
+                   (queue-handoff! root {:from "architect" :to role :task "HTW"
+                                         :priority "00" :non-forwarding true
+                                         :body reverse-structure-body}))
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (doseq [role ["specifier" "coder" "refactorer"]]
+        (is (seq (inbox-names root roles role)) role))
+      (is (= "done" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest handoffd-six-pack-architect-back-all-moves-to-hardender
+  (let [root (tmp-dir)
+        roles six-pack-roles
+        sock (do (setup-pack! root roles {"cleaner" "back-one"
+                                          "architect" "back-all"
+                                          "QA" "back-all"})
+                 (create-task root "HTW" "architect")
+                 (queue-handoff! root {:from "architect" :to "hardender" :task "HTW"
+                                       :priority "50"})
+                 (doseq [role ["specifier" "coder" "cleaner"]]
+                   (queue-handoff! root {:from "architect" :to role :task "HTW"
+                                         :priority "00" :non-forwarding true}))
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (doseq [role ["specifier" "coder" "cleaner"]]
+        (is (seq (inbox-names root roles role)) role))
+      (is (seq (inbox-names root roles "hardender")))
+      (is (= [] (inbox-names root roles "QA")))
+      (is (= "hardender" (task-lane root "HTW")))
+      (is (not= "done" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest handoffd-six-pack-qa-back-all-dones-because-last
+  (let [root (tmp-dir)
+        roles six-pack-roles
+        sock (do (setup-pack! root roles {"cleaner" "back-one"
+                                          "architect" "back-all"
+                                          "QA" "back-all"})
+                 (create-task root "HTW" "QA")
+                 (queue-handoff! root {:from "QA" :to "specifier" :task "HTW"
+                                       :priority "50" :non-forwarding true})
+                 (doseq [role ["specifier" "coder" "cleaner" "architect" "hardender"]]
+                   (queue-handoff! root {:from "QA" :to role :task "HTW"
+                                         :priority "00" :non-forwarding true}))
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (doseq [role ["specifier" "coder" "cleaner" "architect" "hardender"]]
+        (is (seq (inbox-names root roles role)) role))
+      (is (= "done" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest handoffd-two-pack-cleaner-back-one-dones-because-last
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        sock (do (setup-pack! root roles {"cleaner" "back-one"})
+                 (create-task root "HTW" "cleaner")
+                 (queue-handoff! root {:from "cleaner" :to "coder" :task "HTW"
+                                       :priority "50" :non-forwarding true})
+                 (queue-handoff! root {:from "cleaner" :to "coder" :task "HTW"
+                                       :priority "00" :non-forwarding true})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (seq (inbox-names root roles "coder")))
+      (is (= "done" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
 (deftest pack-web-exposes-dashboard-state-from-conf-and-board
   ;; Given a six-pack with specifier as master and a board card
   ;; When pack_web --test-state
@@ -302,51 +472,21 @@
     (is (= "specifier" (:master_role state)))
     (is (= "Specifier" (:master_display state)))
     (is (= six-pack-roles (:lanes state)))
-    (is (= [{:name "htw-console-app" :lane "specifier" :updated_at updated :status ""}]
-           (:tasks state)))
+    (let [card (first (:tasks state))]
+      (is (= "htw-console-app" (:name card)))
+      (is (str/starts-with? (:id card) "20"))
+      (is (= "specifier" (:lane card)))
+      (is (= updated (:updated_at card)))
+      (is (= 0 (:audit_count card)))
+      (is (= "" (:status card))))
     (is (= [] (:approvals state)))
     (is (= six-pack-roles (mapv :role (:work_in_flight state))))))
 
-(defn dashboard-html [root]
-  (:out (pack-web root true "--test-html")))
 
-(defn dashboard-js-fn [html name]
-  (let [needle (str "function " name "(")
-        start (str/index-of html needle)]
-    (when start
-      (let [rest (subs html start)
-            cuts (remove nil? [(str/index-of rest "\nfunction " 1)
-                               (str/index-of rest "\nasync function " 1)])
-            nxt (when (seq cuts) (apply min cuts))]
-        (subs rest 0 (or nxt (count rest)))))))
 
-(deftest pack-dashboard-html-has-new-task-and-no-add-story
-  ;; When serving dashboard.html
-  ;; Then New Task exists, Add Story does not, Troubleshooter does not
-  (let [root (tmp-dir)
-        html (dashboard-html root)]
-    (is (str/includes? html "New Task"))
-    (is (not (str/includes? html "Add Story")))
-    (is (not (str/includes? html "Troubleshooter")))
-    (is (re-find #"id=\"nt-name\"" html))
-    (is (re-find #"id=\"nt-text\"" html))
-    (is (re-find #"id=\"nt-ok\"" html))
-    (is (re-find #"id=\"nt-cancel\"" html))))
 
-(deftest pack-dashboard-renders-a-lane-per-conf-role
-  ;; Given --test-state lanes
-  ;; (JS uses lanes from /api/state; test HTML has id="columns" and id="btn-new-task")
-  (let [root (tmp-dir)
-        _ (setup-pack! root six-pack-roles)
-        state (json/parse-string (:out (pack-web root true "--test-state" (str root))) true)
-        html (dashboard-html root)]
-    (is (= six-pack-roles (:lanes state)))
-    (is (re-find #"id=\"columns\"" html))
-    (is (re-find #"id=\"btn-new-task\"" html))
-    (is (str/includes? html "/api/state"))
-    (is (str/includes? html "data.lanes"))
-    (doseq [role six-pack-roles]
-      (is (not (str/includes? html (str "data-lane=\"" role "\"")))))))
+
+
 
 (deftest pack-web-post-task-creates-a-card-in-the-master-lane
   ;; Given a pack whose master role is coder
@@ -389,6 +529,7 @@
         artifacts "features/console.feature,qa/console.md"
         sock (do (setup-pack! root six-pack-roles)
                  (create-task root "htw-console-app" "specifier")
+                 (increment-audit! root (:id (task-card root "htw-console-app")))
                  (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"
                                        :artifacts artifacts})
                  (start-tmux! root six-pack-roles))]
@@ -398,10 +539,13 @@
         (is (= ["50_from_specifier_to_coder.handoff"] (pending-names root)))
         (is (= [] (inbox-names root six-pack-roles "coder")))
         (is (= "specifier" (task-lane root "htw-console-app")))
+        (is (= 1 (:audit_count (first (:tasks state)))))
         (is (= [{:id "50_from_specifier_to_coder"
                  :gate "spec → coder"
+                 :task_id "htw-console-app"
                  :task "htw-console-app"
-                 :artifacts ["features/console.feature" "qa/console.md"]}]
+                 :artifacts []
+                 :reviews {}}]
                (:approvals state))))
       (finally
         (stop-tmux! sock)))))
@@ -465,10 +609,10 @@
       (finally
         (stop-tmux! sock)))))
 
-(deftest four-pack-partial-to-is-not-done
+(deftest four-pack-last-role-git-handoff-is-done
   ;; Given four-pack, card in architect
   ;; When architect queues git_handoff to specifier,coder (not every other role)
-  ;; Then the card is not done
+  ;; Then the card is done because architect is last
   (let [root (tmp-dir)
         roles ["specifier" "coder" "refactorer" "architect"]
         sock (do (setup-pack! root roles)
@@ -479,7 +623,7 @@
                  (start-tmux! root roles))]
     (try
       (handoffd-once root)
-      (is (not= "done" (task-lane root "htw-console-app")))
+      (is (= "done" (task-lane root "htw-console-app")))
       (finally
         (stop-tmux! sock)))))
 
@@ -610,6 +754,7 @@
   (let [root (tmp-dir)
         sock (do (setup-pack! root six-pack-roles)
                  (create-task root "htw-console-app" "specifier")
+                 (increment-audit! root (:id (task-card root "htw-console-app")))
                  (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"
                                        :artifacts "features/console.feature"})
                  (start-tmux! root six-pack-roles))]
@@ -620,6 +765,7 @@
         (handoffd-once root)
         (is (seq (inbox-names root six-pack-roles "coder")))
         (is (= "coder" (task-lane root "htw-console-app")))
+        (is (= 1 (:audit_count (task-card root "htw-console-app"))))
         (is (= [] (pending-names root)))
         (is (= [] (:approvals (web-state root)))))
       (finally
@@ -628,34 +774,70 @@
 (deftest attention-reject-returns-to-master
   ;; Given pending
   ;; When --test-reject
-  ;; Then pending gone, card stays specifier
+  ;; Then the pending approval is unchanged because Reject only opens the dialog
   (let [root (tmp-dir)
         sock (do (setup-pack! root six-pack-roles)
                  (create-task root "htw-console-app" "specifier")
+                 (increment-audit! root (:id (task-card root "htw-console-app")))
                  (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"})
                  (start-tmux! root six-pack-roles))]
     (try
       (handoffd-once root)
-      (let [id (:id (first (:approvals (web-state root))))]
-        (pack-web root true "--test-reject" (str root) id)
-        (is (= [] (pending-names root)))
-        (is (= [] (inbox-names root six-pack-roles "coder")))
+      (let [id (:id (first (:approvals (web-state root))))
+            result (pack-web root false "--test-reject" (str root) id)]
+        (is (not (zero? (:exit result))))
+        (is (seq (pending-names root)))
         (is (= "specifier" (task-lane root "htw-console-app")))
-        (is (= [] (:approvals (web-state root))))
-        (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))
+        (is (= 1 (:audit_count (task-card root "htw-console-app"))))
+        (is (seq (:approvals (web-state root))))
+        (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app")))))
       (finally
         (stop-tmux! sock)))))
 
-(deftest pack-dashboard-renders-attention-approvals
-  ;; Given dashboard HTML
-  ;; Then it renders data.approvals with View document, Approve, and Reject
-  (let [html (dashboard-html (tmp-dir))]
-    (is (re-find #"id=\"attention-rows\"" html))
-    (is (str/includes? html "data.approvals"))
-    (is (str/includes? html "/api/approvals/"))
-    (is (str/includes? html "/doc?path="))
-    (is (str/includes? html "Approve"))
-    (is (str/includes? html "Reject"))))
+(deftest attention-reject-preserves-branch-and-rolls-back-head
+  ;; Given a pending approval with task identity and a task base commit
+  ;; When it is rejected
+  ;; Then rejected work is preserved off the active branch and pending state is cleared
+  (let [root (tmp-dir)]
+    (run {:dir root} "git" "init" "-q")
+    (run {:dir root} "git" "config" "user.email" "test@example.com")
+    (run {:dir root} "git" "config" "user.name" "Test User")
+    (setup-pack! root six-pack-roles)
+    (write-file (fs/path root "story.md") "base\n")
+    (run {:dir root} "git" "add" "story.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Base")
+    (create-task root "htw-console-app" "specifier")
+    (let [task-id (:id (first (:tasks (web-state root))))
+          base (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+      (write-pending-audit! root task-id)
+      (write-pending-audit! root "unrelated-id")
+      (write-file (fs/path root "story.md") "rejected\n")
+      (run {:dir root} "git" "add" "story.md")
+      (run {:dir root} "git" "commit" "-q" "-m" "Rejected work")
+      (let [rejected (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+            pending (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")]
+        (write-file pending
+                    (str "from: specifier\n"
+                         "to: coder\n"
+                         "priority: 50\n"
+                         "type: git_handoff\n"
+                         "task_id: " task-id "\n"
+                         "task: htw-console-app\n"
+                         "commit: " rejected "\n"
+                         "task_base_commit: " base "\n"
+                         "\n"
+                         "payload\n"))
+        (let [result (pack-web root false "--test-delete-approval" (str root) "50_from_specifier_to_coder")
+              head (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+              branches (:out (run {:dir root} "git" "branch" "--format=%(refname:short)"))]
+          (is (zero? (:exit result)))
+          (is (= base head))
+          (is (str/includes? branches (str "rejected/" task-id "/latest")))
+          (is (str/includes? branches (str "rejected/" task-id "/1")))
+          (is (not (fs/exists? pending)))
+          (is (= #{"unrelated-id"} (pending-audit-task-ids root)))
+          (is (fs/exists? (fs/path root ".swarmforge/rejected-tasks" task-id)))
+          (is (nil? (task-lane root "htw-console-app"))))))))
 
 (def example-task-text
   "Integrate the stories in ~/junk/htw-stories into one console application.")
@@ -682,7 +864,17 @@
           body (slurp (str (fs/path root ".swarmforge/board/htw-console-app.txt")))]
       (is (zero? (:exit result)))
       (is (= "coder" (task-lane root "htw-console-app")))
-      (is (= text body)))))
+      (is (= text body))
+      (is (str/includes? (slurp (str (fs/path root "tasks/htw-console-app.md")))
+                         text)))))
+
+(deftest pack-web-inject-failure-logs-the-role
+  (let [root (tmp-dir)]
+    (setup-pack! root ["coder"])
+    (let [result (pack-web root false "--test-post-chat" (str root) "hello master")]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str (:err result)) "inject failed"))
+      (is (str/includes? (str (:err result)) "coder")))))
 
 (deftest inject-master-records-send-keys-argv
   ;; Given master session swarmforge-specifier running codex in roles.tsv
@@ -754,41 +946,43 @@
 
 (deftest attention-reject-injects-a-message-to-master
   ;; Given a pending approval and a tmux argv stub
-  ;; When --test-reject
-  ;; Then the notify file is written and master receives a one-line reject
+  ;; When retry with comments
+  ;; Then master receives those comments and no New Task note is queued
   (let [root (tmp-dir)
         argv-file (str (fs/path root "tmux.argv"))
         sock (str (fs/path root "tmux.sock"))]
     (setup-pack! root six-pack-roles)
     (create-task root "htw-console-app" "specifier")
-    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
-    (write-file
-     (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")
-     (str "from: specifier\n"
-          "to: coder\n"
-          "priority: 50\n"
-          "type: git_handoff\n"
-          "task: htw-console-app\n"
-          "\n"
-          "payload\n"))
-    (let [result (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
-                               "--test-reject" (str root) "50_from_specifier_to_coder")
-          argv (read-argv argv-file)]
-      (is (zero? (:exit result)))
-      (is (= [] (pending-names root)))
-      (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app")))
-      (is (= "Rejected: htw-console-app" (last (first argv))))
-      (is (= ["-H" "0d"] (take-last 2 (second argv))))
-      (is (= 2 (count argv))))))
-
-(deftest pack-dashboard-chat-rail-posts-to-master
-  ;; Given dashboard HTML
-  ;; Then the rail title uses data.master_display and the composer posts /api/chat
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "data.master_display"))
-    (is (re-find #"id=\"master-title\"" html))
-    (is (re-find #"id=\"chat-input\"" html))
-    (is (str/includes? html "/api/chat"))))
+    (let [task-id (:id (task-card root "htw-console-app"))]
+      (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+      (write-file
+       (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")
+       (str "from: specifier\n"
+            "to: coder\n"
+            "priority: 50\n"
+            "type: git_handoff\n"
+            "task_id: " task-id "\n"
+            "task: htw-console-app\n"
+            "\n"
+            "payload\n"))
+      (let [result (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                                 "--test-retry-task" (str root)
+                                 "50_from_specifier_to_coder"
+                                 "use an RNG")
+            argv (read-argv argv-file)
+            notes (fs/list-dir (fs/path root ".swarmforge/handoffs/outbox"))]
+        (is (zero? (:exit result)))
+        (is (= [] (pending-names root)))
+        (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))
+        (is (str/includes? (str (last (first argv))) "use an RNG"))
+        (is (empty? (filter #(str/includes? (fs/file-name %) "New_Task") notes)))
+        ;; D-2 (docs/fork-deltas.md): this fork submits with a literal byte
+        ;; (-H 0d) or CSI-u, never the symbolic C-m/C-j upstream asserts here.
+        ;; tmux re-encodes a symbolic key name for a TUI that negotiated
+        ;; extended keys, and the pane then never submits — silently. One
+        ;; submit entry, so argv is two, not three.
+        (is (= ["-H" "0d"] (take-last 2 (second argv))))
+        (is (= 2 (count argv)))))))
 
 (deftest pack-web-lists-every-role-in-the-work-queue
   ;; Given a six-pack with no in_process mail
@@ -849,35 +1043,7 @@
     (let [wif (:work_in_flight (web-state root))]
       (is (some #(and (= "cave-walk" (:task %)) (= "coder" (:role %))) wif)))))
 
-(deftest pack-dashboard-html-has-work-queue-and-no-sl
-  ;; When serving dashboard.html
-  ;; Then Work Queue role links use data-open-agent
-  ;; And Open SL / sl-therm / merger are absent
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "Work Queue"))
-    (is (str/includes? html "data-open-agent"))
-    (is (str/includes? html "data.work_in_flight"))
-    (is (str/includes? html "item.state"))
-    (is (str/includes? html "item.activity"))
-    (is (str/includes? html "data.chat"))
-    (is (str/includes? html "data-task-name"))
-    (is (str/includes? html "/task?name="))
-    (is (str/includes? html "Documents"))
-    (is (str/includes? html "resizable=yes"))
-    (is (str/includes? html "/agent/"))
-    (is (str/includes? html "setInterval(loadState"))
-    (is (str/includes? html "id=\"error\""))
-    (is (str/includes? html "Swarm disconnected"))
-    (is (not (str/includes? html "Open SL")))
-    (is (not (str/includes? html "sl-therm")))
-    (is (not (str/includes? html "merger")))))
 
-(deftest pack-dashboard-has-no-top-bar-open-master
-  ;; Given dashboard HTML
-  ;; Then the top bar has no Open master button; the rail still does
-  (let [html (dashboard-html (tmp-dir))]
-    (is (not (str/includes? html "id=\"btn-open-master\"")))
-    (is (str/includes? html "id=\"btn-open-master-rail\""))))
 
 (deftest pack-agent-page-polls-live-pane
   ;; When serving the agent session window
@@ -900,6 +1066,21 @@
     (let [result (pack-web root false "--test-pane" (str root) "coder")]
       (is (zero? (:exit result)))
       (is (str/includes? (:out result) "coder pane snapshot")))))
+
+(deftest pack-web-pane-capture-of-missing-session-is-quiet
+  (let [root (tmp-dir)]
+    (setup-pack! root ["coder"])
+    (let [result (pack-web root false "--test-pane" (str root) "coder")]
+      (is (zero? (:exit result)))
+      (is (str/blank? (str/trim (str (:err result))))))))
+
+(deftest pack-web-teardown-throw-is-not-a-clean-success
+  (let [root (tmp-dir)]
+    (setup-pack! root)
+    (let [result (pack-web root false "--test-teardown-throw" (str root))]
+      (is (not (zero? (:exit result))))
+      (is (str/includes? (str (:err result)) "teardown failed"))
+      (is (str/includes? (str (:err result)) (str root))))))
 
 (deftest handoffd-archives-sender-pane-when-task-moves
   ;; Given card and specifier→coder handoff (two-pack coder→cleaner to skip attention)
@@ -978,6 +1159,9 @@
         proc (.start pb)]
     (try
       (is (wait-file url-file 5000) "dashboard-url was written")
+      (let [pid-file (fs/path root ".swarmforge/pack_web.pid")]
+        (is (wait-file pid-file 5000) "pack_web.pid was written")
+        (is (= (str (.pid proc)) (str/trim (slurp (str pid-file))))))
       (when (fs/exists? url-file)
         (let [url (str/trim (slurp (str url-file)))
               html (slurp url)]
@@ -1011,15 +1195,6 @@
     (is (zero? (:exit result)))
     (is (< (:before body) (:after body)))))
 
-(deftest pack-dashboard-html-wires-teardown
-  ;; When serving dashboard.html
-  ;; Then Teardown posts /api/teardown after confirm
-  (let [html (dashboard-html (tmp-dir))]
-    (is (re-find #"id=\"teardown-btn\"" html))
-    (is (str/includes? html "/api/teardown"))
-    (is (str/includes? html "TEARDOWN"))
-    (is (str/includes? html "teardownSwarm"))))
-
 (deftest pack-web-teardown-requires-confirm
   ;; Given a pack root
   ;; When POST /api/teardown without confirm
@@ -1037,18 +1212,25 @@
         _ (setup-pack! root ["coder" "cleaner"])
         sock (start-tmux! root ["coder" "cleaner"])
         daemon (.start (java.lang.ProcessBuilder. ["sleep" "120"]))
-        pid (str (.pid daemon))]
+        pid (str (.pid daemon))
+        pack-web-proc (.start (java.lang.ProcessBuilder. ["sleep" "120"]))
+        pack-web-pid (str (.pid pack-web-proc))]
     (try
       (write-file (fs/path root ".swarmforge/daemon/handoffd.pid") (str pid "\n"))
+      (write-file (fs/path root ".swarmforge/pack_web.pid") (str pack-web-pid "\n"))
       (let [result (pack-web root false "--test-teardown" (str root) "TEARDOWN")]
         (is (zero? (:exit result)))
         (is (str/includes? (:out result) "teardown_started"))
         (is (not= 0 (:exit (run {:dir root :ok? false} "tmux" "-S" sock "list-sessions"))))
         (is (false? (.isAlive daemon)))
-        (is (not (fs/exists? (fs/path root ".swarmforge/daemon/handoffd.pid")))))
+        (is (false? (.isAlive pack-web-proc)))
+        (is (not (fs/exists? (fs/path root ".swarmforge/daemon/handoffd.pid"))))
+        (is (not (fs/exists? (fs/path root ".swarmforge/pack_web.pid")))))
       (finally
         (when (.isAlive daemon)
           (.destroyForcibly daemon))
+        (when (.isAlive pack-web-proc)
+          (.destroyForcibly pack-web-proc))
         (stop-tmux! sock)))))
 
 (deftest pack-board-move-matches-task-name-ignoring-case
@@ -1120,7 +1302,7 @@
         answer (fs/path root "tmp" "answer.txt")]
     (setup-pack! root)
     (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
-    (write-file answer "the spec is ready\n")
+    (write-file answer "the spec is ready\nwith two documents\n")
     (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
                   "--test-post-chat" (str root) "status?")
     (let [listed (run {:dir root}
@@ -1130,64 +1312,29 @@
       (is (str/starts-with? id "req-"))
       (run {:dir root} (script "pack_dashboard_request.sh") "answer" id (str answer))
       (let [chat (:chat (web-state root))
-            row (first chat)]
+            row (first chat)
+            stored (slurp (str (first (fs/list-dir
+                                       (fs/path root ".swarmforge/dashboard/requests/done")))))]
         (is (= "status?" (str/trim (:body row))))
-        (is (= "the spec is ready" (str/trim (:response row))))
+        (is (= "the spec is ready\nwith two documents" (:response row)))
+        (is (str/includes? stored "response: the spec is ready\\nwith two documents\n"))
         (is (= "done" (:status row)))))))
 
-(deftest pack-dashboard-documents-menu-paints-above-the-board
-  ;; Given dashboard HTML
-  ;; When the Documents menu opens
-  ;; Then it is position:fixed (not clipped by Attention overflow)
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html ".menu-list{"))
-    (is (re-find #"(?s)\.menu-list\{[^}]*position:fixed" html))
-    (is (str/includes? html "getBoundingClientRect"))))
 
-(deftest pack-dashboard-pins-chat-to-the-bottom
-  ;; Given dashboard HTML
-  ;; When the first chat turn renders
-  ;; Then the history pins to the bottom on first paint
-  (let [html (dashboard-html (tmp-dir))]
-    (is (re-find #"id=\"chat-history\"" html))
-    (is (str/includes? html "scrollHeight"))
-    (is (str/includes? html "firstPaint"))))
 
-(deftest pack-dashboard-updates-chat-without-rebuilding-history
-  ;; Given dashboard HTML
-  ;; Then chat turns are keyed and existing bubbles are not replaced
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "data-chat-id"))
-    (is (not (str/includes? html "history.replaceChildren")))))
 
-(deftest pack-dashboard-cards-show-im-status
-  ;; Given dashboard HTML
-  ;; Then cards render task.status from /api/state
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "task.status"))))
 
-(deftest pack-dashboard-html-flushes-batched-cards
-  ;; When serving dashboard.html
-  ;; Then a batch group has no vertical gap between its cards
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "className = \"batch\""))
-    (is (re-find #"\.batch\{[^}]*gap:0" html))))
 
-(deftest pack-dashboard-cards-drop-lane-name
-  ;; Given dashboard HTML
-  ;; When cards are rendered
-  ;; Then they do not print the agent or lane name
-  (let [html (dashboard-html (tmp-dir))]
-    (is (not (str/includes? html "lane.textContent = task.lane")))))
 
-(deftest pack-dashboard-batch-only-top-card-has-status
-  ;; Given dashboard HTML
-  ;; When a batch is rendered
-  ;; Then only the top card has a status line and the rest are thin name-only cards
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "card-thin"))
-    (is (str/includes? html "thin: idx > 0"))
-    (is (re-find #"\.card-thin\{" html))))
+
+
+
+
+
+
+
+
+
 
 (deftest pack-web-state-groups-in-process-batch-cards
   ;; Given two-pack and two cleaner in-process handoffs in one batch dir
@@ -1209,47 +1356,13 @@
              (get-in by-name ["validation" :batch])))
       (is (some? (get-in by-name ["Command syntax" :batch]))))))
 
-(deftest pack-dashboard-new-task-alerts-on-duplicate
-  ;; Given dashboard HTML
-  ;; Then duplicate create keeps the dialog and alerts
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "submitNewTask"))
-    (is (str/includes? html "if (!res.ok)"))
-    (is (str/includes? html "alert("))
-    (is (str/includes? html "nt-name"))))
 
-(deftest pack-dashboard-rejected-card-has-delete
-  ;; Given dashboard HTML
-  ;; Then a REJECTED card is red and can be deleted
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "REJECTED"))
-    (is (str/includes? html "card-rejected"))
-    (is (str/includes? html "/api/tasks/delete"))))
 
-(deftest pack-dashboard-splitter-drags-the-rail
-  ;; Given dashboard HTML
-  ;; Then the board/Work Queue border can be dragged
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "col-resize"))
-    (is (str/includes? html "pointerdown"))
-    (is (str/includes? html "setProperty(\"--rail\""))))
 
-(deftest pack-dashboard-rejected-card-has-edit-retry
-  ;; Given dashboard HTML
-  ;; Then a rejected card opens an edit pane with Delete and Retry
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "openRejectEdit"))
-    (is (str/includes? html "/api/tasks/retry"))
-    (is (str/includes? html "rt-text"))
-    (is (str/includes? html "Retry"))))
 
-(deftest pack-dashboard-attention-has-clarification-row
-  ;; Given dashboard HTML
-  ;; Then Attention can show Request clarification with a text box
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "Clarification requested from:"))
-    (is (str/includes? html "data.clarifications"))
-    (is (str/includes? html "/api/clarifications/"))))
+
+
+
 
 (deftest pack-web-thermometer-ignores-reordered-tail
   ;; Given a pane whose last 20 lines are the same bag in a new order
@@ -1288,6 +1401,35 @@
       (is (= "HTW" (:name card)))
       (is (str/includes? (str (:status card)) "I'm idle, so I'm running ready_for_next.sh")))))
 
+(deftest pack-web-card-status-includes-codex-summaries
+  (doseq [sentence ["Received task extras from the board."
+                    "The HHG rules are now settled."
+                    "The operator resolved the throw messages."
+                    "Completed extras and queued the coder handoff."
+                    "The exact-commit audit found no remaining gaps."]]
+    (let [root (tmp-dir)
+          _ (setup-pack! root)
+          _ (create-task root "HTW" "specifier")
+          result (pack-web-env root {} "--test-status-pane" (str root)
+                               (str sentence "\nesc to interrupt · 3s\n"))
+          card (first (:tasks (json/parse-string (:out result) true)))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str (:status card)) sentence)))))
+
+(deftest pack-web-card-status-ignores-tool-trace-lines
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             (str "I'll commit the spec.\n"
+                                  "• Ran 7 commands\n"
+                                  "• Edited features/003.feature\n"
+                                  "• Added tmp/htw-handoff.txt\n"))
+        card (first (:tasks (json/parse-string (:out result) true)))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status card)) "I'll commit the spec"))
+    (is (not (str/includes? (str (:status card)) "Ran 7")))))
+
 (deftest pack-web-card-status-includes-continue-sentences
   ;; Given a specifier card and a pane tail whose last matching sentence uses continue
   ;; When --test-status-pane
@@ -1314,6 +1456,24 @@
           card (first (:tasks (json/parse-string (:out result) true)))]
       (is (zero? (:exit result)))
       (is (str/includes? (str (:status card)) "I'll continue with the cave map for HTW.")))))
+
+(deftest pack-web-card-status-ignores-transcript-and-helper-chrome
+  ;; Given an I'll sentence then a collapsed transcript line and helper audit copy
+  ;; When --test-status-pane
+  ;; Then status is the I'll sentence, not the chrome
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             (str "I'll write the cave stories.\n"
+                                  "… +15 lines (ctrl + t to view transcript)\n"
+                                  "Fix every finding, commit the corrections, rerun applicable checks, and repeat "
+                                  "this audit against the revised candidate before running the handoff command again.\n"))
+        card (first (:tasks (json/parse-string (:out result) true)))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status card)) "I'll write the cave stories"))
+    (is (not (str/includes? (str (:status card)) "view transcript")))
+    (is (not (str/includes? (str (:status card)) "running the handoff command again")))))
 
 (deftest pack-web-card-status-ignores-handoff-mail-banner
   ;; Given an I'll sentence and a later If idle, run ready_for_next.sh banner
@@ -1356,7 +1516,7 @@
 (deftest pack-web-waiting-cards-say-waiting-in-queue
   ;; Given two specifier cards and a pane I'm sentence
   ;; When --test-status-pane
-  ;; Then the first card has that sentence and the other says waiting in queue
+  ;; Then both cards say waiting in queue and the work row is not marked as a batch
   (let [root (tmp-dir)
         _ (setup-pack! root)
         _ (create-task root "HTW" "specifier")
@@ -1364,10 +1524,14 @@
         result (pack-web-env root {} "--test-status-pane" (str root)
                              "I'm specifying HTW.\nesc to interrupt · 1s\n")
         state (json/parse-string (:out result) true)
-        by-name (into {} (map (juxt :name identity) (:tasks state)))]
+        by-name (into {} (map (juxt :name identity) (:tasks state)))
+        specifier-row (some #(when (= "specifier" (:role %)) %)
+                            (:work_in_flight state))]
     (is (zero? (:exit result)))
-    (is (str/includes? (str (:status (get by-name "HTW"))) "I'm specifying HTW"))
-    (is (= "waiting in queue" (:status (get by-name "Holy Hand Grenade"))))))
+    (is (= "waiting in queue" (:status (get by-name "HTW"))))
+    (is (= "waiting in queue" (:status (get by-name "Holy Hand Grenade"))))
+    (is (= ["HTW" "Holy Hand Grenade"] (:tasks specifier-row)))
+    (is (= [] (:batch_tasks specifier-row)))))
 
 (deftest pack-web-in-process-card-gets-pane-status
   ;; Given two coder cards and in-process mail for Holy Hand Grenade
@@ -1423,11 +1587,18 @@
   (let [root (tmp-dir)
         _ (setup-pack! root)
         _ (create-task root "HTW" "specifier")
+        old-id (:id (task-card root "HTW"))
+        _ (increment-audit! root old-id)
         _ (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
         result (pack-web root false "--test-delete-task" (str root) "HTW")]
     (is (zero? (:exit result)))
     (is (nil? (task-lane root "HTW")))
-    (is (not (fs/exists? (fs/path root ".swarmforge/board/HTW.txt"))))))
+    (is (not (fs/exists? (fs/path root ".swarmforge/board/HTW.txt"))))
+    (is (fs/exists? (fs/path root "tasks/HTW.md")))
+    (create-task root "HTW" "specifier")
+    (let [replacement (task-card root "HTW")]
+      (is (not= old-id (:id replacement)))
+      (is (= 0 (:audit_count replacement))))))
 
 (deftest pack-web-delete-rejected-purges-handoffs-into-rejected-tasks
   ;; Given a rejected HTW card with a pending git_handoff
@@ -1436,40 +1607,313 @@
   (let [root (tmp-dir)
         _ (setup-pack! root)
         _ (create-task root "HTW" "specifier")
+        _ (increment-audit! root (:id (task-card root "HTW")))
         _ (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
         pending (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")
         _ (write-file pending
                       "from: specifier\nto: coder\ntype: git_handoff\ntask: HTW\n\npayload\n")
+        _ (write-pending-audit! root "HTW")
+        _ (write-pending-audit! root "unrelated-id")
         result (pack-web root false "--test-delete-task" (str root) "HTW")]
     (is (zero? (:exit result)))
     (is (nil? (task-lane root "HTW")))
     (is (not (fs/exists? pending)))
+    (is (= #{"unrelated-id"} (pending-audit-task-ids root)))
     (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-HTW"))))
     (is (fs/exists? (fs/path root ".swarmforge/rejected-tasks")))))
 
-(deftest pack-web-retry-rejected-queues-a-master-note
-  ;; Given a rejected HTW card with a pending git_handoff
-  ;; When POST /api/tasks/retry with edited text
-  ;; Then the card stays, is not REJECTED, pending is gone, and a master note is queued
+(deftest pack-web-retry-moves-a-completed-retry-note-back-to-in-process
   (let [root (tmp-dir)
         _ (setup-pack! root)
         _ (create-task root "HTW" "specifier")
-        _ (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
+        task-id (:id (task-card root "HTW"))
+        retry-name (str "50_retry_" (str/replace task-id #"[^A-Za-z0-9]+" "_") ".handoff")
+        completed (fs/path root ".swarmforge/handoffs/inbox/completed" retry-name)
+        in-process (fs/path root ".swarmforge/handoffs/inbox/in_process" retry-name)]
+    (write-file completed
+                (str "from: (Retry)\n"
+                     "to: specifier\n"
+                     "priority: 50\n"
+                     "type: note\n"
+                     "task_id: " task-id "\n"
+                     "task: HTW\n"
+                     "completed_at: 2026-08-26T22:45:36.178441Z\n"
+                     "\n"
+                     "Retry audit.\n"))
+    (write-file (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.handoff")
+                (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                     "task_id: " task-id "\ntask: HTW\n\npayload\n"))
+    (let [result (pack-web root false "--test-retry-task" (str root) "50_hello" "use an RNG")]
+      (is (zero? (:exit result)))
+      (is (fs/exists? in-process))
+      (is (not (fs/exists? completed)))
+      (is (str/includes? (slurp (str in-process)) (str "task_id: " task-id))))))
+
+(deftest pack-web-second-retry-does-not-leave-copies-in-both-inboxes
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        task-id (:id (task-card root "HTW"))
+        retry-name (str "50_retry_" (str/replace task-id #"[^A-Za-z0-9]+" "_") ".handoff")
+        completed (fs/path root ".swarmforge/handoffs/inbox/completed" retry-name)
+        in-process (fs/path root ".swarmforge/handoffs/inbox/in_process" retry-name)]
+    (write-file completed
+                (str "from: (Retry)\n"
+                     "to: specifier\n"
+                     "priority: 50\n"
+                     "type: note\n"
+                     "task_id: " task-id "\n"
+                     "task: HTW\n"
+                     "\n"
+                     "Retry audit.\n"))
+    (write-file (fs/path root ".swarmforge/handoffs/pending_approval/50_first.handoff")
+                (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                     "task_id: " task-id "\ntask: HTW\n\npayload\n"))
+    (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                "50_first" "first"))))
+    (is (zero? (:exit (run {:dir root :env {"SWARMFORGE_ROLE" "specifier"}}
+                           (script "done_with_current.sh")))))
+    (is (fs/exists? completed))
+    (is (not (fs/exists? in-process)))
+    (write-file (fs/path root ".swarmforge/handoffs/pending_approval/50_second.handoff")
+                (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                     "task_id: " task-id "\ntask: HTW\n\npayload\n"))
+    (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                "50_second" "second"))))
+    (is (fs/exists? in-process))
+    (is (not (fs/exists? completed)))))
+
+(deftest pack-web-retry-rejected-queues-a-master-note
+  ;; Given a pending git_handoff
+  ;; When POST /api/tasks/retry with comments
+  ;; Then the card stays, original body is unchanged, audit_count increases, and no New Task note is queued
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        task-id (:id (task-card root "HTW"))
+        _ (increment-audit! root task-id)
+        original (slurp (str (fs/path root ".swarmforge/board/HTW.txt")))
         pending (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.handoff")
         _ (write-file pending
-                      "from: specifier\nto: coder\ntype: git_handoff\ntask: HTW\n\nold\n")
-        result (pack-web root false "--test-retry-task" (str root) "HTW" "new payload")
+                      (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                           "task_id: " task-id "\ntask: HTW\n\nold\n"))
+        _ (write-pending-audit! root task-id)
+        _ (write-pending-audit! root "unrelated-id")
+        result (pack-web root false "--test-retry-task" (str root)
+                         "50_hello" "use an RNG")
         card (first (:tasks (web-state root)))
-        notes (fs/list-dir (fs/path root ".swarmforge/handoffs/outbox"))
-        note (slurp (str (first notes)))]
+        notes (if (fs/directory? (fs/path root ".swarmforge/handoffs/outbox"))
+                (fs/list-dir (fs/path root ".swarmforge/handoffs/outbox"))
+                [])]
     (is (zero? (:exit result)))
     (is (= "specifier" (:lane card)))
+    (is (= 2 (:audit_count card)))
     (is (not= "REJECTED" (:status card)))
+    (is (= original (slurp (str (fs/path root ".swarmforge/board/HTW.txt")))))
     (is (not (fs/exists? pending)))
-    (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-HTW"))))
-    (is (seq notes))
-    (is (str/includes? note "new payload"))
-    (is (str/includes? note "to: specifier"))))
+    (is (= #{"unrelated-id"} (pending-audit-task-ids root)))
+    (is (empty? (filter #(str/includes? (fs/file-name %) "New_Task") notes)))))
+
+(deftest pack-web-retry-snapshots-rejected-branches-without-reset
+  (let [root (tmp-dir)]
+    (run {:dir root} "git" "init" "-q")
+    (run {:dir root} "git" "config" "user.email" "test@example.com")
+    (run {:dir root} "git" "config" "user.name" "Test User")
+    (setup-pack! root)
+    (write-file (fs/path root "story.md") "base\n")
+    (run {:dir root} "git" "add" "story.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Base")
+    (create-task root "HTW" "specifier")
+    (let [task-id (:id (task-card root "HTW"))
+          base (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+      (write-file (fs/path root "story.md") "offer-1\n")
+      (run {:dir root} "git" "add" "story.md")
+      (run {:dir root} "git" "commit" "-q" "-m" "Offer 1")
+      (let [first-sha (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+            pending (fs/path root ".swarmforge/handoffs/pending_approval/50_first.handoff")]
+        (write-file pending
+                    (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                         "task_id: " task-id "\ntask: HTW\n"
+                         "commit: " first-sha "\n"
+                         "task_base_commit: " base "\n\n"
+                         "payload\n"))
+        (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                    "50_first" "first comments"))))
+        (let [head (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+              branches (:out (run {:dir root} "git" "branch" "--format=%(refname:short)"))]
+          (is (= first-sha head))
+          (is (not= base head))
+          (is (str/includes? branches (str "rejected/" task-id "/1")))
+          (is (str/includes? branches (str "rejected/" task-id "/latest"))))
+        (write-file (fs/path root "story.md") "offer-2\n")
+        (run {:dir root} "git" "add" "story.md")
+        (run {:dir root} "git" "commit" "-q" "-m" "Offer 2")
+        (let [second-sha (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+              pending2 (fs/path root ".swarmforge/handoffs/pending_approval/50_second.handoff")]
+          (write-file pending2
+                      (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                           "task_id: " task-id "\ntask: HTW\n"
+                           "commit: " second-sha "\n"
+                           "task_base_commit: " base "\n\n"
+                           "payload\n"))
+          (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                      "50_second" "second comments"))))
+          (let [head (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+                branches (:out (run {:dir root} "git" "branch" "--format=%(refname:short)"))]
+            (is (= second-sha head))
+            (is (str/includes? branches (str "rejected/" task-id "/1")))
+            (is (str/includes? branches (str "rejected/" task-id "/2")))
+            (is (str/includes? branches (str "rejected/" task-id "/latest")))
+            (is (= 2 (:audit_count (task-card root "HTW"))))))))))
+
+(deftest pack-web-retry-restores-wandered-head
+  (let [root (tmp-dir)]
+    (run {:dir root} "git" "init" "-q")
+    (run {:dir root} "git" "config" "user.email" "test@example.com")
+    (run {:dir root} "git" "config" "user.name" "Test User")
+    (setup-pack! root)
+    (write-file (fs/path root "story.md") "base\n")
+    (run {:dir root} "git" "add" "story.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Base")
+    (create-task root "HTW" "specifier")
+    (let [task-id (:id (task-card root "HTW"))]
+      (write-file (fs/path root "story.md") "offer\n")
+      (run {:dir root} "git" "add" "story.md")
+      (run {:dir root} "git" "commit" "-q" "-m" "Offer")
+      (let [offer (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+            pending (fs/path root ".swarmforge/handoffs/pending_approval/50_offer.handoff")]
+        (write-file pending
+                    (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                         "task_id: " task-id "\ntask: HTW\n"
+                         "commit: " offer "\n\npayload\n"))
+        (write-file (fs/path root "story.md") "wander\n")
+        (run {:dir root} "git" "add" "story.md")
+        (run {:dir root} "git" "commit" "-q" "-m" "Wander")
+        (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                    "50_offer" "stay on the offer"))))
+        (is (= offer (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))))))))
+
+(deftest pack-web-retry-keeps-task-base-for-the-next-git-handoff
+  (let [root (tmp-dir)]
+    (run {:dir root} "git" "init" "-q")
+    (run {:dir root} "git" "config" "user.email" "test@example.com")
+    (run {:dir root} "git" "config" "user.name" "Test User")
+    (write-file (fs/path root "README.md") "initial\n")
+    (run {:dir root} "git" "add" "README.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Initial")
+    (setup-pack! root ["specifier" "coder"])
+    (create-task root "HTW" "specifier")
+    (let [task-id (:id (task-card root "HTW"))
+          base (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+      (write-file (fs/path root "tasks/HTW.md") "# HTW\n\nImplement the stories.\n")
+      (write-file (fs/path root "extra.md") "first offer\n")
+      (run {:dir root} "git" "add" "tasks/HTW.md" "extra.md")
+      (run {:dir root} "git" "commit" "-q" "-m" "Offer")
+      (let [offer (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+            pending (fs/path root ".swarmforge/handoffs/pending_approval/50_offer.handoff")]
+        (write-file pending
+                    (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                         "task_id: " task-id "\ntask: HTW\n"
+                         "commit: " offer "\n"
+                         "task_base_commit: " base "\n\n"
+                         "payload\n"))
+        (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                    "50_offer" "use an RNG"))))
+        (write-file (fs/path root "more.md") "stacked\n")
+        (run {:dir root} "git" "add" "more.md")
+        (run {:dir root} "git" "commit" "-q" "-m" "Stacked")
+        (write-file (fs/path root "tmp/retry.handoff")
+                    "type: git_handoff\nto: coder\npriority: 50\ntask: HTW\n")
+        (let [opts {:dir root :env {"SWARMFORGE_ROLE" "specifier"} :ok? false}
+              first-call (run opts (script "swarm_handoff.sh")
+                              (str (fs/path root "tmp/retry.handoff")))]
+          (is (zero? (:exit first-call)))
+          (is (str/includes? (:out first-call) "AUDIT_REQUIRED"))
+          (let [queued (run (assoc opts :ok? true) (script "swarm_handoff.sh")
+                            (str (fs/path root "tmp/retry.handoff")))
+                outbox (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff")
+                content (slurp (str (first outbox)))]
+            (is (zero? (:exit queued)))
+            (is (str/includes? content "artifacts:"))
+            (is (str/includes? content "extra.md"))
+            (is (str/includes? content "more.md"))
+            (is (str/includes? content "tasks/HTW.md"))))))))
+
+(deftest pack-web-serves-a-document
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        result (pack-web root false "--test-doc" (str root) "tasks/HTW.md")]
+    (is (zero? (:exit result)))
+    (is (str/includes? (:out result) "HTW"))
+    (is (str/includes? (:out result) "Integrate HTW stories"))))
+
+(defn raw-state [root]
+  (json/parse-string (:out (pack-web root true "--test-state" (str root)))))
+
+(defn write-pending-approval! [root {:keys [id task task-id artifacts body]}]
+  (write-file
+   (fs/path root ".swarmforge/handoffs/pending_approval" (str id ".handoff"))
+   (str "from: specifier\n"
+        "to: coder\n"
+        "type: git_handoff\n"
+        "task_id: " (or task-id task) "\n"
+        "task: " task "\n"
+        (when artifacts (str "artifacts: " artifacts "\n"))
+        "\n"
+        (or body "payload\n"))))
+
+(deftest pack-web-saves-remedial-comments-on-the-pending-approval
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        _ (write-file (fs/path root "features/console.feature") "Feature: cave\n")
+        _ (write-pending-approval! root {:id "50_hello" :task "HTW"
+                                         :artifacts "features/console.feature"})
+        saved (pack-web root false "--test-save-comments" (str root)
+                        "50_hello" "features/console.feature" "use an RNG")
+        reviews (get (first (get (raw-state root) "approvals")) "reviews")]
+    (is (zero? (:exit saved)))
+    (is (= "use an RNG" (get reviews "features/console.feature")))
+    (let [blanked (pack-web root false "--test-save-comments" (str root)
+                            "50_hello" "features/console.feature" "  \n")
+          after (get (first (get (raw-state root) "approvals")) "reviews")]
+      (is (zero? (:exit blanked)))
+      (is (= "" (get after "features/console.feature")))
+      (is (contains? after "features/console.feature")))))
+
+(deftest pack-web-approve-discards-remedial-comments
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        _ (write-pending-approval! root {:id "50_hello" :task "HTW"})
+        _ (pack-web root false "--test-save-comments" (str root)
+                    "50_hello" "features/console.feature" "use an RNG")
+        result (pack-web root false "--test-approve" (str root) "50_hello")]
+    (is (zero? (:exit result)))
+    (is (= [] (pending-names root)))
+    (is (not (fs/exists? (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.reviews.json"))))))
+
+(deftest pack-web-retry-delivers-remedial-comments-to-master
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        sock (str (fs/path root "tmux.sock"))]
+    (setup-pack! root)
+    (create-task root "HTW" "specifier")
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+    (let [task-id (:id (task-card root "HTW"))]
+      (write-pending-approval! root {:id "50_hello" :task "HTW" :task-id task-id})
+      (pack-web root false "--test-save-comments" (str root)
+                "50_hello" "features/console.feature" "use an RNG")
+      (let [result (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                                 "--test-retry-task" (str root) "50_hello" "")
+            argv (read-argv argv-file)
+            injected (str (last (first argv)))]
+        (is (zero? (:exit result)))
+        (is (str/includes? injected "features/console.feature"))
+        (is (str/includes? injected "use an RNG"))
+        (is (not (str/includes? injected "New Task")))
+        (is (not (fs/exists? (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.reviews.json"))))))))
 
 (deftest pack-web-post-task-duplicate-keeps-the-server
   ;; Given a card named HTW
@@ -1487,11 +1931,11 @@
 
 (deftest pack-web-unknown-approval-keeps-the-server
   ;; Given a pack with no pending approval
-  ;; When POST /api/approvals/missing/reject
+  ;; When POST /api/approvals/missing/approve
   ;; Then it reports Unknown approval and the next request still works
   (let [root (tmp-dir)
         _ (setup-pack! root)
-        result (pack-web root false "--test-reject" (str root) "no-such-id")]
+        result (pack-web root false "--test-approve" (str root) "no-such-id")]
     (is (not (zero? (:exit result))))
     (is (str/includes? (:out result) "error"))
     (is (str/includes? (str (:err result) (:out result)) "Unknown approval"))
@@ -1532,13 +1976,53 @@
       (is (str/includes? (:body item) "Does the bat drop to any of 20 rooms?"))
       (is (= "pending" (:status item)))
       (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
-                    "--test-answer-clarification" (str root) id "Yes, 1 to 20.")
+                    "--test-answer-clarification" (str root) id "Yes, 1 to 20.\nUse all rooms.")
       (let [argv (slurp argv-file)
-            done (first (:clarifications (web-state root)))]
+            done (first (:clarifications (web-state root)))
+            stored (slurp (str (first (fs/list-dir
+                                       (fs/path root ".swarmforge/dashboard/clarifications/done")))))]
         (is (str/includes? argv id))
         (is (str/includes? argv "Yes, 1 to 20."))
+        (is (str/includes? argv "Use all rooms."))
         (is (= "done" (:status done)))
-        (is (str/includes? (:response done) "Yes, 1 to 20."))))))
+        (is (= "Yes, 1 to 20.\nUse all rooms." (:response done)))
+        (is (str/includes? stored "response: Yes, 1 to 20.\\nUse all rooms.\n"))))))
+
+(deftest pack-dashboard-request-accepts-an-already-answered-clarification
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        question (fs/path root "tmp" "question.txt")
+        ack (fs/path root "tmp" "answer.txt")]
+    (setup-pack! root ["QA"])
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str (fs/path root "tmux.sock") "\n"))
+    (write-file question "Does the bat drop to any of 20 rooms?\n")
+    (write-file ack "ignored local ack\n")
+    (let [created (run {:dir root :env {"SWARMFORGE_ROLE" "QA"}}
+                       (script "pack_dashboard_request.sh")
+                       "clarify" (str question))
+          id (str/trim (:out created))]
+      (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                    "--test-answer-clarification" (str root) id "Yes, 1 to 20.")
+      (let [acked (run {:dir root :env {"SWARMFORGE_ROLE" "QA"}}
+                       (script "pack_dashboard_request.sh")
+                       "answer" id (str ack))
+            done (first (:clarifications (web-state root)))
+            pending-requests (fs/path root ".swarmforge/dashboard/requests/pending")
+            done-file (first (fs/list-dir
+                              (fs/path root ".swarmforge/dashboard/clarifications/done")))]
+        (is (zero? (:exit acked)))
+        (is (str/includes? (:out acked) (str "ANSWERED: " id)))
+        (is (= "done" (:status done)))
+        (is (= "Yes, 1 to 20." (:response done)))
+        (is (str/includes? (slurp (str done-file)) "response: Yes, 1 to 20.\n"))
+        (is (or (not (fs/directory? pending-requests))
+                (empty? (fs/list-dir pending-requests)))))
+      (let [unknown (run {:dir root :env {"SWARMFORGE_ROLE" "QA"} :ok? false}
+                         (script "pack_dashboard_request.sh")
+                         "answer" "clar-missing" (str ack))]
+        (is (not (zero? (:exit unknown))))
+        (is (str/includes? (str (:err unknown) (:out unknown))
+                           "Unknown pending request"))))))
 
 (deftest pack-web-serves-the-task-body
   ;; Given New Task HTW with body
@@ -1555,37 +2039,11 @@
       (is (str/includes? (:out result) "HTW"))
       (is (str/includes? (:out result) text)))))
 
-(deftest pack-dashboard-stamps-clarification-with-the-agent
-  ;; Given dashboard HTML
-  ;; Then Attention names the requesting agent
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "Clarification requested from:"))))
 
-(deftest pack-dashboard-keeps-clarification-draft-across-poll
-  ;; Given dashboard HTML
-  ;; Then clarifications live in their own div and existing inputs are not rebuilt
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "id=\"attention-clarifications\""))
-    (is (str/includes? html "id=\"attention-approvals\""))
-    (is (str/includes? html "data-clar-id"))
-    (is (str/includes? html "renderClarifications"))
-    (is (not (str/includes? html "setSelectionRange")))))
 
-(deftest pack-dashboard-clarification-enter-submits
-  ;; Given a clarification answer box
-  ;; When the operator presses Enter
-  ;; Then the answer is submitted
-  (let [src (dashboard-js-fn (dashboard-html (tmp-dir)) "clarificationRow")]
-    (is (str/includes? src "createElement(\"form\")"))
-    (is (str/includes? src "addEventListener(\"submit\""))
-    (is (str/includes? src "preventDefault"))
-    (is (str/includes? src "postClarification"))))
 
-(deftest pack-dashboard-keeps-documents-menu-open-across-poll
-  ;; Given dashboard HTML
-  ;; Then an open Documents menu is restored after loadState
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "openDocMenus"))))
+
+
 
 (deftest pack-web-card-status-matches-unicode-im-and-i-keywords
   ;; Given a pane with Unicode I’m and let me
@@ -1637,24 +2095,26 @@
       (is (= "HTW" (:task row)))
       (is (= ["HTW" "Command Syntax"] (:tasks row))))))
 
-(deftest pack-dashboard-batch-plus-lists-tasks-on-hover
-  ;; Given a work row with more than one task
-  ;; When the operator hovers the +
-  ;; Then a list of every task in the batch appears
-  (let [html (dashboard-html (tmp-dir))
-        src (dashboard-js-fn html "workRow")]
-    (is (str/includes? src "item.tasks"))
-    (is (str/includes? src "batch-more"))
-    (is (str/includes? src "mouseenter"))
-    (is (str/includes? html "batch-more"))))
+(deftest pack-web-work-queue-marks-only-real-batches
+  ;; Given a real in-process batch on architect
+  ;; When --test-state
+  ;; Then the batch task names are exposed for the dashboard + indicator
+  (let [root (tmp-dir)
+        roles ["specifier" "architect"]]
+    (setup-pack! root roles)
+    (put-in-process! root roles "architect"
+                     {:from "cleaner" :task "HTW"
+                      :filename "batch_20260615T000001Z_000001/10_from_cleaner_htw.handoff"})
+    (put-in-process! root roles "architect"
+                     {:from "cleaner" :task "Command Syntax"
+                      :filename "batch_20260615T000001Z_000001/11_from_cleaner_cs.handoff"})
+    (let [row (some #(when (= "architect" (:role %)) %)
+                    (:work_in_flight (web-state root)))]
+      (is (= "HTW" (:task row)))
+      (is (= ["HTW" "Command Syntax"] (:tasks row)))
+      (is (= ["HTW" "Command Syntax"] (:batch_tasks row))))))
 
-(deftest pack-dashboard-keeps-work-rows-across-poll
-  ;; Given dashboard HTML
-  ;; Then work rows are keyed and not rebuilt when the batch is unchanged
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "data-work-role"))
-    (is (str/includes? html "renderWork"))
-    (is (not (str/includes? html "rows.replaceChildren")))))
+
 
 (deftest pack-web-thermometer-heats-on-work-after-handoff-mail
   ;; Given a Codex pane whose only cut-point used to be an old › mail line

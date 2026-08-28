@@ -2,10 +2,10 @@
 
 (ns ready-for-next
   (:require [babashka.fs :as fs]
-            [babashka.process :as process]
-            [handoff-lib :as hl]))
+            [babashka.process :as process]))
 
 (def script-dir (fs/parent *file*))
+(load-file (str (fs/path script-dir "handoff_lib.bb")))
 
 (defn exit! [status message]
   (binding [*out* *err*]
@@ -20,11 +20,12 @@
 ;; letting a stack trace reach the pane.
 (defn -main []
   (try
-    (let [mode (hl/role-receive-mode (hl/role))]
+    (let [role-name (handoff-lib/role)
+          mode (handoff-lib/role-receive-mode role-name)]
       (case mode
         "batch" (run-helper! "ready_for_next_batch.sh")
         "task" (run-helper! "ready_for_next_task.sh")
-        (exit! 2 (str "INVALID_RECEIVE_MODE: " mode " for role " (hl/role)))))
+        (exit! 2 (str "INVALID_RECEIVE_MODE: " mode " for role " role-name))))
     (catch clojure.lang.ExceptionInfo e
       (exit! (or (:exit (ex-data e)) 1) (ex-message e)))))
 
