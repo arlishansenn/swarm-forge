@@ -650,7 +650,7 @@ issue, so the accepting human had to reverse-engineer what the PR closed.
 
 ```sh
 scripts/run-issue.sh --root <project-root> --issue <N> \
-  [--target user@host] [--key <path>] [--local]
+  [--target user@host] [--key <path>] [--local] [--max-wait <seconds>]
 ```
 
 Six steps, in this order:
@@ -662,11 +662,13 @@ Six steps, in this order:
    the slug: `feat/issue-<N>-<slug>` for the branch, `issue-<N>-<slug>` for
    the task name, one source for both.
 3. `BASE` = the newest open PR's `headRefName`, or `main` when there is none.
-4. Read the Board: no card is a fresh run, a card with its branch is a resume,
-   a card without one is refused. Refuse too if the swarm is waiting on a
-   human. On a fresh run, create the branch from `BASE`.
-5. `POST {dashboard-url}/api/tasks` once (skipped when resuming), then poll the
-   Board lane until `done`.
+4. Read **both** markers — the Board card and the branch — and answer all four
+   states: neither is a fresh run, both is a resume, the branch alone is a
+   resume that still owes a POST, the card alone is refused. Refuse too if the
+   swarm is waiting on a human. Create the branch from `BASE` unless it is
+   already there.
+5. `POST {dashboard-url}/api/tasks` once — skipped only when the card is
+   already on the Board — then poll the Board lane until `done`.
 6. `accept work` for the commit — **retried until the delivery record is
    actually visible**, not read once — then `git push` and
    `gh pr create --base BASE`.
@@ -703,7 +705,9 @@ between calls.**
   name *before* anything is created. An existing card does not always mean
   "stop", though — if the matching branch is there too, the card is this verb's
   own from an interrupted run and the second call resumes it instead (issue
-  #65, see *If the run is killed*).
+  #65, see *If the run is killed*). The converse holds as well: a branch with
+  no card is an earlier run of this verb that was killed before it posted, so
+  the POST is *owed*, not skipped (issue #76).
 - **It stops when the swarm is waiting on a human.** A blocked agent does not
   fail — it writes a clarification request or a pending approval and waits, so
   its task never reaches `done`. `/api/state`'s `clarifications` (status
@@ -755,6 +759,15 @@ Exit codes / STATUS line:
   is not this verb's card, or a pending clarification/approval is blocking.
   Both name the thing to clear, and nothing was created in either case. A card
   *with* its branch is resumed, not refused.
+- `7` `STILL_RUNNING` — `--max-wait` ran out. The task is posted and the swarm
+  is still working: nothing was pushed, no PR was opened, and the task was
+  **not** re-posted. The body carries `lane:` and `waiting_for:` so the caller
+  knows how far it got, and re-running the same command continues from there.
+  It is a separate code from `5` on purpose. The `for ... || break` chain
+  breaks on both, but "still working, call me again" and "something broke"
+  need different reactions from whoever reads the break — the same reason GNU
+  `timeout` exits `124` instead of reusing the exit code of the command it
+  timed out.
 
 The PR is always opened with explicit `--title`/`--body`. **Never `--fill`:**
 it would use the swarm's own commit messages, which carry no `Closes #N` —
@@ -781,27 +794,36 @@ call**, so the wait costs no tokens no matter how long it runs. What costs
 tokens is the swarm's own agents on the target host, and that is unaffected by
 the poll interval.
 
-**Assume your harness will kill it, and find out where.** Every agent shell
-tool this verb has met caps a call well below its 7200s ceiling, and a tool's
-own description is not a reliable statement of that cap: pi's says the timeout
-argument is optional with no default, and pi still killed a foreground call at
-**120 seconds** (issue #65). So do not take a documented default — including
-anything written here — as the real limit. Measure it once, in your own
-harness, before the first long run:
+**Know your harness's cap, and pass a timeout.** The cap that bites is the
+*client's* default, not the shell tool's own ceiling:
 
-```sh
-date +%s; sleep 400; date +%s
-```
+- **pi's `bash`** arms no timer at all unless `timeout` is passed
+  (`dist/core/tools/bash.js:75-80`, mirrored in `pi-agent-core`'s
+  `dist/harness/tools/bash.js:11-19`), and its ceiling is `MAX_TIMEOUT_MS =
+  2_147_483_647` ms — about 24.8 days (`dist/core/tools/bash.js:16`). Nothing
+  in the tree aborts a tool call on a clock; `AbortController` fires only on
+  user abort and session dispose, and the timeout message is assembled from
+  the `timeout` value the caller passed, so it can only ever print a number
+  someone sent. The **120 seconds** recorded in issue #65 was therefore not
+  pi's: it was a client-injected default, and passing an explicit `timeout`
+  removes it. (Measured on `@earendil-works/pi-coding-agent@0.84.3`: no
+  `timeout`, `sleep 150` killed at 120s; `timeout: 300`, the same `sleep 150`
+  ran to completion.)
+- **Claude Code's `Bash`** defaults to 2 minutes (`BASH_DEFAULT_TIMEOUT_MS`)
+  and caps **hard** at 10 minutes (`BASH_MAX_TIMEOUT_MS`). No argument lifts
+  that ceiling.
 
-If that call comes back killed, the limit is under 400s and this verb will not
-survive a real chain in the foreground. Then pick, in this order:
+So, in this order:
 
-1. Pass an **explicit large timeout** if the tool accepts one (pi's `bash`
-   takes `timeout` in seconds). Verify it with the same `sleep` probe rather
-   than assuming the argument lifts the cap.
-2. Use the harness's **background mode** if it has one — Claude Code's `Bash`
-   defaults to 120s, caps at 600s, and takes `run_in_background: true`.
-3. Otherwise let it be killed and **re-run the same command**. That is a
+1. Pass an **explicit large timeout** where the tool takes one (pi's `bash`
+   takes `timeout` in seconds).
+2. Where the hard cap is below a real chain — Claude Code's 10 minutes is —
+   use **`--max-wait`** just under it, so the verb exits cleanly on `7`
+   `STILL_RUNNING` instead of being SIGKILLed, and call it again. A clean exit
+   reports the lane it reached; a kill reports nothing.
+3. Use the harness's **background mode** if it has one (Claude Code's `Bash`
+   takes `run_in_background: true`).
+4. Otherwise let it be killed and **re-run the same command**. That is a
    supported path, not a repair (see below).
 
 Do not wrap the call in `nohup ... &` to dodge the cap. Cancelling a pi tool
@@ -811,6 +833,26 @@ detached run's output goes somewhere nobody is reading.
 Do not "check on it" with `read swarm` in a second call while it runs — the
 script is already polling, and a second reader tells you nothing it will not
 print itself.
+
+### `--max-wait <seconds>` — the caller's deadline
+
+`SF_RUN_ISSUE_TIMEOUT_SECONDS` and `SF_RUN_ISSUE_DELIVERY_SECONDS` are the
+*callee's* ceilings; until issue #76 a caller had no way to say how long it
+could wait, and a harness that killed it at 600s produced a SIGKILL rather than
+an exit. `--max-wait` is the caller's own budget, wall-clock, for the whole
+call. The semantics are `kubectl wait --timeout`'s, deliberately not a fourth
+invention:
+
+| value | meaning |
+|---|---|
+| positive | wait at most that long, then exit `7` `STILL_RUNNING`. Replaces both ceilings for this call. |
+| `0` | check once and return: post if a POST is owed, then report the current lane. |
+| negative | keep the existing ceilings. This is the default (`-1`), so behaviour without the flag is unchanged. |
+
+Reaching it is a **clean exit, not a kill**: nothing is pushed, no PR is
+opened, the task is never re-posted, and the report names the lane it stopped
+at. The budget covers the polling *and* the `accept work` delivery window, so
+one number bounds the command rather than one phase of it.
 
 ### If the run is killed
 
@@ -823,13 +865,22 @@ What it looks at, and what it does:
 
 | Board card for `issue-<N>-<slug>` | branch `feat/issue-<N>-<slug>` | what happens |
 |---|---|---|
-| absent | — | fresh run |
+| absent | absent | fresh run |
+| absent | **present** | **resume** — skip the branch, POST the task that never got posted |
 | present | present | **resume** — skip the branch and the POST, pick up at the poll |
 | present | absent | `6` `UNSAFE` — that card is not this verb's; nothing is touched |
 
 The branch is the marker because this verb always creates it *before* it posts.
 A card whose branch is missing was typed into the Dashboard by hand or made by
 something else, and continuing on it would push work this verb never scoped.
+
+The second row is the window **between** those two writes, about two ssh round
+trips wide, and until issue #76 it had no exit: with no card the verb took the
+fresh path, ran `git checkout -b` onto a branch that already existed, and
+failed `5` `ERROR` — on every re-run, until a human deleted the branch by hand.
+Both markers are now read on every run and each of the two decisions (create
+the branch, post the task) answers to its own marker, so no ordering of the two
+writes can produce a state with no way out.
 
 To see which state you are in without running anything:
 
@@ -1006,7 +1057,18 @@ lane that never reaches `done` plus a zero poll ceiling), and the second pass
 must exit 0 with `resumed: yes` while the Board still holds exactly one card
 and the two runs together produce exactly one POST, one branch, one push and
 one `gh pr create`. A third case re-runs after a PR already exists for the
-head and asserts `gh pr create` is not called again. For these the `git` stub
+head and asserts `gh pr create` is not called again. Issue #76's dead end gets
+a case of its own: the branch registry is seeded with the branch and the Board
+left empty — exactly what a run killed between step 4 and step 5 leaves — and
+the run must exit 0 having created no second branch, posted exactly one task,
+and opened one PR. That case only bites because the `git` stub's `checkout -b`
+now **fails on an existing branch** the way real git does; with a stub that
+always succeeded it would pass against the broken script. `--max-wait` is
+covered four ways: `0` exits `7` `STILL_RUNNING` after exactly one lane check
+with no push and no PR and is then resumable like any other kill, `0` during
+the delivery window exits `7` rather than `5`, a negative value still reaches
+the old `5` `ERROR` ceiling, and a non-numeric value exits `2` having run no
+command at all. For these the `git` stub
 keeps a real branch registry — `checkout -b` records a name and `rev-parse
 --verify` answers from it — because a stub that always exits 0 would let both
 the resume case and the not-our-card case pass for the wrong reason. Its `accept work` stub prints a `WARN=` line and a

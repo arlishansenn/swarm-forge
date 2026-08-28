@@ -12,15 +12,32 @@
 # never merges (no --merge/--auto), never answers a clarification, and never
 # re-posts a task it already posted.
 #
-# RESUMABLE (issue #65). This verb blocks for as long as the swarm takes, so
-# sooner or later an agent harness kills it mid-run — pi's shell tool did, at
-# 120s, right after the POST. That left the worst possible state: the card was
-# on the Board and the swarm was working, but the poll, the accept, the push
-# and the PR had never run, and re-running refused on the card it had just
-# created. So a second run with the same --root/--issue now CONTINUES the first
-# one: it detects its own card, skips the branch and the POST, and picks up at
-# the poll. Re-running is the recovery procedure; there is nothing else to
-# remember.
+# RESUMABLE (issues #65, #76). This verb blocks for as long as the swarm takes,
+# so sooner or later an agent harness kills it mid-run. A second run with the
+# same --root/--issue CONTINUES the first one instead of refusing or crashing.
+# What it does is derived from the observable world — the branch and the card
+# are two independent markers, giving four states, and every one has an exit:
+#
+#   branch + card    -> resume: skip the branch, skip the POST, pick up at the poll
+#   branch, no card  -> resume: skip the branch, POST the task that never got
+#                       posted. This is the step-4-to-step-5 window, about two
+#                       ssh round trips wide, and it used to be a dead end: the
+#                       old code keyed the decision off the card alone, so with
+#                       no card it took the fresh path and ran `git checkout -b`
+#                       onto a branch that already existed — 5 ERROR on every
+#                       re-run until a human deleted the branch (issue #76).
+#   card, no branch  -> not this verb's card; refuse (6 UNSAFE)
+#   neither          -> fresh run
+#
+# Re-running is the recovery procedure; there is nothing else to remember.
+#
+# --max-wait <seconds> lets the CALLER say how long it can wait (issue #76).
+# The ceilings below are the callee's own, and some harnesses kill well under
+# them; being SIGKILLed instead of exiting cleanly is what lands a run in the
+# table above in the first place. Semantics are `kubectl wait --timeout`'s, not
+# a fourth invention: a positive value is a wall-clock budget for the WHOLE
+# call and replaces both ceilings, 0 checks once and returns, and a negative
+# value (the default) keeps the existing ceilings.
 #
 # The branch is stacked on the newest open PR's head, not on `main`. podsum's
 # issues form a strict linear `blocked by` chain, so the next issue's coder
@@ -36,13 +53,18 @@
 #   for n in 28 29 30; do run-issue.sh --root R --issue "$n" || break; done
 #
 # Exit codes / STATUS line:
-#   0 PR_OPENED   2 USAGE   5 ERROR   6 UNSAFE
+#   0 PR_OPENED   2 USAGE   5 ERROR   6 UNSAFE   7 STILL_RUNNING
+# 7 is deliberately not 5: reaching the caller's deadline means the task is
+# posted and the swarm is working, and the fix is to run the same command
+# again. The `for ... || break` chain above breaks on both, but has to report
+# them differently — the same reason GNU timeout exits 124 instead of reusing
+# the exit code of the command it timed out.
 # The report body carries `resumed: yes|no` so a caller can tell a fresh run
 # from a continued one.
 # Contract details live in ../SKILL.md (verb: run issue).
 #
 # Usage: run-issue.sh --root <project-root> --issue <N> \
-#   [--target user@host] [--key <path>] [--local]
+#   [--target user@host] [--key <path>] [--local] [--max-wait <seconds>]
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib-wake-talk.sh"
@@ -50,6 +72,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
 ROOT='' ISSUE='' LOCAL=0
+MAX_WAIT=-1
 
 # Poll cadence and ceiling. A real chain hop is minutes, not seconds, so a
 # tight interval buys nothing but ssh round trips; the ceiling is generous
@@ -67,7 +90,7 @@ DELIVERY_SECONDS=${SF_RUN_ISSUE_DELIVERY_SECONDS:-600}
 # same trick as start-swarm.sh's SWARM_LAUNCHER.
 ACCEPT_WORK=${ACCEPT_WORK:-$HERE/accept-work.sh}
 
-usage() { printf 'STATUS=USAGE\n'; sed -n '2,45p' "$0"; exit 2; }
+usage() { printf 'STATUS=USAGE\n'; sed -n '2,67p' "$0"; exit 2; }
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -76,6 +99,7 @@ while [ $# -gt 0 ]; do
     --target) TARGET=${2:-}; shift 2 ;;
     --key) KEY=${2:-}; shift 2 ;;
     --local) LOCAL=1; shift ;;
+    --max-wait) MAX_WAIT=${2:-}; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -83,6 +107,13 @@ done
 # Digits only: $ISSUE is interpolated into remote command strings unquoted
 # below, and it is also the one argument a human is most likely to fat-finger.
 case $ISSUE in ''|*[!0-9]*) usage ;; esac
+# One optional leading minus, then digits. Anything else is a typo, and a typo
+# in a deadline is worth an exit 2 rather than a silently wrong wait.
+case ${MAX_WAIT#-} in ''|*[!0-9]*) usage ;; esac
+# The caller's budget covers the whole call, branch and POST included, not just
+# the polling — an agent that says "I have 300 seconds" means the command.
+if [ "$MAX_WAIT" -lt 0 ]; then WAIT_DEADLINE=''
+else WAIT_DEADLINE=$(( $(date -u +%s) + MAX_WAIT )); fi
 
 # run_remote — executes a fixed, script-built shell snippet against ROOT's
 # host, local or remote. Same shape and same rule as accept-work.sh's: the
@@ -136,11 +167,15 @@ BASE=${BASE%$'\n'}
 #
 # A card that already exists is not automatically someone else's, though
 # (issue #65). This verb always creates the branch BEFORE it posts, so the
-# branch is the marker of its own earlier run:
+# branch is the marker of its own earlier run.
 #
-#   no card                  -> fresh run
-#   card + our branch        -> resume: skip the branch and the POST
-#   card, no branch          -> not this verb's card; refuse (6 UNSAFE)
+# Both markers are read every time and the four states are answered
+# independently (issue #76). Reading the card first and only then asking about
+# the branch left "branch, no card" with no answer at all: it fell through to
+# the fresh path and re-ran `git checkout -b` on an existing branch, which is a
+# hard failure and stayed one on every re-run. Nothing is inferred from which
+# marker was noticed first; each of the two decisions this block makes — create
+# the branch or not, post the task or not — comes from its own marker.
 #
 # The branch is checked as a ref, not by name matching, because the name alone
 # is derived from the issue and would be identical for a card a human typed
@@ -150,15 +185,17 @@ board_lane() { # $1 = task name -> its lane, empty when the card is absent
   run_remote "cat '$BOARD_FILE' 2>/dev/null" \
     | awk -F'\t' -v t="$1" '$1 == t { print $2; exit }' || true
 }
-RESUMING=0
 EXISTING_LANE=$(board_lane "$TASK_NAME")
-if [ -n "$EXISTING_LANE" ]; then
-  if in_root "git rev-parse --verify --quiet $(printf '%q' "refs/heads/$BRANCH")" >/dev/null 2>&1; then
-    RESUMING=1
-  else
-    die UNSAFE "$BOARD_FILE already has a card named $TASK_NAME (lane $EXISTING_LANE) but $BRANCH does not exist in $ROOT — that card was not created by this verb; delete or rename it, or accept the work it already produced" 6
-  fi
+BRANCH_EXISTS=0
+if in_root "git rev-parse --verify --quiet $(printf '%q' "refs/heads/$BRANCH")" >/dev/null 2>&1; then
+  BRANCH_EXISTS=1
 fi
+if [ "$BRANCH_EXISTS" = 0 ] && [ -n "$EXISTING_LANE" ]; then
+  die UNSAFE "$BOARD_FILE already has a card named $TASK_NAME (lane $EXISTING_LANE) but $BRANCH does not exist in $ROOT — that card was not created by this verb; delete or rename it, or accept the work it already produced" 6
+fi
+RESUMING=$BRANCH_EXISTS
+NEED_BRANCH=0; [ "$BRANCH_EXISTS" = 1 ] || NEED_BRANCH=1
+NEED_POST=0;   [ -n "$EXISTING_LANE" ]  || NEED_POST=1
 
 # ---------- the pending gate ----------
 # A blocked agent does not fail: it writes a clarification request or a
@@ -195,19 +232,20 @@ sys.stdout.write("\n".join(out))
 refuse_if_blocked
 
 # ---------- steps 4 and 5: the branch, then the task ----------
-# Skipped wholesale when resuming (issue #65): the branch is already there —
-# that is how we recognised our own card — and the task is already on the
-# Board. Everything from step 6 down is shared by both paths, so a resumed run
-# and a fresh one cannot drift apart.
-if [ "$RESUMING" = 0 ]; then
+# Gated separately rather than as one resume/fresh block (issue #76): the two
+# steps are two writes with a window between them, so a run can legitimately
+# need the second without the first. Everything from step 6 down is shared by
+# every path, so no two of them can drift apart.
 
 # ---------- step 4: the branch ----------
 # Created before the task is posted: the swarm commits onto whatever HEAD the
 # master worktree is on, and merge_and_process.bb never names a branch, so the
 # branch simply has to exist first. It is also what a later run reads as
 # "this card is mine".
+if [ "$NEED_BRANCH" = 1 ]; then
 in_root "git checkout $(printf '%q' "$BASE") && git checkout -b $(printf '%q' "$BRANCH")" \
   || die ERROR "could not create $BRANCH from $BASE in $ROOT" 5
+fi
 
 # ---------- step 5: post the task ----------
 # Minimal handoff, the shape `#26`/`#27` already proved: point at the issue,
@@ -217,6 +255,7 @@ in_root "git checkout $(printf '%q' "$BASE") && git checkout -b $(printf '%q' "$
 # names differ per pack (coder/cleaner in a two-pack, specifier/... in a
 # four-pack) and SKILL.md's contract is to derive topology, never to branch on
 # role names.
+if [ "$NEED_POST" = 1 ]; then
 ROLES=$(read_file .swarmforge/roles.tsv 2>/dev/null) \
   || die ERROR "$ROOT/.swarmforge/roles.tsv not found — cannot name the handoff chain" 5
 CHAIN=$(printf '%s\n' "$ROLES" | awk -F'\t' '
@@ -231,13 +270,25 @@ TASK_TEXT="读 gh issue view ${ISSUE}，按它的 Acceptance criteria 逐条做�
 PAYLOAD=$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "text": sys.argv[2]}))' \
   "$TASK_NAME" "$TASK_TEXT")
 POST_OUT=$(run_remote "curl -sS -X POST -H 'Content-Type: application/json' --max-time 30 --data $(printf '%q' "$PAYLOAD") $(printf '%q' "$URL/api/tasks")") \
-  || die ERROR "POST $URL/api/tasks failed — branch $BRANCH exists but no task was created" 5
+  || die ERROR "POST $URL/api/tasks failed — $BRANCH exists but no task was created; re-run the same command once the dashboard answers, and it will post the task without rebuilding the branch" 5
 case $POST_OUT in
   *'"ok":true'*) ;;
   *) die ERROR "POST $URL/api/tasks did not return {\"ok\":true}: $POST_OUT" 5 ;;
 esac
+fi
 
-fi  # end of the fresh-run-only block
+# ---------- the caller's deadline ----------
+# Not a failure and not this verb's ceiling: the task is on the Board, the
+# swarm is working, and re-running the same command continues from here. So it
+# reports what it saw and gets out — no push, no PR, and above all no re-post,
+# which would create a second card and a second chain.
+still_running() { # $1 = lane as last seen, $2 = what it was waiting for
+  printf 'STATUS=STILL_RUNNING\nissue: %s\ntask: %s\nbranch: %s\nbase: %s\nlane: %s\nresumed: %s\nwaiting_for: %s\nreached --max-wait of %ss; re-run the same command to continue — nothing was pushed, no PR was opened, and the task was NOT re-posted\n' \
+    "$ISSUE" "$TASK_NAME" "$BRANCH" "$BASE" "${1:-<no card>}" \
+    "$([ "$RESUMING" = 1 ] && echo yes || echo no)" "$2" "$MAX_WAIT"
+  exit 7
+}
+past_deadline() { [ "$(date -u +%s)" -ge "$WAIT_DEADLINE" ]; }
 
 # ---------- step 6: poll the Board lane ----------
 # The Board lane is the ONLY completion judge. /api/state's work_in_flight
@@ -248,9 +299,11 @@ while :; do
   refuse_if_blocked
   LANE=$(board_lane "$TASK_NAME")
   [ "$LANE" = done ] && break
-  if [ "$(date -u +%s)" -ge "$DEADLINE" ]; then
-    # Not a failure — the swarm may still be working. Re-posting would create
-    # a second card and a second chain, so this verb stops and says so.
+  if [ -n "$WAIT_DEADLINE" ]; then
+    past_deadline && still_running "$LANE" "the Board lane to reach done"
+  elif [ "$(date -u +%s)" -ge "$DEADLINE" ]; then
+    # Not a failure either — the swarm may still be working. Re-posting would
+    # create a second card and a second chain, so this verb stops and says so.
     die ERROR "$TASK_NAME is in lane '${LANE:-<no card>}' after ${TIMEOUT_SECONDS}s and may still be running — check the dashboard; the task was NOT re-posted" 5
   fi
   sleep "$POLL_SECONDS"
@@ -288,7 +341,9 @@ while :; do
   [ -n "$COMMIT" ] && break
   # Nothing is pushed and no PR exists yet at this point, so waiting repeats
   # nothing; the task is never re-posted here either.
-  if [ "$(date -u +%s)" -ge "$DELIVERY_DEADLINE" ]; then
+  if [ -n "$WAIT_DEADLINE" ]; then
+    past_deadline && still_running done "accept work to see the delivery record"
+  elif [ "$(date -u +%s)" -ge "$DELIVERY_DEADLINE" ]; then
     die ERROR "$TASK_NAME is done on the Board but its delivery record is still invisible to accept work after ${DELIVERY_SECONDS}s — the terminal handoff is probably still in $ROOT/.swarmforge/handoffs/inbox/in_process/, or its commit already reached origin/main; nothing was pushed and the task was NOT re-posted" 5
   fi
   sleep "$POLL_SECONDS"
