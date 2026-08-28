@@ -366,6 +366,86 @@ the user's phone, tablet and every other machine, and it is the thing they
 actually need to take away — say it out loud, do not make them go read the
 report.
 
+### Which path to take — decide it, do not guess
+
+Two facts, three outcomes. Run this every time. It is what stops a run from
+quietly handing back a URL only the operator's own laptop can open.
+
+1. Read the port out of the dashboard URL file:
+
+   ```sh
+   ssh -n -i <key> <target> "cat <root>/.swarmforge/dashboard-url"
+   ```
+
+2. **Port is in `7780`-`7789`** (the dashboard range — table below) → pass
+   `--tailnet`, and report the `URL=` line back to the user.
+
+3. **Any other port** — that is a kernel-assigned random one — → **do not
+   pass `--tailnet`**. It would exit `5` `ERROR`, because a random port is
+   not published on the tailnet and cannot be. Run without the flag, report
+   the loopback `URL=`, and in the *same* reply tell the user two things: this
+   address works only on this machine and dies when it sleeps, and the switch
+   procedure below exists. **Do not run that procedure yourself** — its second
+   step stops a running swarm.
+
+Do not infer the answer from anything else. `TUNNEL=created` in a past report,
+a URL someone quoted, or the flag being available all say nothing about
+whether this project's port is fixed and published.
+
+### Switching a project to a fixed port
+
+Four steps, in this order. Step 3 is not optional and cannot be merged into
+step 2: **`start swarm` refuses an already-running swarm with `6` `UNSAFE` and
+has no override for it**, so a swarm cannot be moved to a fixed port without
+being stopped first.
+
+```sh
+# 1. Publish the whole dashboard range on the target. ONE-TIME PER HOST.
+#    `tailscale serve` has no range syntax — `--tcp` takes a single port — so
+#    it is one call per port. The --bg mappings resume by themselves after a
+#    reboot and after `tailscale down`/`up`, so this is once per port for
+#    good, NOT once per run.
+ssh -i <key> <target> \
+  'for p in $(seq 7780 7789); do tailscale serve --bg --tcp $p tcp://127.0.0.1:$p; done'
+ssh -i <key> <target> 'tailscale serve status'    # confirm all ten are listed
+
+# 2. Stop the swarm.  ← INTERRUPTS RUNNING WORK. See the warning below.
+scripts/stop-swarm.sh --root <root> --target <target> --key <key>
+
+# 3. Start it again on this project's assigned port (table below).
+scripts/start-swarm.sh --root <root> --target <target> --key <key> \
+  --terminal <value> --dashboard-port 7780
+
+# 4. Only now does the flag mean anything.
+scripts/open-dashboard.sh --root <root> --target <target> --key <key> --tailnet
+```
+
+**Step 2 interrupts whatever the swarm is doing. Ask the human first**, and
+say what it will interrupt — `read swarm` shows which roles are `BUSY`. A
+fixed port is a convenience; someone's half-finished chain is not. Stopping a
+swarm because a dashboard URL was inconvenient is exactly the class of
+unrequested destructive action this skill's boundaries exist to prevent.
+
+Step 1 only has to be done once per host, ever. If `tailscale serve status`
+already lists the range, skip straight to step 2.
+
+### Dashboard port allocation
+
+`7780`-`7789` is reserved for dashboards, one number per project, so that the
+URL itself says which project you are looking at:
+
+| project | port |
+|---|---|
+| podsum | `7780` |
+| pi-governance (coder2) | `7781` |
+| unassigned | `7782`-`7789` |
+
+Ports do not actually collide across hosts — this table exists so a human
+reading a URL knows what it is. It is a convention this fork's operator keeps
+by hand: nothing derives it, nothing enforces it, and `--dashboard-port` does
+not range-check against it. Give a new project the next free number and add a
+row here.
+
 ### `--tailnet`: no tunnel at all
 
 Without the flag the script builds an SSH local-forward to that port (reusing
@@ -376,18 +456,9 @@ no other device can use it.
 `--tailnet` (issue #78) skips it entirely. The managed hosts are already on
 the tailnet, so the script takes the target's tailscale IP straight out of
 `--target`, checks `http://<ip>:<port>/` answers 200, and points the browser
-surface there. Two things it needs:
-
-1. **A fixed port**, from `start swarm --dashboard-port <N>` — a random port
-   has no stable URL to publish.
-2. **That port published on the tailnet**, once, by the operator:
-
-   ```sh
-   tailscale serve --bg --tcp 7780 tcp://127.0.0.1:7780
-   ```
-
-   `--bg` mappings resume by themselves after a reboot and after
-   `tailscale down`/`up`, so this really is one-time.
+surface there. It needs a fixed port and that port published — both covered
+by *Switching a project to a fixed port* above, which is also the only place
+those commands are written down.
 
 **The verb never runs any `tailscale` command.** It does not create that
 config, does not repair it and does not clean it up — it only observes the
