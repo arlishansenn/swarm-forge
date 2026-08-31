@@ -837,6 +837,22 @@
     (print (slurp (str (:roles-file ctx))))
     (print (slurp (str (:sessions-file ctx))))))
 
+; D-6 (docs/fork-deltas.md): these two entry points are what
+; test-sync-worktree-scripts.sh drives. upstream's -main rewrite dropped both
+; the wrappers and their case branches, so the flags fell through to the
+; default branch and tried to start a real swarm. The mirroring behaviour
+; itself (sync-worktree-scripts! / scripts-mirror-matches?) survived untouched
+; — only its nails were pulled.
+(defn test-sync-worktree-scripts! [root]
+  (let [ctx (prepare-ctx (context root))]
+    (sync-worktree-scripts! ctx)
+    (println "OK")))
+
+(defn test-scripts-mirror-matches! [src dest]
+  (if (scripts-mirror-matches? src dest)
+    (println "MATCH")
+    (do (println "MISMATCH") (System/exit 1))))
+
 (defn test-required-helpers! []
   (doseq [helper required-helpers]
     (println helper)))
@@ -1071,6 +1087,8 @@
 (defn -main [& args]
   (case (first args)
     "--test-parse" (test-parse! (or (second args) (System/getProperty "user.dir")))
+    "--test-sync-worktree-scripts" (test-sync-worktree-scripts! (or (second args) (System/getProperty "user.dir")))
+    "--test-scripts-mirror-matches" (test-scripts-mirror-matches! (second args) (nth args 2))
     "--test-required-helpers" (test-required-helpers!)
     "--test-launch-plan" (test-launch-plan! (or (second args) (System/getProperty "user.dir")))
     "--test-start-order" (test-start-order! (or (second args) (System/getProperty "user.dir")))

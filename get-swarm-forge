@@ -1,7 +1,15 @@
 #!/bin/zsh
 set -euo pipefail
 
-default_repo_url="https://github.com/unclebob/swarm-forge"
+# D-9 (docs/fork-deltas.md, ADR-0001/0002): a managed project must get its
+# script snapshot from THIS fork. Installing upstream's tree hands the
+# project a snapshot whose handoff chain deadlocks — neither D-1 (inbox
+# resolved from roles.tsv) nor D-5 (handoffd reconciliation and retry) is
+# upstream. This now decides the pack branches too: the forge install pulls
+# two-pack/four-pack/six-pack from the same repo_url, and D-9 owns those as
+# complete artifacts (ADR-0002). Override with SWARMFORGE_REPO_URL to install
+# any other tree.
+default_repo_url="https://github.com/arlishansenn/swarm-forge"
 pack_names=(two-pack four-pack six-pack)
 
 usage() {
