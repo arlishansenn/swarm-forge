@@ -357,7 +357,7 @@ upstream contract，不是 fork 当前 runtime contract。
 - `docs/research/handoff-reconciliation-standards.md`（本仓库 `main`）：已确立的内部标准
   「文件位置移动才是权威确认，`capture-pane`/日志只是诊断」，本文沿用同一原则区分 Board
   `done`（投递时）与 master `completed_at`（处理后）。
-- `adr/0001-script-snapshot-follows-this-fork.md`（本仓库 `main`）：解释了为什么 fork
+- `docs/adr/0001-script-snapshot-follows-this-fork.md`（本仓库 `main`）：解释了为什么 fork
   侧的 Script snapshot 不会自动跟随 upstream。
 - `git merge-base origin/main upstream/main`、`git rev-list --left-right --count
   origin/main...upstream/main`，以及 fork 当前 `swarmforge/scripts/handoffd.bb:update-board!`：

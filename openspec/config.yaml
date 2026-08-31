@@ -20,7 +20,7 @@ rules:
     - 描述本 fork 相对 upstream 的差异时，scenario 必须写成「换成 upstream 的版本就会失败」的形状——判据是可证伪，不是可阅读。
   design:
     - 使用简体中文；technical term 保持英文原文。
-    - 写之前先读 adr/ 下全部 ADR，按 Supersedes 链算出当前仍然在效的那一组。
+    - 写之前先读 docs/adr/ 下全部 ADR，按 Supersedes 链算出当前仍然在效的那一组。
   adr:
     - 使用简体中文；technical term 保持英文原文。
     - ADR 一经 accepted 即不可修改；要改结论就新写一条并在 Supersedes 里点名旧的。
