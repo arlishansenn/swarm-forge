@@ -221,6 +221,20 @@ printf '%s\n' "$OUT" | grep -q "^DIRTY=$WT_CLEANER (3 files)\$" \
 ! close_swarm_called && ok "dirty: close-swarm never called" || bad "dirty: close-swarm never called" "$(cat "$STUB/calls.log")"
 ! kill_session_called && ok "dirty: kill-session never called" || bad "dirty: kill-session never called" "$(cat "$STUB/calls.log")"
 
+# 3b. issue #87: a TRACKED modification alone still blocks. Case 3 mixes ` M`
+#     with `??`, so it could not tell "the gate still works" from "the gate
+#     sees the untracked noise". After #87 the install artifacts are ignored
+#     and the untracked half of that report goes away — this case is what
+#     proves the gate did not go away with it.
+all_clean
+set_status "$WT_CLEANER" ' M src/business.py'
+run
+check "tracked-only dirty exit" 6 "$RC"
+printf '%s\n' "$OUT" | grep -q "^DIRTY=$WT_CLEANER (1 files)\$" \
+  && ok "tracked-only dirty names the worktree" || bad "tracked-only dirty names the worktree" "$OUT"
+! close_swarm_called && ok "tracked-only dirty: close-swarm never called" \
+  || bad "tracked-only dirty: close-swarm never called" "$(cat "$STUB/calls.log")"
+
 # 4. --force bypasses the gate entirely, even with busy+dirty present, and
 #    actually stops (close-swarm called, no PREFLIGHT report at all)
 all_clean

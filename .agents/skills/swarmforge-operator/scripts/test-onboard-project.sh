@@ -29,6 +29,16 @@ EOF
 # assertion below would pass against a 0644 fixture and prove nothing.
 chmod 755 "$WORK/src/pack-root/swarm"
 echo 'roles' > "$WORK/src/pack-root/swarmforge/roles.txt"
+# Issue #87: the real Pack branches also ship bb.edn, test/, a README.md and
+# their own .gitignore. The last two belong to the MANAGED project even when
+# the archive carries them, so the derived ignore list must skip exactly those
+# two and keep the rest. A fixture with only swarm+swarmforge could not tell
+# "derived from the archive" apart from "hardcoded two entries".
+echo '{}' > "$WORK/src/pack-root/bb.edn"
+mkdir -p "$WORK/src/pack-root/test"
+echo 'a test' > "$WORK/src/pack-root/test/launcher_test.sh"
+printf 'pack readme\n' > "$WORK/src/pack-root/README.md"
+printf '.DS_Store\n' > "$WORK/src/pack-root/.gitignore"
 tar -czf "$WORK/pack.tgz" -C "$WORK/src" pack-root
 
 # ---------- stub curl: -o <file> gets the fixture, or fails on demand ---------
@@ -115,6 +125,68 @@ check "quoted root STATUS" "STATUS=USAGE" "$(echo "$out" | head -1)"
 out=$("$SCRIPT" --root 2>&1); rc=$?
 check "missing --root value exits 2" 2 "$rc"
 check "missing --root value STATUS" "STATUS=USAGE" "$(echo "$out" | head -1)"
+
+# ---------- issue #87: install artifacts must not keep the DIRTY gate lit ----
+# Everything this verb installs arrives untracked in the managed project, so
+# `stop swarm`'s preflight — which cannot tell "SwarmForge installed this" from
+# "you forgot to commit this" — reported DIRTY on every run and `--force`
+# became the only way to stop anything. Seen live on podsum: 7 untracked paths
+# at the root plus 2 in each role worktree, every single time.
+
+GI() { cat "$1/.gitignore"; }   # GI <root>
+
+# 6. the derived block lands, with the right things in and the right things out
+T=$WORK/proj-gi
+out=$("$SCRIPT" --root "$T" --pack two-pack --local 2>&1); rc=$?
+check "gitignore case exits 0" 0 "$rc"
+for e in /swarm /swarmforge /bb.edn /test /.swarmforge/ /.worktrees/; do
+  grep -qxF "$e" "$T/.gitignore" \
+    && ok "gitignore has $e" || bad "gitignore has $e" "$(GI "$T")"
+done
+# These two belong to the managed project even though the archive ships them.
+for e in /.gitignore /README.md; do
+  grep -qxF "$e" "$T/.gitignore" \
+    && bad "gitignore must NOT list $e" "$(GI "$T")" || ok "gitignore omits $e"
+done
+
+# 7. the payoff, stated the way the incident was: after onboarding, none of the
+#    installed paths shows up in `git status --porcelain`. This is the
+#    assertion that fails against the pre-#87 script.
+T=$WORK/proj-status
+mkdir -p "$T"
+git -c init.defaultBranch=main init -q "$T"
+printf 'project readme\n' > "$T/README.md"
+git -C "$T" add README.md
+git -C "$T" -c user.email=t@t.test -c user.name=test commit -q -m init
+"$SCRIPT" --root "$T" --pack two-pack --local >/dev/null 2>&1
+# .gitignore itself is expected to show up — it is the one project file this
+# verb writes, and committing it is the human's call. Everything the verb
+# INSTALLED must be gone from the report; that is the whole point.
+DIRT=$(git -C "$T" status --porcelain | grep -vE ' \.gitignore$' || true)
+[ -z "$DIRT" ] \
+  && ok "no installed path is left dirty in git status" \
+  || bad "no installed path is left dirty in git status" "$DIRT"
+
+# 8. an existing .gitignore is appended to, never replaced
+T=$WORK/proj-append
+mkdir -p "$T"
+printf 'node_modules/\n*.log\n' > "$T/.gitignore"
+"$SCRIPT" --root "$T" --pack two-pack --local >/dev/null 2>&1
+grep -qxF 'node_modules/' "$T/.gitignore" \
+  && ok "existing .gitignore lines survive" || bad "existing .gitignore lines survive" "$(GI "$T")"
+grep -qxF '/swarmforge' "$T/.gitignore" \
+  && ok "the block is appended alongside them" || bad "the block is appended" "$(GI "$T")"
+
+# 9. idempotent: the marker already being there means no second block. A human
+#    who trimmed the entries must not get them all back on the next install.
+T=$WORK/proj-idem
+mkdir -p "$T"
+printf '# >>> SwarmForge installed files >>>\n/swarmforge\n# <<< SwarmForge installed files <<<\n' > "$T/.gitignore"
+"$SCRIPT" --root "$T" --pack two-pack --local >/dev/null 2>&1
+check "marker appears exactly once" 1 "$(grep -cxF '# >>> SwarmForge installed files >>>' "$T/.gitignore")"
+check "a trimmed block is left as the human left it" 1 "$(grep -cxF '/swarmforge' "$T/.gitignore")"
+grep -qxF '/bb.edn' "$T/.gitignore" \
+  && bad "trimmed entries are not re-added" "$(GI "$T")" || ok "trimmed entries are not re-added"
 
 echo "  $PASS passed, $FAIL failed"
 rm -rf "$WORK"

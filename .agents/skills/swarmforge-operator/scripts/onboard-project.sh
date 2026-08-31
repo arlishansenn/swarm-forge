@@ -5,6 +5,15 @@
 #   0 ONBOARDED   2 USAGE   4 OCCUPIED   5 ERROR
 # Contract details live in ../SKILL.md (verb: onboard project).
 # Never starts a swarm, never runs git. Depends on bash, curl, tar.
+#
+# It does write one line-set into $ROOT/.gitignore (issue #87). That is the
+# only project-owned file this verb touches, and it is appended to, never
+# replaced. The reason: everything this verb installs arrives UNTRACKED in the
+# managed project, so `stop swarm`'s preflight — which cannot tell "SwarmForge
+# installed this" from "you forgot to commit this" — reports DIRTY forever and
+# `--force` becomes the only way to stop anything. A gate that fires every
+# single time is a gate nobody reads; issue #58 already cost us that once, from
+# the other direction. The verb that installs the files owns making them quiet.
 set -euo pipefail
 
 TARGET=${TARGET:-admin@100.64.0.4}
@@ -48,6 +57,12 @@ esac
 # installed exactly as it comes out of the tarball.
 URL=https://github.com/arlishansenn/swarm-forge/tarball/$PACK
 
+# Markers make the block find-able and re-runnable. Presence of the opening
+# marker is the whole idempotence test: a second onboard, or a human who has
+# since edited the entries, must not get a duplicate block.
+GI_MARK='# >>> SwarmForge installed files >>>'
+GI_END='# <<< SwarmForge installed files <<<'
+
 remote() {
   if [ "$LOCAL" = 1 ]; then bash -c "$1"; else ssh -i "$KEY" "$TARGET" "$1"; fi
 }
@@ -66,7 +81,46 @@ if ! remote "set -e
   curl -fsSL '$URL' -o \"\$tmp/pack.tgz\"
   tar -tzf \"\$tmp/pack.tgz\" >/dev/null
   mkdir -p '$ROOT'
-  tar -xzf \"\$tmp/pack.tgz\" --strip-components=1 -C '$ROOT'"; then
+  # The archive carries a .gitignore and a README.md of its own, and tar would
+  # write them straight over the managed project's. Those two files belong to
+  # the project, not to SwarmForge — same rule as the launcher in issue #33,
+  # pointed the other way: there, not touching the archive's file is what
+  # preserved it; here, not letting the archive touch the project's file is.
+  # Saved and put back rather than excluded from extraction, because the
+  # archive's top-level directory name is a GitHub-generated sha we cannot
+  # write a reliable tar --exclude pattern against.
+  for f in .gitignore README.md; do
+    if [ -e '$ROOT'/\$f ]; then cp -p '$ROOT'/\$f \"\$tmp/keep-\$f\"; fi
+  done
+  tar -xzf \"\$tmp/pack.tgz\" --strip-components=1 -C '$ROOT'
+  for f in .gitignore README.md; do
+    if [ -e \"\$tmp/keep-\$f\" ]; then cp -p \"\$tmp/keep-\$f\" '$ROOT'/\$f; fi
+  done
+  # The ignore entries are DERIVED from the archive that was just installed,
+  # never hardcoded: the artifact is the only thing that knows what it put
+  # there, and a hand-kept list would drift the first time a Pack branch gains
+  # or loses a top-level file. .gitignore and README.md are excluded because
+  # those two belong to the managed project even when the archive also carries
+  # them. .swarmforge/ and .worktrees/ are added because the swarm creates them
+  # later, at run time, so they are not in the archive listing.
+  cd '$ROOT'
+  if [ ! -f .gitignore ] || ! grep -qxF '$GI_MARK' .gitignore; then
+    {
+      if [ -s .gitignore ] && [ -n \"\$(tail -c1 .gitignore)\" ]; then echo; fi
+      echo '$GI_MARK'
+      echo '# Installed by onboard project. Safe to commit; safe to delete if'
+      echo '# this project version-controls its own SwarmForge instead.'
+      tar -tzf \"\$tmp/pack.tgz\" \
+        | sed 's#^[^/]*/##' \
+        | awk -F/ 'NF && \$1 != \"\" { print \$1 }' \
+        | sort -u \
+        | grep -vxE '[.]gitignore|README[.]md' \
+        | sed 's#^#/#'
+      echo '/.swarmforge/'
+      echo '/.worktrees/'
+      echo '$GI_END'
+    } >> .gitignore
+  fi"; then
   printf 'STATUS=ERROR\n%s\n' "download or extract of $PACK failed; $ROOT unchanged" >&2
   exit 5
 fi
@@ -85,4 +139,5 @@ fi
 # deleted.
 printf 'STATUS=ONBOARDED\n'
 remote "ls -1 '$ROOT'"
+printf 'gitignore: SwarmForge block present in %s/.gitignore — commit it, or delete it if this project version-controls its own SwarmForge\n' "$ROOT"
 printf 'next: run ./swarm in %s yourself — this script never starts a swarm\n' "$ROOT"
