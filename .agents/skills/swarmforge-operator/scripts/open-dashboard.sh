@@ -203,6 +203,17 @@ fi
 
 # browser surface: reuse the existing one, repair only if absent (workspace
 # may predate the layout-based creation, e.g. from an earlier buggy run)
+#
+# Existing is not the same as correct (issue #99). browser_surface() picks by
+# type and never looks at the url, and the reuse path only repaired a MISSING
+# surface — so the report printed this run's URL while the screen stayed on the
+# previous, dead port. That is not a rare state: pack_web binds a fresh port on
+# every start unless the project uses --dashboard-port, so after one restart the
+# reused surface is ALWAYS stale.
+#
+# issue #18 proves the port belongs to this project and issue #100 proves the
+# project is running; both are about the server. This is the last link: what the
+# screen actually shows.
 SURF=$(browser_surface "$WS_UUID")
 if [ -z "$SURF" ]; then
   out=$(cmux new-surface --type browser --url "$URL" --workspace "$WS_REF" --focus false 2>/dev/null) || true
@@ -212,6 +223,23 @@ if [ -z "$SURF" ]; then
     sleep 0.05
   done
   [ -n "$SURF" ] || die ERROR "browser surface in $WS_REF not resolvable after settle" 5
+else
+  # Read where it actually is, not where it was created. `get-url` answers "this
+  # surface, now"; surface.list's url field records what it was opened with, so
+  # a human who navigated it — or this verb on an earlier run — would not show
+  # up there. Only asked on the reuse path: a surface this run just created
+  # already carries the right URL.
+  CUR=$(cmux browser --surface "$SURF" get-url 2>/dev/null | tr -d '\r') || CUR=''
+  CUR=${CUR%$'\n'}
+  if [ "$CUR" != "$URL" ]; then
+    # goto, never rebuild: rebuilding throws away the surface's browsing state
+    # and is a heavier mutation, and this is the same command a human reaches
+    # for to fix it by hand.
+    cmux browser --surface "$SURF" goto "$URL" >/dev/null 2>&1 || true
+    CUR=$(cmux browser --surface "$SURF" get-url 2>/dev/null | tr -d '\r') || CUR=''
+    CUR=${CUR%$'\n'}
+    [ "$CUR" = "$URL" ] || die ERROR "browser surface $SURF still points at '${CUR:-<unknown>}' after navigating to $URL — refusing to report success while the report and the screen disagree" 5
+  fi
 fi
 
 printf 'STATUS=%s\nTUNNEL=%s\nURL=%s\nWORKSPACE=%s\nSURFACE=%s\nROOT=%s\nTARGET=%s\n' \

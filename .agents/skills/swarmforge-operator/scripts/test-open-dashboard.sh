@@ -94,6 +94,29 @@ state["surfaces"].append({"id":sid,"ref":sref,"workspace_id":wsid,
 json.dump(state,open(sf,"w"))
 PY
   echo "OK surface:$N pane:1 workspace:${WS#workspace:}";;
+browser)
+  SURF= SUB= ARG=
+  while [ $# -gt 0 ]; do case $1 in
+    --surface) SURF=$2; shift 2;;
+    get-url|url) SUB=get-url; shift;;
+    goto|navigate) SUB=goto; ARG=$2; shift 2;;
+    *) shift;; esac; done
+  case $SUB in
+    get-url)
+      python3 -c 'import json,sys;s=json.load(open("'$STUB'/state.json"));print(next((x["url"] for x in s["surfaces"] if x["id"]==sys.argv[1] or x["ref"]==sys.argv[1]), ""))' "$SURF" ;;
+    goto)
+      python3 - "$STUB/state.json" "$SURF" "$ARG" <<'PY'
+import json,sys
+sf,surf,url=sys.argv[1:4]
+state=json.load(open(sf))
+for x in state["surfaces"]:
+    if x["id"]==surf or x["ref"]==surf:
+        x["url"]=url
+json.dump(state,open(sf,"w"))
+PY
+      echo OK ;;
+    *) echo "Error: unknown browser subcommand" >&2; exit 1;;
+  esac;;
 *) echo "Error: unknown $CMD" >&2; exit 1;;
 esac
 EOF
@@ -454,6 +477,51 @@ reset_stub
 run squat
 check "squat still DRIFT" 4 "$RC"
 check "squat no longer leaves a tunnel behind" 0 "$(tunnelcount)"
+
+# ---------- issue #99: a reused surface must point at THIS run's URL --------
+# `browser_surface()` picks the first surface whose type is "browser" and never
+# looks at its url; the reuse path only repaired a MISSING surface. So the
+# report printed the new URL while the screen stayed on the previous, dead
+# port. Not a rare state: pack_web binds a fresh port on every start unless the
+# project uses --dashboard-port, so after one restart the reused surface is
+# ALWAYS stale.
+#
+# Server side was already covered — issue #18 proves the port belongs to this
+# project, issue #100 proves the project is running. Nothing proved the screen
+# was showing it.
+
+surface_url() {  # surface_url <workspace-uuid>
+  python3 -c 'import json,sys;s=json.load(open("'$STUB'/state.json"));print(next((x["url"] for x in s["surfaces"] if x["workspace_id"]==sys.argv[1] and x["type"]=="browser"), ""))' "$1"
+}
+goto_count() { grep -c 'cmux browser .* goto' "$STUB/calls.log" 2>/dev/null || true; }
+
+# 16. a stale surface is navigated to this run's URL
+reset_stub
+run gov >/dev/null                       # first run creates the workspace
+python3 - "$STUB/state.json" <<'PY'
+import json,sys
+s=json.load(open(sys.argv[1]))
+for x in s["surfaces"]:
+    if x["type"]=="browser":
+        x["url"]="http://127.0.0.1:40645/"   # a previous, dead port
+json.dump(s,open(sys.argv[1],"w"))
+PY
+run gov
+check "stale surface exit" 0 "$RC"
+check "stale surface status" REUSED "$(val STATUS)"
+check "stale surface was navigated" "http://127.0.0.1:54870/" "$(surface_url WSUUID-11)"
+check "report URL matches where the surface points" "$(surface_url WSUUID-11)" "$(val URL)"
+
+# 17. a surface already pointing at the right place is left alone. REUSED means
+#     do not fiddle; a needless goto is a mutation this verb should not make.
+reset_stub
+run gov >/dev/null
+run gov
+check "matching surface exit" 0 "$RC"
+check "matching surface status" REUSED "$(val STATUS)"
+check "matching surface: no goto" 0 "$(goto_count)"
+check "matching surface: no new workspace" 1 "$(mutcount)"
+check "matching surface: still points at the URL" "http://127.0.0.1:54870/" "$(surface_url WSUUID-11)"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
