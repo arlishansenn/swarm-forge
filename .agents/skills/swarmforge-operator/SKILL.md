@@ -112,11 +112,69 @@ bytes and mode intact, not a more careful way of writing it back. `update
 SwarmForge scripts` keeps its own separate ARCHIVE_URL rewrite as a
 legacy-repair path for projects onboarded before this change.
 
+### The `.gitignore` block, and the two files the archive may not clobber
+
+Everything this verb installs arrives **untracked** in the managed project.
+`stop swarm`'s preflight cannot tell "SwarmForge installed this" from "you
+forgot to commit this", so it reported `DIRTY` on every single run and
+`--force` became the only way to stop anything — seen live on podsum: 7
+untracked paths at the root plus 2 in each role worktree, forever. A gate that
+fires every time is a gate nobody reads. **The verb that installs the files
+owns making them quiet** (issue #87), so it appends one block to
+`$ROOT/.gitignore`:
+
+```
+# >>> SwarmForge installed files >>>
+# Installed by onboard project. Safe to commit; safe to delete if
+# this project version-controls its own SwarmForge instead.
+/bb.edn
+/swarm
+/swarmforge
+/test
+/.swarmforge/
+/.worktrees/
+# <<< SwarmForge installed files <<<
+```
+
+The entries are **derived from the archive that was just installed**, never
+hardcoded — the artifact is the only thing that knows what it put there, and a
+hand-kept list drifts the first time a Pack branch gains a top-level file.
+`.gitignore` and `README.md` are excluded because they belong to the managed
+project; `.swarmforge/` and `.worktrees/` are added because the swarm creates
+them later, at run time.
+
+The block is appended, never substituted, and the opening marker is the whole
+idempotence test: a second install, or a human who has since trimmed the
+entries, gets no duplicate block and no re-added lines.
+
+`.gitignore` is the only project-owned file this verb writes. It will show up
+in `git status` once, until a human commits it — that is a self-clearing
+condition, which is exactly what the DIRTY gate is for, unlike the permanent
+one it replaces.
+
+**The archive also ships its own `.gitignore` and `README.md`**, and `tar`
+would write them straight over the project's. Both are saved before extraction
+and put back after. Same rule as the launcher in issue #33, pointed the other
+way: there, not touching the archive's file is what preserved it; here, not
+letting the archive touch the project's file is.
+
+### Already-onboarded projects
+
+The block only lands on projects onboarded from this change onward. For a
+project that already has SwarmForge installed, paste the same block into its
+`.gitignore` by hand once, then commit it. Read the actual entries off the
+project rather than copying the example above — a different Pack ships a
+different top-level set:
+
+```sh
+ssh -n -i <key> <target> "cd <root> && git status --porcelain | awk '\$1==\"??\"{print \"/\" \$2}'"
+```
+
 **Boundary:** do not run `./swarm` for the user after onboarding. The three
 hard prohibitions stand unchanged: never start, never clean up, never decide
-the start time for the user. The script also never touches the target
-project's git state — `git init` is the swarm launcher's own first-run
-behavior.
+the start time for the user. Beyond the `.gitignore` block above, the script
+never touches the target project's git state — `git init` is the swarm
+launcher's own first-run behavior, and this verb still never runs git.
 
 ## Verb: `open swarm`
 
@@ -1148,6 +1206,12 @@ Exit codes / STATUS line:
   clean). **Nothing was changed**: no `kill-session`, no `close-swarm` call.
   Report the `PREFLIGHT` block to the user and let a human decide whether to
   wait or re-run with `--force`.
+
+  A `DIRTY` line naming only SwarmForge's own installed files means that
+  project predates issue #87 and never got the `.gitignore` block — see
+  *Already-onboarded projects* under `onboard project`. Add the block and
+  commit it; do not reach for `--force`, which waives the gate for the
+  project's real uncommitted work too.
 
 On `6` `UNSAFE`, stdout carries a `PREFLIGHT` block after `STATUS=`, one line
 per unsafe condition found:
