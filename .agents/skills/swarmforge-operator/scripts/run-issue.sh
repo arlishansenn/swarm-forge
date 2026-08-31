@@ -263,9 +263,37 @@ CHAIN=$(printf '%s\n' "$ROLES" | awk -F'\t' '
   END { if (!n) exit 1; s = r[1]; for (i = 2; i <= n; i++) s = s " -> " r[i]; print s " -> " r[1] }') \
   || die ERROR "$ROOT/.swarmforge/roles.tsv has no roles" 5
 
+# ---------- OpenSpec, only if the TARGET project uses it (issue #94) ----------
+# A managed project that installs OpenSpec gets nothing out of it if the task
+# body never mentions it: podsum merged its schema and the very next run of
+# this verb produced 4 commits, +414 lines and 22 green tests with ZERO output
+# under openspec/changes/ — the coder went straight to code+TDD and the new
+# section in that project's AGENTS.md was a dead letter.
+#
+# Derived from the target's runtime state, never hardcoded, for the same reason
+# CHAIN is derived from roles.tsv: this verb serves any managed project and
+# plenty of them do not use OpenSpec, so an unconditional paragraph would be a
+# wrong instruction for those.
+#
+# The artifact ORDER is deliberately not written here. It is a property of the
+# schema; naming the schema and letting the coder read
+# openspec/schemas/<name>/schema.yaml keeps one source of that knowledge.
+# A copy here would be a second one, and it would drift the first time a schema
+# gains or reorders an artifact.
+OPENSPEC_NOTE=''
+if OS_CFG=$(read_file openspec/config.yaml 2>/dev/null); then
+  OS_SCHEMA=$(printf '%s\n' "$OS_CFG" \
+    | sed -n 's/^schema:[[:space:]]*//p' | head -1 | tr -d "\"' \r")
+  if [ -n "$OS_SCHEMA" ]; then
+    OPENSPEC_NOTE="
+
+本项目用 OpenSpec，schema 是 ${OS_SCHEMA}。这次变更走该 schema 的 artifact 周期，产出落在 openspec/changes/ 下。artifact 有哪些、顺序如何、每个的要求是什么，读 openspec/schemas/${OS_SCHEMA}/schema.yaml，不要凭记忆。"
+  fi
+fi
+
 TASK_TEXT="读 gh issue view ${ISSUE}，按它的 Acceptance criteria 逐条做。
 
-先盘点相关代码、测试与既有实现，再动手；先说明哪些判据已满足、哪些没有。所有 OpenProse source 必须通过 skill:open-prose authoring semantics；按 TDD 实现，完成后走 $CHAIN handoff。"
+先盘点相关代码、测试与既有实现，再动手；先说明哪些判据已满足、哪些没有。所有 OpenProse source 必须通过 skill:open-prose authoring semantics；按 TDD 实现，完成后走 $CHAIN handoff。${OPENSPEC_NOTE}"
 
 PAYLOAD=$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "text": sys.argv[2]}))' \
   "$TASK_NAME" "$TASK_TEXT")

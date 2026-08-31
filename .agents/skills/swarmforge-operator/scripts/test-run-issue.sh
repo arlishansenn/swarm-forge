@@ -493,5 +493,70 @@ check "non-numeric --max-wait STATUS" "STATUS=USAGE" "$(printf '%s\n' "$out" | h
 check "non-numeric --max-wait ran no command at all" "0" \
   "$(wc -l < "$STUB/calls.log" | tr -d ' ')"
 
+# ---------- 20. OpenSpec: the task body follows the TARGET project ----------
+# A managed project that installs OpenSpec gets nothing out of it if the task
+# body never mentions it: podsum merged its schema and the very next run of
+# this verb produced 4 commits, +414 lines and 22 green tests with ZERO output
+# under openspec/changes/ — the coder went straight to code+TDD, and the new
+# section in that project's AGENTS.md was a dead letter (issue #94).
+#
+# But this verb serves any managed project, and plenty do not use OpenSpec, so
+# the paragraph cannot be unconditional. Derived from the target's runtime
+# state, exactly like CHAIN is derived from roles.tsv instead of hardcoding
+# role names.
+#
+# These two cases assert BEHAVIOUR, not wording: AGENTS.md forbids pinning
+# prompt text with automated tests, and a task body is precisely that. The
+# schema name is deliberately `foo-bar` — a name no real schema has — so the
+# only way it can reach the payload is by having been read from the file.
+
+# 20a. the project declares a schema -> the payload carries that schema's name
+reset
+printf 'done\n' > "$STUB/lane-script"
+mkdir -p "$ROOT/openspec"
+printf 'schema: foo-bar\nrules:\n  proposal: []\n' > "$ROOT/openspec/config.yaml"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "openspec: exits 0" 0 "$rc"
+has "openspec: payload names the schema read from the project" \
+  "$(cat "$STUB/post.payloads")" "foo-bar"
+
+# 20b. no openspec/config.yaml -> that name appears nowhere. This is the half
+#      that protects every project which does not use OpenSpec: the body it
+#      gets is the one it got before this change.
+reset
+rm -rf "$ROOT/openspec"
+printf 'done\n' > "$STUB/lane-script"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "no openspec: exits 0" 0 "$rc"
+hasnt "no openspec: payload carries no schema name" \
+  "$(cat "$STUB/post.payloads")" "foo-bar"
+# the two body facts that already had to hold still hold
+has "no openspec: body still points at the issue" \
+  "$(cat "$STUB/post.payloads")" "gh issue view 28"
+has "no openspec: body still names the chain from roles.tsv" \
+  "$(cat "$STUB/post.payloads")" "coder -> cleaner -> coder"
+
+# 20c. the schema name is read, never assumed: a second project declaring a
+#      different schema gets ITS name, and not the other one.
+reset
+printf 'done\n' > "$STUB/lane-script"
+mkdir -p "$ROOT/openspec"
+printf 'schema: other-schema\n' > "$ROOT/openspec/config.yaml"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+has "openspec: a different project gets its own schema name" \
+  "$(cat "$STUB/post.payloads")" "other-schema"
+hasnt "openspec: and not the first project's" \
+  "$(cat "$STUB/post.payloads")" "foo-bar"
+
+# 20d. the artifact order is NOT in this script. It is a property of the
+#      schema, and a copy here would be a second source of OpenSpec knowledge
+#      that drifts the first time a schema changes.
+if grep -v '^[[:space:]]*#' "$SCRIPT" | grep -qE 'proposal.*design.*tasks|proposal -> '; then
+  bad "openspec: artifact order is not hardcoded in the script" \
+    "$(grep -vn '^[[:space:]]*#' "$SCRIPT" | grep -E 'proposal.*design.*tasks|proposal -> ')"
+else
+  ok "openspec: artifact order is not hardcoded in the script"
+fi
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

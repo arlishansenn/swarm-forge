@@ -1021,6 +1021,19 @@ issue, inventory before implementing, TDD, and the handoff chain, which is
 differ per pack. The issue body itself is deliberately not copied; the coder
 can read it, and a copy goes stale.
 
+**It also follows whether the target project uses OpenSpec** (issue #94). If
+`$ROOT/openspec/config.yaml` exists, the body names the `schema:` that file
+declares and points the coder at `openspec/schemas/<name>/schema.yaml`; if it
+does not, the body is byte-identical to what it was before. Derived, not
+flagged, for the same reason `CHAIN` is derived from `roles.tsv`: this verb
+serves any managed project and plenty do not use OpenSpec, so "go through the
+OpenSpec cycle" would be a wrong instruction for those. The artifact order is
+deliberately NOT in the script — that is a property of the schema, and a copy
+here would be a second source of OpenSpec knowledge that drifts silently the
+first time a schema gains an artifact. podsum is why this exists: it merged
+its schema, and the very next run of this verb produced 4 commits, +414 lines
+and 22 green tests with nothing at all under `openspec/changes/`.
+
 ### Running it from an agent session
 
 **This verb blocks for the whole chain — minutes to hours. That is not a hang.**
