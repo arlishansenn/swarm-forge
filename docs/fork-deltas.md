@@ -59,8 +59,26 @@ git fetch upstream
 git merge -X theirs upstream/main   # 冲突偏 upstream，保留非冲突区的 fork 改动
 bb test                             # 红的地方就是被覆盖的 fork 修复
 bash swarmforge/scripts/test-sync-worktree-scripts.sh   # 不在 bb test 里，单独跑
-# 然后走一遍本表，逐条确认，并把新出现的差异补进来
+
+git diff --stat ORIG_HEAD HEAD   # 这次 merge 到底改了哪些文件
+
+# 然后走一遍本表，逐条确认。upstream 碰过的每个 capability，回头把那份 spec 的
+# scenario 读一遍——绿的测试只证明「没被改红」，证明不了「新代码没在别处重犯同一个
+# bug」，而后者正是本表存在的理由。
+
+# 补完新差异、动过 openspec/specs/ 之后，最后跑一次
+openspec validate <capability> --type spec --strict
 ```
+
+**为什么 `openspec validate` 在最后而不是紧跟 merge。** upstream 没有 `openspec/`，
+merge 碰不到 `openspec/specs/`，所以 merge 刚做完时跑它必然是绿的——那是一次不会失败的
+检查，白花时间。它真正有用的时刻是**你自己动过 spec 之后**：补了新差异、或删了被采纳的
+requirement。
+
+**读 scenario 这一步不能省，也不能自动化。** scenario 现在还不可执行（见上），它描述的
+行为靠既有的 `bb test` 与 `test-*.sh` 覆盖。所以这一步是**人逐条对照**，不是敲一条命令
+跑完。别把它写成或读成能自动验收的样子——`bb test` 全绿之后仍然可能有一条 fork 修复被
+悄悄覆盖，这正是 issue #45 的教训。
 
 **`main` 只是一半。** 三条 Pack 分支（`two-pack`/`four-pack`/`six-pack`）供的是 swarm
 launcher 与角色拓扑，从不合进 `main`，要各自 merge upstream 的同名分支，各走各的 PR
@@ -364,8 +382,29 @@ D-1、D-2、D-3、D-6 是「upstream 尚未修的真 bug」，不是口味分歧
 
 ## 维护这张表
 
-- 每条差异必须有钉子，且钉子必须**会因为 upstream 的版本而失败**。判据很硬：写完测试，
+**表是索引，`openspec/specs/` 是真相源。两边必须一起动，否则读的人会被索引骗。**
+脱节的两个方向不对称：删了 spec 没删表行，下次 merge 走表时找不到 spec，当场就发现了；
+**删了表行没删 spec，那份 spec 就静静躺着，下一个人读到它，以为差异还在，去找一个已经
+不存在的东西**。所以下面每条规则都成对写。
+
+- **每条差异必须有钉子，且钉子必须会因为 upstream 的版本而失败。** 判据很硬：写完测试，
   把代码换成 upstream 的版本，看它红不红。不红就是没钉住，等于没写。
-- merge 之后新出现的差异当场补进本表，别攒。
-- 差异被 upstream 采纳后从表里删掉，并在删除的 commit message 里注明是哪个 upstream
-  commit 收的。
+  **spec 里的 scenario 不是那个钉子**，它是钉子的**说明书**——scenario 现在还不可执行
+  （见上），真正会红的是 `bb test` 里的断言或某个 `test-*.sh`。所以写 scenario 的时候，
+  尽量带一句「换成 upstream 的版本，本 scenario 失败」，让读的人知道该去哪找那颗钉子。
+
+- **merge 之后新出现的差异当场补进来，别攒。** 「补进来」是两件事：本表加一行，
+  **并且**给它开一份 spec。落在既有 capability 里就往那份 spec 加 requirement，表不用动
+  （表是 capability 粒度的）；是个新 capability 才加表行。走 `openspec-propose` 起一个
+  change，`openspec archive` 落进 `openspec/specs/`，别手改 `openspec/specs/` ——那个目录
+  是 archive 写的，手改会和 change 记录对不上。
+
+- **差异被 upstream 采纳后，表行与 spec 一起处置，用 `REMOVED` delta，不是手删 spec。**
+  开一个 change，在该 capability 的 delta 里写 `## REMOVED Requirements`，`openspec archive`
+  会把那条 requirement 从 `openspec/specs/<capability>/spec.md` 里删掉。若该 capability 因此
+  一条 requirement 都不剩，同一个 PR 里把目录一并删掉。表行也在**同一个 PR** 里删（按仓库
+  规矩 spec 与其余改动分开 commit），并在 commit message 注明是哪个 upstream commit 收的。
+
+- **动过 `openspec/specs/` 之后跑一次 `openspec validate <capability> --type spec --strict`。**
+  它管的是 spec 本身写得对不对（有没有 requirement 没配 scenario 之类），不管 fork 的行为
+  对不对——后者是钉子的活。
