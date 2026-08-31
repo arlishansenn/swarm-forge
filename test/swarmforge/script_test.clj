@@ -142,6 +142,27 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest swarmforge-refuses-an-unknown-flag-without-writing-anything
+  ;; issue #113: -main's case sent anything it did not recognise to the default
+  ;; branch, which treats it as a project root — so a typo reached
+  ;; initialize-git-repo! and `git init`ed a directory literally named after the
+  ;; flag, then failed AFTER writing. The error must come first, and nothing may
+  ;; be created.
+  (let [root (tmp-dir)]
+    (try
+      (let [result (run {:dir root :ok? false} (script "swarmforge.bb") "--test-foo")]
+        (is (= 1 (:exit result)))
+        (is (str/includes? (:err result) "--test-foo"))
+        (is (str/includes? (:err result) "Unknown option"))
+        (is (not (fs/exists? (fs/path root "--test-foo")))
+            "a flag must not become a directory")
+        (is (not (fs/exists? (fs/path root ".git")))
+            "a flag must not leave a stray .git behind")
+        (is (empty? (fs/list-dir root))
+            "nothing at all may be written before the error"))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest swarmforge-parses-window-invisible
   ;; Given window-invisible specifier codex master
   ;; When --test-parse
