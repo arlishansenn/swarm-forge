@@ -26,6 +26,10 @@
 - [x] 3.6 `remote-ssh-stdin-isolation`（D-8）
 - [x] 3.7 `script-snapshot-provenance`（D-9）
 - [x] 3.8 `dashboard-port-binding`（D-10）
+- [x] 3.9 D-7 的十个 capability：`operator-verb-contract`、`swarm-start-safety`、
+      `swarm-stop-safety`、`dashboard-access`、`role-state-reading`、
+      `role-message-delivery`、`work-acceptance`、`issue-to-pr-pipeline`、
+      `snapshot-install-safety`、`project-onboarding`
 
 ## 4. 验收
 

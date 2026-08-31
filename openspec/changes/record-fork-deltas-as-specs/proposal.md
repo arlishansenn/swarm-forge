@@ -37,6 +37,21 @@ OpenSpec 的 intent-driven schema 提供那个载体：behaviour spec 带 Gherki
 - `script-snapshot-provenance`: managed project 的 script snapshot 来自本 fork，且安装是原子的、留下 manifest（D-9）
 - `dashboard-port-binding`: pack_web 可绑固定端口，不设变量时行为与 upstream 一致（D-10）
 
+D-7（`swarmforge-operator` skill）是本 fork 相对 upstream 最大的一块：upstream 完全没有
+operator verb，它的动作是人手敲的 ssh 命令。它的契约此前只以散文写在 `SKILL.md` 里，
+下面十个 capability 把它变成可验收的行为：
+
+- `operator-verb-contract`: 每个 scripted verb 的 STATUS 行与那张跨 verb 唯一的退出码表
+- `swarm-start-safety`: `--terminal` 必须由人选、已在跑拒绝二次启动、脱离式启动只信 runtime 文件
+- `swarm-stop-safety`: 停机前报告会打断什么、没真停下来就不许报 STOPPED、pack_web 不比 swarm 活得久
+- `dashboard-access`: 端口归属检查、绝不代为启动、`--tailnet` 不建隧道也不碰 tailscale
+- `role-state-reading`: 读不准报 UNKNOWN 绝不报 IDLE、分类跟着真实 pane 形状、读状态绝不写 pane
+- `role-message-delivery`: 送进去要确认真的送到、绝不用符号键名提交
+- `work-acceptance`: 只报未入库的工作、两次运行不改动任何 inbox 文件、卡住才 WARN
+- `issue-to-pr-pipeline`: 四格状态全部有出口、只认 Board lane、等不到不是失败、有人在等回答就停
+- `snapshot-install-safety`: 原子安装与整体回滚、脏 source 无 override 拒绝、自管的树不被静默覆盖
+- `project-onboarding`: launcher 原样安装绝不解压后改写、从本 fork 的 Pack 分支下载
+
 ### Modified Capabilities
 
 无。`openspec/specs/` 此前为空，本 change 是第一批。
@@ -47,5 +62,6 @@ OpenSpec 的 intent-driven schema 提供那个载体：behaviour spec 带 Gherki
 - `docs/fork-deltas.md`、`docs/agents/domain.md`、`docs/research/upstream-task-completion-protocol.md`
   里指向 `docs/adr/` 的路径改为 `adr/`。
 - 不改任何被测代码：本 change 只记录既有行为，不改变它。既有测试套件必须保持全绿且数量不变。
-- D-7（`swarmforge-operator` skill 整体）**不在本次范围**：它是 A 类，upstream 没有对应文件，
-  merge 从不碰它，而且它的契约已经写在 `SKILL.md` 里。要不要也转成 spec 另议。
+- D-7（`swarmforge-operator` skill）现已覆盖，见上面十个 capability。它是 A 类，upstream
+  merge 从不碰它，所以这些 spec 的用途不是 merge 验收，而是**契约本身有个可验收的载体**：
+  `SKILL.md` 说的是同一批事，但散文说不清「换成别的实现会不会失败」。
