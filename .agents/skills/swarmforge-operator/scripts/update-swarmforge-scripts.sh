@@ -12,11 +12,31 @@
 # didn't recognize as required.
 #
 # Exit codes / STATUS line:
-#   0 UPDATED   2 USAGE   5 ERROR   6 UNSAFE
+#   0 UPDATED   2 USAGE   5 ERROR   6 UNSAFE   8 OWNED
 # Contract details live in ../SKILL.md (verb: update SwarmForge scripts).
 #
 # Usage: update-swarmforge-scripts.sh --root <project-root> \
-#   [--target user@host] [--key <path>] [--local] [--force]
+#   [--target user@host] [--key <path>] [--local] [--force] \
+#   [--overwrite-tracked]
+#
+# 8 OWNED (issue #88): the managed project VERSION-CONTROLS the paths this
+# verb writes. pi-governance commits its own `swarm` + `swarmforge/`, and one
+# run rewrote 31 tracked files, added 5, and rewrote `swarm`'s ARCHIVE_URL —
+# in six places, because sync-worktree-scripts! mirrors into every role
+# worktree at launch. It reported UPDATED and exited 0; start swarm then
+# compared the installed tree against the manifest and found them in perfect
+# agreement, because both described the fork's version by then. The only
+# trace was noise in `git status`. The root branch was a PR head at the time,
+# so one `git add -A` from a role would have committed 38 SwarmForge files
+# into an unrelated PR.
+#
+# OWNED is its own word and its own code rather than 6 UNSAFE because a
+# caller has to tell "this project owns its snapshot, decide which one wins"
+# apart from "a lock is held" — the two want different human actions.
+# --overwrite-tracked is the deliberate "yes, the fork's version wins here".
+# It is a separate flag from --force on purpose: --force is about a stale
+# lock, and stacking an unrelated meaning onto it would make one flag mean
+# "ignore whatever is in the way".
 #
 # Ordering (deliberately matching start-swarm.sh's already-running-then-lock
 # order, not the issue text's original "lock first" wording — see issue #29
@@ -45,11 +65,11 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
-ROOT='' LOCAL=0 FORCE=0
+ROOT='' LOCAL=0 FORCE=0 OVERWRITE_TRACKED=0
 
 # Verb contract: a scripted verb prints STATUS=<WORD> as its first line —
 # same pattern onboard-project.sh's usage_error() uses.
-usage() { printf 'STATUS=USAGE\n'; sed -n '2,32p' "$0"; exit 2; }
+usage() { printf 'STATUS=USAGE\n'; sed -n '2,61p' "$0"; exit 2; }
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -58,6 +78,7 @@ while [ $# -gt 0 ]; do
     --key) KEY=$2; shift 2 ;;
     --local) LOCAL=1; shift ;;
     --force) FORCE=1; shift ;;
+    --overwrite-tracked) OVERWRITE_TRACKED=1; shift ;;
     *) usage ;;
   esac
 done
@@ -86,6 +107,52 @@ if SOCK=$(read_file .swarmforge/tmux-socket 2>/dev/null); then
   if tmux_remote list-sessions >/dev/null 2>&1; then
     die UNSAFE "socket $SOCK already has a live tmux server — swarm is running; stop it before updating SwarmForge scripts" 6
   fi
+fi
+
+# ---------- project-owned snapshot? (issue #88) ----------
+# Asked BEFORE the lock, like the already-running gate above: a refusal
+# should leave no trace at all, and a lock is a trace.
+#
+# `git ls-files` is the whole test. A managed project either tracks these
+# paths or it does not, and that single fact decides who owns the snapshot.
+# Nothing else in the chain can see it: this verb's job is to write those
+# paths, and start swarm only ever compares the installed tree against the
+# manifest — after an overwrite both describe the fork's version, so they
+# agree and no drift is reported.
+# git_tracked lives in lib-wake-talk.sh: `start swarm` asks the same
+# question, and one predicate answering it twice cannot disagree with itself.
+#
+# The blast radius is not just $ROOT. Every role worktree is its own checkout
+# on its own branch, gets the tree mirrored into it at launch, and merges
+# back — so a report naming only $ROOT understates the damage by however many
+# roles the pack has. roles.tsv is absent before the first launch; that is a
+# smaller radius, not a missing check.
+OWNED_LINES='' OWNED_N=0
+check_owned() { # $1 = a checkout that would receive this tree
+  local n
+  n=$(git_tracked "$1" swarmforge/scripts | grep -c . || true)
+  [ "${n:-0}" -gt 0 ] || return 0
+  OWNED_LINES="${OWNED_LINES}OWNS=$1 ($n tracked files under swarmforge/scripts)"$'\n'
+  OWNED_N=$((OWNED_N + 1))
+}
+check_owned "$ROOT"
+if ROLES_TSV=$(read_file .swarmforge/roles.tsv 2>/dev/null); then
+  SEEN_WT=''
+  while IFS=$'\t' read -r _role _wtname wtpath _rest; do
+    [ -n "$wtpath" ] || continue
+    [ "$wtpath" = "$ROOT" ] && continue
+    case " $SEEN_WT " in *" $wtpath "*) continue ;; esac
+    SEEN_WT="$SEEN_WT $wtpath"
+    check_owned "$wtpath"
+  done <<< "$ROLES_TSV"
+fi
+if [ "$OWNED_N" -gt 0 ] && [ "$OVERWRITE_TRACKED" != 1 ]; then
+  printf 'STATUS=OWNED\n'
+  printf '%s tracks the paths this verb writes — installing would overwrite files the project itself version-controls, in %s place(s):\n' \
+    "$ROOT" "$OWNED_N"
+  printf '%s' "$OWNED_LINES"
+  printf 'Nothing was changed. Decide which copy wins: keep the project'"'"'s own, or re-run with --overwrite-tracked to install this fork'"'"'s version over it.\n'
+  exit 8
 fi
 
 # ---------- lock: exclude a concurrent start (issue #29) ----------
@@ -332,5 +399,22 @@ EOS
   fi
 fi
 
-printf 'STATUS=UPDATED\nROOT=%s\nDIGEST=%s\nSOURCE_COMMIT=%s\n' "$ROOT" "$DIGEST" "$SOURCE_COMMIT"
+# WROTE/MIRRORS: this verb writes exactly one tree. The role worktrees get
+# it from sync-worktree-scripts! at the next launch, which is a different
+# event on a different day — saying so is the difference between "one path
+# changed" and "N checkouts will change, later, without you running anything".
+printf 'STATUS=UPDATED\nROOT=%s\nDIGEST=%s\nSOURCE_COMMIT=%s\nWROTE=%s\n' \
+  "$ROOT" "$DIGEST" "$SOURCE_COMMIT" "$ROOT/swarmforge/scripts"
+MIRROR_N=0
+if ROLES_TSV=$(read_file .swarmforge/roles.tsv 2>/dev/null); then
+  SEEN_WT=''
+  while IFS=$'\t' read -r _role _wtname wtpath _rest; do
+    [ -n "$wtpath" ] || continue
+    [ "$wtpath" = "$ROOT" ] && continue
+    case " $SEEN_WT " in *" $wtpath "*) continue ;; esac
+    SEEN_WT="$SEEN_WT $wtpath"
+    MIRROR_N=$((MIRROR_N + 1))
+  done <<< "$ROLES_TSV"
+fi
+printf 'MIRRORS=%s role worktree(s) receive this tree at the next start swarm, not now\n' "$MIRROR_N"
 exit 0

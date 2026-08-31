@@ -565,5 +565,82 @@ check "remote-only \$ROOT: status" "STATUS=UPDATED" "$(status_line)"
 [ ! -f "$REMOTE_ONLY/swarmforge/scripts/old-file.sh" ] && ok "remote-only \$ROOT: old tree gone on simulated remote host" \
   || bad "remote-only \$ROOT: old tree gone on simulated remote host" "old-file.sh still present"
 
+# ---------- issue #88: a managed project that version-controls its own
+# swarmforge/ must not be overwritten silently ----------
+# pi-governance commits `swarm` + `swarmforge/` (59 tracked files, including
+# two project-specific constitution articles). One `update SwarmForge
+# scripts` rewrote 31 tracked files under swarmforge/scripts/, added 5 more,
+# and rewrote `swarm`'s ARCHIVE_URL — in SIX places, because the five role
+# worktrees get mirrored at launch. `update` said UPDATED and exited 0;
+# `start swarm` compared the installed tree against the manifest and found
+# them in perfect agreement, because both now described the fork's version.
+# The only trace was noise in `git status`, and only if a human looked.
+# The root branch at the time was a PR head: one `git add -A` from a role
+# would have committed 38 SwarmForge files into an unrelated PR.
+
+own_fixture() { # a managed project that tracks its own swarmforge/
+  reset_root; write_good_launcher
+  GITC -C "$ROOT" init -q
+  GITC -C "$ROOT" add -A
+  GITC -C "$ROOT" commit -q -m init >/dev/null
+}
+
+# 13. tracked swarmforge/scripts, no override: refuse, and change nothing.
+own_fixture
+run --root "$ROOT" --local
+check "owned: exit" 8 "$RC"
+check "owned: status" "STATUS=OWNED" "$(status_line)"
+printf '%s\n' "$OUT" | grep -q "^OWNS=$ROOT " \
+  && ok "owned: report names the root" || bad "owned: report names the root" "$OUT"
+printf '%s\n' "$OUT" | grep -q -- '--overwrite-tracked' \
+  && ok "owned: report names the override" || bad "owned: report names the override" "$OUT"
+check "owned: not one tracked file changed" "" "$(GITC -C "$ROOT" status --porcelain)"
+
+# 14. the blast radius in the report covers ROLE WORKTREES, not just $ROOT.
+#     This is the half that made the live incident six times worse than it
+#     looked: sync-worktree-scripts! mirrors into every role worktree at
+#     launch, and each one is on its own branch that merges back.
+own_fixture
+GITC -C "$ROOT" worktree add -q "$ROOT/.worktrees/coder" -b wt-coder >/dev/null 2>&1
+GITC -C "$ROOT" worktree add -q "$ROOT/.worktrees/cleaner" -b wt-cleaner >/dev/null 2>&1
+{
+  printf 'coder\tcoder\t%s\tsess-coder\tCoder\tcodex\ttask\n' "$ROOT/.worktrees/coder"
+  printf 'cleaner\tcleaner\t%s\tsess-cleaner\tCleaner\tcodex\tbatch\n' "$ROOT/.worktrees/cleaner"
+} > "$ROOT/.swarmforge/roles.tsv"
+run --root "$ROOT" --local
+check "owned worktrees: exit" 8 "$RC"
+printf '%s\n' "$OUT" | grep -q "^OWNS=$ROOT/.worktrees/coder " \
+  && ok "owned worktrees: report names coder's worktree" \
+  || bad "owned worktrees: report names coder's worktree" "$OUT"
+printf '%s\n' "$OUT" | grep -q "^OWNS=$ROOT/.worktrees/cleaner " \
+  && ok "owned worktrees: report names cleaner's worktree" \
+  || bad "owned worktrees: report names cleaner's worktree" "$OUT"
+check "owned worktrees: three places reported" "3" \
+  "$(printf '%s\n' "$OUT" | grep -c '^OWNS=' || true)"
+
+# 15. --overwrite-tracked makes it a deliberate act, and only then.
+own_fixture
+run --root "$ROOT" --local --overwrite-tracked
+check "override: exit" 0 "$RC"
+check "override: status" "STATUS=UPDATED" "$(status_line)"
+[ ! -f "$ROOT/swarmforge/scripts/old-file.sh" ] \
+  && ok "override: the project's own tree really was replaced" \
+  || bad "override: the project's own tree really was replaced" "old-file.sh survived"
+
+# 16. an untracked project is unaffected — the pre-#88 path, byte for byte.
+#     podsum is this shape (issue #87), and it must keep working with no flag.
+reset_stub; reset_root; write_good_launcher
+run --root "$ROOT" --local
+check "untracked: still updates with no flag" 0 "$RC"
+check "untracked: status" "STATUS=UPDATED" "$(status_line)"
+
+# 17. the success report says where it actually wrote, and what it did NOT
+#     write yet: role worktrees receive the tree at the next launch, via
+#     sync-worktree-scripts!, not from this verb.
+printf '%s\n' "$OUT" | grep -q "^WROTE=$ROOT/swarmforge/scripts\$" \
+  && ok "success report names the path written" || bad "success report names the path written" "$OUT"
+printf '%s\n' "$OUT" | grep -q '^MIRRORS=' \
+  && ok "success report names the mirror-at-launch step" || bad "success report names the mirror-at-launch step" "$OUT"
+
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
