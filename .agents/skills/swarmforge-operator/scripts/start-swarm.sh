@@ -161,6 +161,26 @@ trap release_lock EXIT
 # 3. INCOMPLETE — exactly one present. A torn install or an interrupted
 #               bootstrap. Never guess which side is right: DRIFT/4 and make
 #               the operator run `update SwarmForge scripts` or recover.
+# 4. PROJECT_OWNED — the managed project version-controls swarmforge/scripts
+#               itself (issue #88). All three states above assume the operator
+#               installed that tree, so the manifest describes it. When the
+#               project owns it, there is nothing for the manifest to be right
+#               about: a project that rolls its own tree back to its committed
+#               version would DRIFT on every launch, and `--force` would become
+#               the routine way to start it — the same always-on gate issue #58
+#               had to fix, and the same one issue #87 is about.
+#
+#               Derived from git rather than declared in a file, on purpose.
+#               A declaration is a fourth artifact that can be stale, forgotten
+#               on a new clone, or disagree with reality; `git ls-files` cannot.
+#               It is also the exact predicate `update SwarmForge scripts` uses
+#               to refuse (8 OWNED), so the two verbs cannot form different
+#               opinions about who owns the tree. The cost, named rather than
+#               hidden: after `update --overwrite-tracked` the tree is both
+#               tracked AND operator-installed, and this check will call it
+#               project-owned and skip the digest comparison. That is the
+#               deliberate trade — an artifact that can lie is worse than a
+#               predicate that is occasionally too generous.
 SNAPSHOT_PRESENT=0
 run_remote_test() { # $1 = test expression body
   if [ "$LOCAL" = 1 ]; then bash -c "$1"; else ssh -n -i "$KEY" "$TARGET" "$1"; fi
@@ -169,8 +189,11 @@ run_remote_test "test -d $(printf '%q' "$ROOT/swarmforge/scripts")" 2>/dev/null 
 MANIFEST_PRESENT=0
 run_remote_test "test -f $(printf '%q' "$ROOT/.swarmforge/scripts-manifest")" 2>/dev/null && MANIFEST_PRESENT=1
 
+PROJECT_OWNED=0
+[ -z "$(git_tracked "$ROOT" swarmforge/scripts)" ] || PROJECT_OWNED=1
+
 FRESH_BOOTSTRAP=0
-if [ "$FORCE" != 1 ]; then
+if [ "$FORCE" != 1 ] && [ "$PROJECT_OWNED" != 1 ]; then
   if [ "$SNAPSHOT_PRESENT" = 0 ] && [ "$MANIFEST_PRESENT" = 0 ]; then
     FRESH_BOOTSTRAP=1
   elif [ "$SNAPSHOT_PRESENT" = 1 ] && [ "$MANIFEST_PRESENT" = 1 ]; then
@@ -249,5 +272,10 @@ if [ "$READY" != 1 ]; then
     "$ROOT/.swarmforge/tmux-socket never came up (or its tmux server never answered) within ${READY_TRIES}x${READY_INTERVAL}s — check $ROOT/$LOG" 5
 fi
 
-printf 'STATUS=STARTED\nROOT=%s\nSOCK=%s\nTERMINAL=%s\n' "$ROOT" "$SOCK" "$TERMINAL"
+# SNAPSHOT says which of the two worlds this launch was in, because the
+# answer changes what a DRIFT would have meant — and a project-owned tree is
+# never drift-checked at all.
+printf 'STATUS=STARTED\nROOT=%s\nSOCK=%s\nTERMINAL=%s\nSNAPSHOT=%s\n' \
+  "$ROOT" "$SOCK" "$TERMINAL" \
+  "$([ "$PROJECT_OWNED" = 1 ] && echo project-owned || echo operator-managed)"
 exit 0

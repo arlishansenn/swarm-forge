@@ -74,6 +74,22 @@ git_status() { # $1 = worktree path (as recorded in roles.tsv)
 # shipped), 1 = not an ancestor, anything else = could not be confirmed —
 # callers must treat "not confirmed" the same as "not shipped" (report it),
 # never suppress a completed task just because the check itself failed.
+# Does the MANAGED project version-control these paths? (issue #88.) One
+# `git ls-files` is the whole test, and it is the single fact two verbs need:
+# `update SwarmForge scripts` must not overwrite a tree the project owns, and
+# `start swarm` must not compare such a tree against an operator manifest that
+# never described it. Same LOCAL/remote split as git_status — the managed
+# project is a different machine from the operator's source checkout.
+git_tracked() { # $1 = repo dir, $2 = pathspec -> tracked paths, empty if none
+  if [ "$LOCAL" = 1 ]; then
+    git -C "$1" ls-files -- "$2" 2>/dev/null || true
+  else
+    local cmd
+    cmd=$(printf '%q' git)$(printf ' %q' -C "$1" ls-files -- "$2")
+    ssh -n -i "$KEY" "$TARGET" "$cmd" 2>/dev/null || true
+  fi
+}
+
 git_merge_base_ancestor() { # $1 = commit
   if [ "$LOCAL" = 1 ]; then
     git -C "$ROOT" merge-base --is-ancestor "$1" origin/main

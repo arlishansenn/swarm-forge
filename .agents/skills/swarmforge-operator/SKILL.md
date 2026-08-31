@@ -58,6 +58,12 @@ line. The exit codes have one meaning across all verbs:
 - `5` `ERROR` — the verb failed.
 - `6` `UNSAFE` — the verb refused to do destructive work because it found a
   condition that a human must clear first. Nothing was changed.
+- `7` `STILL_RUNNING` — the verb hit a deadline the CALLER set, not a failure.
+  The work is still going; running the same command again continues it.
+  (`run issue --max-wait`.)
+- `8` `OWNED` — the managed project version-controls the paths the verb would
+  write, so who wins is a human's decision, not a default. Nothing was
+  changed. (`update SwarmForge scripts`.)
 
 **A failure says why in plain text.** After the `STATUS=` line, a failed verb prints
 one sentence that tells you what to do. There is no machine-readable reason field:
@@ -184,6 +190,17 @@ simply does not export that variable at all when `auto` is chosen, letting
 `detect-terminal-backend`'s own fallback chain run exactly as it does today.
 Any other value is `2` `USAGE`, same as a missing `--root`.
 
+**A project that owns its own snapshot is not drift-checked** (issue #88).
+The three states this verb told apart — FRESH, MANAGED, INCOMPLETE — all
+assume the operator installed `swarmforge/scripts`, so the manifest describes
+it. When the managed project version-controls that tree itself, there is
+nothing for the manifest to be right about: rolling back to the project's own
+committed version made every launch report `4` `DRIFT`, and `--force` became
+the routine way to start it. The state is derived from `git ls-files`, the
+same predicate `update SwarmForge scripts` refuses on, so the two verbs cannot
+disagree about who owns the tree. The report says which world it was in:
+`SNAPSHOT=project-owned` or `SNAPSHOT=operator-managed`.
+
 `--dashboard-port <N>` (issue #78) is forwarded as `SWARMFORGE_DASHBOARD_PORT`,
 which `pack_web` binds instead of asking the kernel for a random one. Omit it
 and nothing is exported — `pack_web` keeps the random port it has always
@@ -280,6 +297,39 @@ installed source before that role starts, so a stale per-role copy can't
 outlive this verb's own project-level check.
 
 ## Verb: `update SwarmForge scripts`
+
+### When the project owns its own `swarmforge/` (issue #88)
+
+Some managed projects **commit** `swarm` and `swarmforge/` instead of letting
+this verb install them. pi-governance does, with its own constitution
+articles. Installing over that is not an update, it is a takeover — and it
+used to happen in silence: one run rewrote 31 tracked files, added 5, and
+rewrote `swarm`'s `ARCHIVE_URL`, in **six** places (the root plus five role
+worktrees, which `sync-worktree-scripts!` mirrors into at the next launch).
+The verb reported `UPDATED` and exited `0`. `start swarm` then compared the
+installed tree with the manifest and found them in agreement, because by then
+both described the fork's version. The root branch was a PR head, so one
+`git add -A` from a role would have committed 38 SwarmForge files into an
+unrelated PR.
+
+The verb now asks `git ls-files` first and refuses with `8` `OWNED`, listing
+every checkout that would be written:
+
+```
+STATUS=OWNED
+<root> tracks the paths this verb writes — installing would overwrite files the project itself version-controls, in 3 place(s):
+OWNS=/home/msb/project/pi-governance (31 tracked files under swarmforge/scripts)
+OWNS=/home/msb/project/pi-governance/.worktrees/coder (31 tracked files under swarmforge/scripts)
+...
+```
+
+`--overwrite-tracked` is the deliberate "this fork's version wins here". It is
+a separate flag from `--force` on purpose: `--force` is about a stale lock,
+and one flag meaning "ignore whatever is in the way" is a flag nobody reads.
+
+A successful run also reports `WROTE=` (the one tree it changed) and
+`MIRRORS=` (how many role worktrees receive it at the next `start swarm` —
+not now).
 
 Run the bundled script; it installs THIS repo's own `swarmforge/scripts/`
 into a managed project's `swarmforge/scripts/`, the counterpart to `start

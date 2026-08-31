@@ -613,6 +613,65 @@ check "bad dashboard-port status" "STATUS=USAGE" "$(status_line)"
 ! launcher_ran && ok "bad --dashboard-port: launcher never ran" \
   || bad "bad --dashboard-port: launcher never ran" "$STUB"
 
+# ---------- issue #88: the fourth snapshot state ----------
+# FRESH / MANAGED / INCOMPLETE all assume the operator installed
+# swarmforge/scripts, so the manifest describes it. pi-governance commits its
+# own tree, and after rolling back to its committed version every launch
+# reported DRIFT — making --force the routine way to start it. An always-on
+# gate is one nobody reads (issue #58 had to fix exactly that shape).
+
+GITT() { git -c user.email=t@t.test -c user.name=test "$@"; }
+own_snapshot() {  # make $ROOT a repo that tracks its own swarmforge/scripts
+  rm -rf "$ROOT/.git" "$ROOT/.swarmforge/update-lock"
+  reset_scripts_fixture
+  GITT -C "$ROOT" init -q
+  GITT -C "$ROOT" add -A >/dev/null 2>&1
+  GITT -C "$ROOT" commit -q -m init >/dev/null 2>&1
+}
+bogus_manifest() {
+  printf 'SOURCE_COMMIT=deadbeef\nSOURCE_REPO=unknown\nDIGEST=not-the-real-digest\n' \
+    > "$ROOT/.swarmforge/scripts-manifest"
+}
+
+# 29. project-owned tree + a manifest that disagrees: must START, not DRIFT.
+#     Against the pre-#88 script this is 4 DRIFT — that is the RED probe.
+reset_stub
+own_snapshot
+bogus_manifest
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh SF_START_READY_TRIES=10 SF_START_READY_INTERVAL=0.3 SF_TEST_DELAY=0.5 \
+  run --local --root "$ROOT" --terminal none
+check "project-owned exit" 0 "$RC"
+[ "$(status_line)" = "STATUS=STARTED" ] \
+  && ok "project-owned starts instead of reporting DRIFT" \
+  || bad "project-owned starts instead of reporting DRIFT" "$OUT"
+printf '%s\n' "$OUT" | grep -q '^SNAPSHOT=project-owned$' \
+  && ok "project-owned is named in the report" || bad "project-owned is named in the report" "$OUT"
+
+# 30. the same bogus manifest on an operator-managed tree still DRIFTs. The
+#     fourth state must not have quietly disabled the check for everyone.
+reset_stub
+rm -rf "$ROOT/.git" "$ROOT/.swarmforge/update-lock"
+reset_scripts_fixture
+bogus_manifest
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh SF_START_READY_TRIES=3 SF_START_READY_INTERVAL=0.2 \
+  run --local --root "$ROOT" --terminal none
+check "operator-managed still DRIFTs on a bad manifest" 4 "$RC"
+! launcher_ran && ok "operator-managed DRIFT: launcher never ran" \
+  || bad "operator-managed DRIFT: launcher never ran" "$STUB"
+
+# 31. a normal managed launch says so, so the two worlds are told apart in
+#     the report and not only in the exit code.
+reset_stub
+rm -rf "$ROOT/.git" "$ROOT/.swarmforge/update-lock"
+reset_scripts_fixture
+write_matching_manifest
+SWARM_LAUNCHER=$WORK/bin/slow-launcher.sh SF_START_READY_TRIES=10 SF_START_READY_INTERVAL=0.3 SF_TEST_DELAY=0.5 \
+  run --local --root "$ROOT" --terminal none
+check "operator-managed happy exit" 0 "$RC"
+printf '%s\n' "$OUT" | grep -q '^SNAPSHOT=operator-managed$' \
+  && ok "operator-managed is named in the report" || bad "operator-managed is named in the report" "$OUT"
+rm -rf "$ROOT/.git"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
