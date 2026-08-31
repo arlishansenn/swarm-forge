@@ -364,10 +364,29 @@ upstream 的副作用发生。翻案只需改 `swarmforge.conf` 里那三行的 
 `-X theirs` 会默默把它按 upstream 的分法合掉——这条差异没有测试钉得住，因为「哪个角色跑
 哪个 agent」两种配置都是合法配置。
 
+**2026-08-31 翻案了：三条 Pack 都跟 upstream 的 grok/codex 混合分法。** 由 owner 明确
+决定，等于撤回 issue #38 的统一。PR #108 / #109 / #110。这一格从此**不再是 fork 差异**，
+下次 merge 直接跟 upstream 走，不用再确认。
+
+**翻案时踩到的一件事，值得记住：「跟 upstream」不等于「merge 一下就好」。** six-pack 的
+`hardender` 在 merge 之后仍然是 `grok`，而且 git 一个冲突都没报——因为 merge base 里它本
+来就是 `codex --yolo`，upstream **从没动过那一行**，是本 fork 当初按 issue #38 单方面改的。
+只有一侧改过，git 就正确地保留了 fork 的版本。**upstream 没有改的那些行，merge 永远不会替
+你改回去**；要真的对齐，只能拿 upstream 的 conf 逐行 diff。two-pack 与 four-pack 核对过，
+没有同类残留。
+
 `--yolo` 只加在 codex 行，grok 行一个都不加。这是 upstream 自己在 six-pack 的 conf 注释里
 写明的规则（`Grok yolo is --permission-mode bypassPermissions, added by the launcher`），
 三条分支照此处理；`two-pack`/`four-pack` 在 upstream 侧全是 codex，所以看起来像「全都加
 了」，不要照那个表象抄。
+
+**这条规则在 2026-08-31 的翻案里保住了，而且是手工保住的。** upstream 那三个 commit 把
+解释它的注释块整段删掉（那段同时讲了 issue #38 与 `--yolo`，两件事写在一起）。issue #38
+那半该删，`--yolo` 这半不该——`extra-args-prefix` 把 token 直接拼进 agent 命令行，grok
+没有 `--yolo` 这个 flag，`swarmforge.bb` 的 `grok-permission-prefix` 已经给每个 grok row
+传了 `--permission-mode bypassPermissions`。`two-pack` 与 `four-pack` 各自补回了这半条；
+`six-pack` 不用补，upstream 自己在 conf 里写了等价的一句。**把两件不相干的事写进同一个注释
+块，就是这样在 merge 里一起消失的。**
 
 **这一轮的钉子数：** 三条分支的 `test-swarm-launcher.sh` 各 **29 PASS / 0 FAIL**；RED 探针
 （把该分支的 `swarm` 换成 upstream 同名分支的版本）各 **7 项变红**。issue #71 票面里写的
