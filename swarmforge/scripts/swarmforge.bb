@@ -1108,10 +1108,19 @@
     "--test-create-role-session" (test-create-role-session! (second args) (nth args 2))
     "--start-project" (run-project! (second args))
     "--stop-project" (run-stop-project! (second args))
-    (let [root (or (first args) (System/getProperty "user.dir"))]
-      (if (forge-root? root)
-        (run-host! root)
-        (run-main! root)))))
+    (let [arg (first args)]
+      ;; issue #113: the default branch treats its argument as a project root,
+      ;; and run-main! reaches initialize-git-repo!, which `git init`s that
+      ;; directory. So a mistyped flag used to become a git repo named after
+      ;; itself, and the error only arrived after the write. Refuse anything
+      ;; that looks like an option before touching the disk — the case above is
+      ;; already the list of options this script knows.
+      (when (and arg (str/starts-with? arg "-"))
+        (fail! (str red "Error:" reset " Unknown option " arg)))
+      (let [root (or arg (System/getProperty "user.dir"))]
+        (if (forge-root? root)
+          (run-host! root)
+          (run-main! root))))))
 
 (when (= (str *file*) (System/getProperty "babashka.file"))
   (apply -main *command-line-args*))
