@@ -1,0 +1,7 @@
+schema: intent-driven
+rules:
+  proposal: {}
+  specs: {}
+  design: {}
+  adr: {}
+  tasks: {}
