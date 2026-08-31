@@ -470,6 +470,19 @@ by this project's own `pack_web`**, and only then **can I reach it** (tunnel or
 tailnet). Then it opens or reuses one workspace named `Dashboard · <basename>`
 with a browser surface on the resulting URL.
 
+**A reused surface is checked, not assumed** (issue #99). Existing is not the
+same as correct: the surface picker matches on type and never looked at the url,
+and the reuse path only repaired a *missing* surface — so the report printed this
+run's URL while the screen stayed on the previous, dead port. That is the normal
+case, not a rare one: `pack_web` binds a fresh port on every start unless the
+project passes `--dashboard-port`, so after one restart the reused surface is
+always stale. The verb now reads where the surface actually points
+(`cmux browser --surface <ref> get-url`) and navigates it when that is not this
+run's URL; when it already matches, no cmux mutation is made at all. `URL=` in
+the report is the address the surface points at, or the verb does not report
+success — the earlier questions prove the *server* is right, this one proves the
+*screen* is.
+
 The order matters and used to be wrong. `stop swarm` deletes `pack_web.pid` but
 **nothing deletes `dashboard-url`**, so after a stop those two disagree — and
 with reachability checked first, a stopped project died `5` `ERROR`

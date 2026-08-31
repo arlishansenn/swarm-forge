@@ -432,7 +432,7 @@ If the backend cannot open sessions at all, set both capability functions to `re
 
 看板本身是 `pack_web`：`./swarm` 启动时随 swarm 一起起的本地 HTTP 服务，页面展示并可操作 swarm 状态（agent 状态、任务/交接、approvals、chat、teardown），只监听远端 `127.0.0.1`，所以远程访问必须走隧道。
 
-`dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上，另加 `--tailnet`）：按顺序问四件事，第一个「否」就停——**swarm 在不在跑**（读 `tmux-socket` 探 `list-sessions`，与 `open`/`start`/`stop`/`read swarm`、`wake`/`talk role`、`update SwarmForge scripts` 用的是同一条判定）→ 有没有 `dashboard-url` → 那个端口是不是本项目自己的 `pack_web` → 最后才是能不能连上。然后在当前 window 开/复用 `Dashboard · <basename>` workspace。
+`dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上，另加 `--tailnet`）：按顺序问四件事，第一个「否」就停——**swarm 在不在跑**（读 `tmux-socket` 探 `list-sessions`，与 `open`/`start`/`stop`/`read swarm`、`wake`/`talk role`、`update SwarmForge scripts` 用的是同一条判定）→ 有没有 `dashboard-url` → 那个端口是不是本项目自己的 `pack_web` → 最后才是能不能连上。然后在当前 window 开/复用 `Dashboard · <basename>` workspace。**复用时会校验那个 browser surface 现在指向哪**（issue #99）：不是本次的 URL 就 `goto` 过去，已经一致则一个 cmux mutation 都不做。此前只在 surface **缺失**时才修，于是报文打印新 URL 而画面停在上一个已死端口——而这是常态不是例外，`pack_web` 每次启动都换端口（除非用了 `--dashboard-port`）。报文里的 `URL=` 与 surface 实际指向的一致，否则不报成功。
 
 **顺序是修过的（issue #100）。** `stop swarm` 会删 `pack_web.pid`，但**没有任何动词删 `dashboard-url`**，所以停机后这两个输入互相矛盾；而可达性检查排在前面时，一个只是停机的项目会报 `5` ERROR（「隧道坏了」）而不是 `3` STOPPED，`--tailnet` 那条还会让人去跑一条**已经跑过**的 `tailscale serve`。**有意的取舍**：swarm 停了而 `pack_web` 仍独活的项目现在会被 `3` 拒绝——这个动词开的是某个 swarm 的看板，swarm 不在就没有可看的东西。退出码语义同上；`3` 表示 dashboard-url 缺失，绝不自己起 `pack_web.sh --serve`。报文里的 `TUNNEL=` 说明走了哪条路：`created`/`reused`/`tailnet`/`local`。
 
