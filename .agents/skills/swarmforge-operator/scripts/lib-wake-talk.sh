@@ -362,7 +362,24 @@ read_manifest() {
 # "for response", not "for <n>s", so the participle pattern above does not
 # reach it (issue #58). The spinner glyph stays out of the marker for the same
 # reason as the others — the text after it is the part that round-trips.
-BUSY_RE='esc to interrupt|[A-Za-z]+(ed|ing) for [0-9]+s|Waiting for response'
+#
+# Grok has more wordings than that one (issue #92): "Thinking… 1.4s" and
+# "Responding… 5.7s" matched nothing here, so BUSY never fired, the empty
+# prompt right below matched IDLE, and a role mid-request read IDLE. On
+# coder2's pi-governance six roles all reported IDLE while two were visibly
+# working. That points the WRONG WAY compared with issue #58: that one read
+# UNKNOWN, which is safe; this one reads IDLE, and `stop swarm` shares the
+# judgment — green preflight, kill-session, no warning that live work died.
+#
+# The added alternative is a SHAPE, not another wording: a participle followed
+# immediately by an ellipsis. That is what every one of these spinners has in
+# common, so the next wording Grok invents is covered without another patch —
+# SKILL.md's own line about chasing individual strings being "a losing race".
+# Both the single character and three dots are accepted; which one a backend
+# emits is not worth depending on. The braille spinner glyph is still NOT part
+# of the marker, for the reason already given above: the text is the part that
+# round-trips, and the shape below is enough without it.
+BUSY_RE='esc to interrupt|[A-Za-z]+(ed|ing) for [0-9]+s|Waiting for response|[A-Za-z]+(ed|ing)(…|[.][.][.])'
 IDLE_RE='^(❯|>)[[:space:]]*$|Ask .* to do anything'
 
 classify() { # $1 = one pane line ("" for nothing to classify)
@@ -392,7 +409,14 @@ classify() { # $1 = one pane line ("" for nothing to classify)
 # regex ever sees it, so `\+` silently arrives as a bare `+` quantifier and
 # the pattern then matches nothing. A character class needs no escaping and
 # survives that hop unchanged.
-FOOTER_RE='ctrl[+]o transcript'
+#
+# `transcript` is no longer required (issue #92). Grok's footer grows
+# "· 1 queued · /queue" when work is queued AND drops the trailing word, so a
+# pattern that demanded it stopped recognising the footer exactly when a role
+# was busiest — the #58 failure again, reached from the other side. `ctrl+o`
+# is the part both shapes share. Only TRAILING lines are dropped, so the
+# looser pattern cannot eat pane content that merely mentions the key.
+FOOTER_RE='ctrl[+]o'
 
 # $1 = session. Non-empty pane lines with trailing footer lines removed. Only
 # TRAILING ones: the same string appearing inside transcript history higher up

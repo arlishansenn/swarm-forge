@@ -268,6 +268,68 @@ printf '%s\n' "$(role_line coder)" | grep -q 'IDLE' \
   && ok "footer text quoted in history does not shift the input line" \
   || bad "footer text quoted in history does not shift the input line" "$(role_line coder)"
 
+# ---------- issue #92: Grok's spinner has more than one wording ----------
+# `Waiting for response…` was in BUSY_RE; `Thinking…` and `Responding…` were
+# not, and neither matches the other two alternatives — no `esc to interrupt`,
+# and `Thinking… 1.4s` has no ` for ` so the `<participle> for Ns` shape misses
+# it. Nothing matched BUSY, the empty prompt right below matched IDLE, and a
+# role mid-request read IDLE. Seen live on coder2's pi-governance: six roles
+# all reported IDLE while specifier was `Responding…` and coder was
+# `Thinking…`.
+#
+# This one points the WRONG WAY compared with issue #58. That one made every
+# Grok role read UNKNOWN — annoying, but safe. This one reads IDLE, and
+# `stop swarm` shares the judgment: a green preflight, a kill-session, and no
+# warning that live work was interrupted.
+
+# 10. a Grok role that is Thinking… is BUSY, not IDLE.
+reset_stub; touch "$STUB/live"
+set_pane swarmforge-coder '⠦ Thinking… 1.4s                                        1m46s ⇣93.2k
+❯
+Grok 4.6 (high) · always-approve · 93K / 500K (19%) · ctrl+o transcript'
+set_pane swarmforge-cleaner '❯'
+run
+check "grok thinking exit" 0 "$RC"
+printf '%s\n' "$(role_line coder)" | grep -q 'BUSY' \
+  && ok "Thinking… reads BUSY" || bad "Thinking… reads BUSY" "$(role_line coder)"
+
+# 11. and so is Responding….
+reset_stub; touch "$STUB/live"
+set_pane swarmforge-coder '⠧ Responding… 5.7s
+❯
+Grok 4.6 (high) · always-approve · 97K / 500K (20%) · ctrl+o transcript'
+set_pane swarmforge-cleaner '❯'
+run
+printf '%s\n' "$(role_line coder)" | grep -q 'BUSY' \
+  && ok "Responding… reads BUSY" || bad "Responding… reads BUSY" "$(role_line coder)"
+
+# 12. the footer has more than one shape too. With something queued it gains
+#     `· 1 queued · /queue` and LOSES the trailing `transcript`, so a footer
+#     pattern that required that word stopped dropping it — and the dropped
+#     line is what the classifier's window depends on. Same failure as #58,
+#     reached by a different route.
+reset_stub; touch "$STUB/live"
+set_pane swarmforge-coder '⠦ Thinking… 1.4s
+❯
+Grok 4.6 (high) · always-approve · 97K / 500K (20%) · 1 queued · /queue · ctrl+o'
+set_pane swarmforge-cleaner '❯'
+run
+printf '%s\n' "$(role_line coder)" | grep -q 'BUSY' \
+  && ok "queued-footer variant still reaches the spinner line" \
+  || bad "queued-footer variant still reaches the spinner line" "$(role_line coder)"
+
+# 13. an idle Grok role under the queued-footer variant is still IDLE — the
+#     widened footer pattern must not turn every Grok role BUSY instead.
+reset_stub; touch "$STUB/live"
+set_pane swarmforge-coder 'Worked for 2m56s / minimal · /help
+❯
+Grok 4.6 (high) · always-approve · 97K / 500K (20%) · 1 queued · /queue · ctrl+o'
+set_pane swarmforge-cleaner '❯'
+run
+printf '%s\n' "$(role_line coder)" | grep -q 'IDLE' \
+  && ok "queued-footer idle pane still reads IDLE" \
+  || bad "queued-footer idle pane still reads IDLE" "$(role_line coder)"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]

@@ -423,6 +423,23 @@ check "no pack_web.pid exit" 0 "$RC"
 printf '%s\n' "$OUT" | grep -q '^PACK_WEB=absent$' \
   && ok "no pack_web.pid reports absent" || bad "no pack_web.pid reports absent" "$OUT"
 
+# ---------- issue #92: a Thinking… role must block the stop ----------
+# The whole reason the false IDLE mattered: this verb shares that judgment, so
+# a role mid-request looked like a clean preflight and got killed with no
+# warning. Erring toward BUSY is the safe direction here and the classifier
+# now does; this case is what keeps it that way.
+all_clean
+set_pane swarmforge-coder '⠦ Thinking… 1.4s
+❯
+Grok 4.6 (high) · always-approve · 93K / 500K (19%) · ctrl+o transcript'
+run
+check "grok Thinking… blocks the stop" 6 "$RC"
+printf '%s\n' "$OUT" | grep -q '^BUSY=coder$' \
+  && ok "grok Thinking…: report names coder as BUSY" \
+  || bad "grok Thinking…: report names coder as BUSY" "$OUT"
+! close_swarm_called && ok "grok Thinking…: close-swarm never called" \
+  || bad "grok Thinking…: close-swarm never called" "$(cat "$STUB/calls.log")"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ]
