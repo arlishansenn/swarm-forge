@@ -90,9 +90,5 @@
         (println "COMPLETED:" (str target-file))
         (finish-done!)))))
 
-(try
-  (-main)
-  ;; handoff-lib reports a broken roles.tsv by throwing. The agent reading this
-  ;; pane needs one actionable line, not a stack trace.
-  (catch clojure.lang.ExceptionInfo e
-    (fail! (or (:exit (ex-data e)) 1) (ex-message e))))
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (-main))

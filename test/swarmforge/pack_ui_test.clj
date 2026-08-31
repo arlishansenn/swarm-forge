@@ -1051,9 +1051,18 @@
   (let [result (pack-web (tmp-dir) false "--test-agent-page" "specifier")]
     (is (zero? (:exit result)))
     (is (str/includes? (:out result) "/api/agents/specifier/pane"))
+    (is (not (str/includes? (:out result) "?project=")))
     (is (str/includes? (:out result) "setInterval(refresh"))
     (is (str/includes? (:out result) "toEndSoon"))
     (is (str/includes? (:out result) "stickBottom"))))
+
+(deftest pack-agent-page-polls-project-pane
+  ;; Given a forge project agent window
+  ;; When serving the agent session page
+  ;; Then it polls /api/agents/<role>/pane?project=<name>
+  (let [result (pack-web (tmp-dir) false "--test-agent-page" "specifier" "HTW")]
+    (is (zero? (:exit result)))
+    (is (str/includes? (:out result) "/api/agents/specifier/pane?project=HTW"))))
 
 (deftest pack-web-test-pane-prints-recorded-pane
   ;; Given a recorded pane.txt for coder task cave-walk
@@ -1170,6 +1179,20 @@
       (finally
         (.destroyForcibly proc)
         (.waitFor proc)))))
+
+(deftest pack-web-thermometer-heat-is-per-agent
+  ;; Given two pack roots each with a specifier
+  ;; When one pane changes and the other stays put
+  ;; Then only the changed agent's thermometer rises
+  (let [root-a (tmp-dir)
+        root-b (tmp-dir)
+        _ (setup-pack! root-a ["specifier"])
+        _ (setup-pack! root-b ["specifier"])
+        result (pack-web root-a false "--test-heat-isolation" (str root-a) (str root-b))
+        body (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (pos? (:changed body)))
+    (is (zero? (:stable body)))))
 
 (deftest pack-web-thermometer-heat-rises-when-pane-changes
   ;; Given a specifier row
@@ -1475,6 +1498,39 @@
     (is (not (str/includes? (str (:status card)) "view transcript")))
     (is (not (str/includes? (str (:status card)) "running the handoff command again")))))
 
+(deftest pack-web-codex-status-is-last-work-bullet
+  ;; Given a Codex pane of throwaway bullets then a work bullet with no I'll
+  ;; When --test-status-pane
+  ;; Then status is that work bullet
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             (str "• You have 1 usage limit reset available. Run /usage to use one.\n"
+                                  "• Ran 4 commands · ctrl + t to view transcript\n"
+                                  "• Edited features/htw.feature\n"
+                                  "• Added tmp/htw_handoff.txt\n"
+                                  "• Searching the web\n"
+                                  "• Searched the web for yob\n"
+                                  "• Working (3s • esc to interrupt)\n"
+                                  "• The specification now makes every random domain explicit.\n"))
+        card (first (:tasks (json/parse-string (:out result) true)))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status card)) "specification now makes every random domain explicit"))
+    (is (not (str/includes? (str (:status card)) "Ran 4")))
+    (is (not (str/includes? (str (:status card)) "Working")))))
+
+(deftest pack-web-non-codex-status-still-uses-ill
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (set-backend! root "grok")
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             "I'll write the cave stories.\n")
+        card (first (:tasks (json/parse-string (:out result) true)))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status card)) "I'll write the cave stories"))))
+
 (deftest pack-web-card-status-ignores-handoff-mail-banner
   ;; Given an I'll sentence and a later If idle, run ready_for_next.sh banner
   ;; When --test-status-pane
@@ -1552,6 +1608,45 @@
     (is (str/includes? (str (:status (get by-name "Holy Hand Grenade")))
                        "I'm merging the grenade"))
     (is (= "waiting in queue" (:status (get by-name "HTW"))))))
+
+(deftest pack-web-shows-yellow-merging-card-for-handback
+  ;; Given htw in architect and jump in coder, plus a reverse htw copy in coder in_process
+  ;; When --test-status-pane
+  ;; Then a merging card for htw is in coder with Merging refactorer, jump waits, real htw stays architect
+  (let [root (tmp-dir)
+        roles four-pack-roles
+        _ (setup-pack! root roles)
+        _ (create-task root "htw" "architect")
+        _ (create-task root "jump" "coder")
+        _ (write-file
+           (fs/path (in-process-dir root roles "coder")
+                    "00_from_refactorer_to_coder.handoff")
+           (str "from: refactorer\nto: coder\npriority: 00\ntype: git_handoff\n"
+                "task: htw\nnon-forwarding: true\n\nmerge\n"))
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             "• The reverse handoff is structurally reconciled.\n")
+        state (json/parse-string (:out result) true)
+        cards (:tasks state)
+        merging (filterv :merging cards)
+        jump-card (first (filter #(= "jump" (:name %)) cards))
+        htw-card (first (filter #(and (= "htw" (:name %)) (= "architect" (:lane %))) cards))]
+    (is (zero? (:exit result)))
+    (is (= ["htw" "htw" "jump"] (mapv :name cards)))
+    (is (= 1 (count merging)))
+    (is (= "coder" (:lane (first merging))))
+    (is (= "htw" (:name (first merging))))
+    (is (= "Merging refactorer" (:status (first merging))))
+    (is (= "waiting in queue" (:status jump-card)))
+    (is (= "architect" (:lane htw-card))))
+  (let [root (tmp-dir)
+        roles four-pack-roles
+        _ (setup-pack! root roles)
+        _ (create-task root "htw" "architect")
+        _ (create-task root "jump" "coder")
+        state (web-state root)
+        merging (filterv :merging (:tasks state))]
+    (is (= [] merging))
+    (is (= "architect" (task-lane root "htw")))))
 
 (deftest pack-web-pending-approval-card-says-waiting-for-approval
   ;; Given HTW in specifier and a pending specifier→coder git_handoff for HTW
@@ -1882,6 +1977,97 @@
       (is (= "" (get after "features/console.feature")))
       (is (contains? after "features/console.feature")))))
 
+(deftest pack-web-document-api-keeps-comment-history-and-last-diff
+  (let [root (tmp-dir)
+        _ (run {:dir root} "git" "init" "-q")
+        _ (run {:dir root} "git" "config" "user.email" "test@example.com")
+        _ (run {:dir root} "git" "config" "user.name" "Test User")
+        _ (setup-pack! root)
+        _ (write-file (fs/path root "features/console.feature") "Feature: cave\n")
+        _ (run {:dir root} "git" "add" "features/console.feature")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "base")
+        _ (create-task root "HTW" "specifier")
+        task-id (:id (task-card root "HTW"))
+        first-sha (do (write-file (fs/path root "features/console.feature")
+                                  "Feature: cave\n---\n  Scenario: one\n")
+                      (run {:dir root} "git" "add" "features/console.feature")
+                      (run {:dir root} "git" "commit" "-q" "-m" "offer-1")
+                      (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD"))))
+        _ (write-file
+           (fs/path root ".swarmforge/handoffs/pending_approval/50_first.handoff")
+           (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                "task_id: " task-id "\ntask: HTW\n"
+                "commit: " first-sha "\n"
+                "artifacts: features/console.feature\n\npayload\n"))
+        first-doc (json/parse-string
+                   (:out (pack-web root true "--test-api-doc" (str root)
+                                   "features/console.feature" "50_first"))
+                   true)]
+    (is (false? (:has_diff first-doc)))
+    (is (= [] (:history first-doc)))
+    (is (str/includes? (:text first-doc) "Feature: cave"))
+    (pack-web root true "--test-save-comments" (str root)
+              "50_first" "features/console.feature" "needs an RNG")
+    (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                "50_first" "retry the spec"))))
+    (write-file (fs/path root "features/console.feature") "Feature: cave\n  Scenario: two\n")
+    (run {:dir root} "git" "add" "features/console.feature")
+    (run {:dir root} "git" "commit" "-q" "-m" "offer-2")
+    (let [second-sha (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+      (write-file
+       (fs/path root ".swarmforge/handoffs/pending_approval/50_second.handoff")
+       (str "from: specifier\nto: coder\ntype: git_handoff\n"
+            "task_id: " task-id "\ntask: HTW\n"
+            "commit: " second-sha "\n"
+            "artifacts: features/console.feature\n\npayload\n"))
+      (let [doc (json/parse-string
+                 (:out (pack-web root true "--test-api-doc" (str root)
+                                 "features/console.feature" "50_second"))
+                 true)
+            hist (vec (:history doc))]
+        (is (true? (:has_diff doc)))
+        (is (= 2 (count hist)))
+        (is (= "needs an RNG" (:text (first hist))))
+        (is (= "retry the spec" (:text (second hist))))
+        (is (not (str/blank? (:at (first hist)))))
+        (is (not (str/blank? (:at (second hist)))))
+        (is (some #(and (= "del" (:type %)) (str/includes? (str (:text %)) "one"))
+                  (:lines doc)))
+        (is (some #(and (= "del" (:type %)) (= "---" (:text %)))
+                  (:lines doc)))
+        (is (some #(and (= "add" (:type %)) (str/includes? (str (:text %)) "two"))
+                  (:lines doc)))
+        (is (some #(and (= "same" (:type %)) (str/includes? (str (:text %)) "Feature: cave"))
+                  (:lines doc)))))
+    (pack-web root true "--test-approve" (str root) "50_second")
+    (is (not (fs/exists? (fs/path root ".swarmforge/rejected-tasks" task-id "reviews.json"))))))
+
+(deftest pack-web-document-api-hides-diff-when-git-fails
+  (let [root (tmp-dir)
+        _ (run {:dir root} "git" "init" "-q")
+        _ (run {:dir root} "git" "config" "user.email" "test@example.com")
+        _ (run {:dir root} "git" "config" "user.name" "Test User")
+        _ (setup-pack! root)
+        _ (write-file (fs/path root "features/console.feature") "Feature: cave\n")
+        _ (run {:dir root} "git" "add" "features/console.feature")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "base")
+        _ (create-task root "HTW" "specifier")
+        task-id (:id (task-card root "HTW"))
+        sha (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+    (run {:dir root} "git" "branch" "-f" (str "rejected/" task-id "/latest") sha)
+    (write-file
+     (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.handoff")
+     (str "from: specifier\nto: coder\ntype: git_handoff\n"
+          "task_id: " task-id "\ntask: HTW\n"
+          "commit: notacommit\n"
+          "artifacts: features/console.feature\n\npayload\n"))
+    (let [doc (json/parse-string
+               (:out (pack-web root true "--test-api-doc" (str root)
+                               "features/console.feature" "50_hello"))
+               true)]
+      (is (false? (:has_diff doc)))
+      (is (= [] (:lines doc))))))
+
 (deftest pack-web-approve-discards-remedial-comments
   (let [root (tmp-dir)
         _ (setup-pack! root)
@@ -2169,6 +2355,198 @@
         (is (str/includes? argv "Clarification requested from: QA"))
         (is (str/includes? argv "Does the bat drop to any of 20 rooms?"))
         (is (str/includes? argv "Yes, 1 to 20."))))))
+
+(defn seed-mini-forge! [root]
+  (fs/create-dirs (fs/path root "projects"))
+  (write-file (fs/path root "swarmforge/scripts/keep.sh") "#!/bin/sh\n")
+  (write-file (fs/path root "swarmforge/constitution/articles/engineering.prompt") "eng\n")
+  (write-file (fs/path root "swarmforge/constitution/articles/workflow.prompt") "wf\n")
+  (write-file (fs/path root "swarmforge/constitution/articles/handoffs.prompt") "ho\n")
+  (doseq [pack ["two-pack" "four-pack" "six-pack"]]
+    (write-file (fs/path root "packs" pack "swarmforge/swarmforge.conf")
+                "window specifier grok master\nwindow coder grok coder\n")
+    (write-file (fs/path root "packs" pack "swarmforge/constitution.prompt") "pack-const\n")
+    (write-file (fs/path root "packs" pack "swarmforge/roles/specifier.prompt") "spec\n")
+    (write-file (fs/path root "packs" pack "swarmforge/roles/coder.prompt") "coder\n")))
+
+(deftest forge-infers-github-project-name
+  (let [result (pack-web (tmp-dir) true "--test-inferred-name" "unclebob/swarm-forge" "github")]
+    (is (zero? (:exit result)))
+    (is (= "swarm-forge" (str/trim (:out result))))))
+
+(deftest forge-new-project-writes-mission-and-conf
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (let [result (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                               "--test-new-project" (str root) "cave" "four-pack" "Hunt the wumpus")
+          dest (fs/path root "projects/cave")]
+      (is (zero? (:exit result)) (:err result))
+      (is (fs/directory? dest))
+      (is (= "Hunt the wumpus\n" (slurp (str (fs/path dest "mission.md")))))
+      (is (fs/exists? (fs/path dest "swarmforge/swarmforge.conf")))
+      (is (fs/exists? (fs/path dest "swarmforge/roles/specifier.prompt")))
+      (is (str/includes? (slurp (str (fs/path dest ".swarmforge/pack"))) "four-pack"))
+      (is (str/includes? (slurp (str (fs/path root ".swarmforge/open-projects"))) "cave")))))
+
+(deftest forge-new-project-rejects-existing-name
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "two-pack" "one")
+    (let [result (run {:dir root :env {"SWARMFORGE_SKIP_START" "1"} :ok? false}
+                      (script "pack_web.sh")
+                      "--test-new-project" (str root) "cave" "two-pack" "two")]
+      (is (not (zero? (:exit result))))
+      (is (str/includes? (str (:err result) (:out result)) "already exists")))))
+
+(deftest forge-open-already-open-alerts
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "two-pack" "m")
+    (let [result (run {:dir root :env {"SWARMFORGE_SKIP_START" "1"} :ok? false}
+                      (script "pack_web.sh")
+                      "--test-open-project" (str root) "cave")]
+      (is (not (zero? (:exit result))))
+      (is (str/includes? (str (:err result) (:out result)) "already open")))))
+
+(deftest forge-close-leaves-the-directory
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "two-pack" "m")
+    (let [result (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                               "--test-close-project" (str root) "cave")]
+      (is (zero? (:exit result)) (:err result))
+      (is (fs/directory? (fs/path root "projects/cave")))
+      (is (fs/exists? (fs/path root "projects/cave/mission.md")))
+      (is (not (str/includes? (slurp (str (fs/path root ".swarmforge/open-projects"))) "cave"))))))
+
+(deftest forge-open-without-pack-file-is-rejected
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (fs/create-dirs (fs/path root "projects/orphan"))
+    (let [result (run {:dir root :env {"SWARMFORGE_SKIP_START" "1"} :ok? false}
+                      (script "pack_web.sh")
+                      "--test-open-project" (str root) "orphan")]
+      (is (not (zero? (:exit result))))
+      (is (str/includes? (str (:err result) (:out result)) "No pack recorded")))))
+
+(deftest forge-refresh-keeps-mission-and-conf
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "four-pack" "keep me")
+    (let [conf (fs/path root "projects/cave/swarmforge/swarmforge.conf")]
+      (spit (str conf) "window specifier grok master extra-flag\n")
+      (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                    "--test-close-project" (str root) "cave")
+      (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                    "--test-open-project" (str root) "cave")
+      (is (= "keep me\n" (slurp (str (fs/path root "projects/cave/mission.md")))))
+      (is (str/includes? (slurp (str conf)) "extra-flag")))))
+
+(deftest forge-state-tags-attention-with-project
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "two-pack" "m")
+    (write-file (fs/path root "projects/cave/.swarmforge/roles.tsv")
+                (format "specifier\tmaster\t%s\tspecifier\tSpecifier\tcodex\ttask\n"
+                        (fs/path root "projects/cave")))
+    (fs/create-dirs (fs/path root "projects/cave/.swarmforge/board"))
+    (write-file (fs/path root "projects/cave/.swarmforge/handoffs/pending_approval/50_hello.handoff")
+                "from: specifier\nto: coder\ntype: git_handoff\ntask: HTW\n\npayload\n")
+    (let [state (json/parse-string
+                 (:out (pack-web root true "--test-state" (str root)))
+                 true)
+          approval (first (:approvals state))]
+      (is (true? (:forge state)))
+      (is (= "cave" (:project approval)))
+      (is (= ["cave"] (:open_projects state)))
+      (is (= "cave" (:name (first (:projects state))))))))
+
+(deftest forge-pane-capture-uses-project-root
+  ;; Given a forge with an open project and a recorded specifier pane
+  ;; When GET /api/agents/specifier/pane?project=cave
+  ;; Then it prints that pane, not the host miss
+  (let [root (tmp-dir)
+        dest (fs/path root "projects/cave")]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "two-pack" "m")
+    (write-file (fs/path dest ".swarmforge/roles.tsv")
+                (format "specifier\tmaster\t%s\tswarmforge-specifier\tSpecifier\tcodex\ttask\n"
+                        dest))
+    (write-file (fs/path dest ".swarmforge/sessions/specifier/pane.txt")
+                "cave specifier pane\n")
+    (let [host (pack-web root true "--test-pane" (str root) "specifier")
+          project (pack-web root true "--test-pane" (str root) "specifier" "cave")]
+      (is (str/includes? (:out host) "(no pane capture for specifier)"))
+      (is (str/includes? (:out project) "cave specifier pane")))))
+
+(deftest forge-mission-reads-project-mission-md
+  ;; Given an open forge project with mission.md
+  ;; When GET /api/mission?project=cave
+  ;; Then it prints that mission
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "four-pack" "Hunt the wumpus")
+    (let [result (pack-web root true "--test-mission" (str root) "cave")]
+      (is (zero? (:exit result)))
+      (is (str/includes? (:out result) "Hunt the wumpus")))))
+
+(deftest forge-card-status-is-per-project
+  ;; Given two open projects each with a specifier card and its own pane
+  ;; When --test-state
+  ;; Then each card keeps the status from its own project, not the other
+  (let [root (tmp-dir)
+        cave (fs/path root "projects/cave")
+        dice (fs/path root "projects/dice")]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "four-pack" "m")
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "dice" "four-pack" "m")
+    (setup-pack! cave ["specifier"])
+    (setup-pack! dice ["specifier"])
+    (create-task cave "htw" "specifier")
+    (create-task dice "begin" "specifier")
+    (write-file (fs/path cave ".swarmforge/sessions/specifier/pane.txt")
+                "I'm specifying Hunt the Wumpus.\n")
+    (write-file (fs/path dice ".swarmforge/sessions/specifier/pane.txt")
+                "I'll implement begin.\n")
+    (let [state (json/parse-string
+                 (:out (pack-web root true "--test-state" (str root)))
+                 true)
+          by (into {} (map (juxt :name identity) (:projects state)))
+          cave-status (:status (first (:tasks (get by "cave"))))
+          dice-status (:status (first (:tasks (get by "dice"))))]
+      (is (str/includes? (str cave-status) "Hunt the Wumpus"))
+      (is (str/includes? (str dice-status) "I'll implement begin"))
+      (is (not (str/includes? (str cave-status) "begin")))
+      (is (not (str/includes? (str dice-status) "Hunt the Wumpus"))))))
+
+(deftest forge-state-includes-lieutenant-status-lines
+  ;; Given a forge lieutenant pane with two status sentences
+  ;; When --test-state
+  ;; Then lieutenant_status is those two lines
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (fs/create-dirs (fs/path root "projects"))
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (format "lieutenant\tmaster\t%s\tswarmforge-lieutenant\tLieutenant\tgrok\ttask\tforward-only\n"
+                        root))
+    (write-file (fs/path root ".swarmforge/sessions/lieutenant/pane.txt")
+                (str "I'm listing the open projects.\n"
+                     "I'll summarize HTW next.\n"))
+    (let [state (json/parse-string
+                 (:out (pack-web root true "--test-state" (str root)))
+                 true)]
+      (is (true? (:forge state)))
+      (is (= ["I'm listing the open projects." "I'll summarize HTW next."]
+             (:lieutenant_status state))))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]
