@@ -1,3 +1,27 @@
+## ADDED Requirements
+
+### Requirement: 先探 swarm 是否在跑，用与其它 verb 相同的判定
+
+Feature: dashboard
+
+在做任何网络可达性检查之前，本 verb SHALL 用与 `open swarm` / `start swarm` /
+`stop swarm` / `read swarm` / `wake role` / `talk role` / `update SwarmForge scripts`
+**完全相同**的判定问一次 swarm 是否在跑：读 `$ROOT/.swarmforge/tmux-socket`，再探一次
+`list-sessions`。socket 文件存在但其后没有 server，SHALL 判作没在跑。
+
+这些 verb 互不调用，只靠 `.swarmforge/` 下的 runtime 文件协调，所以「文件存在不算活着，
+必须探运行时」这条判定是它们唯一的共同语言。本 verb 此前不参与它——只看 `dashboard-url`
+与 `pack_web.pid`，而这两个 artifact 寿命不同（前者没有任何 verb 会删），停机后互相矛盾
+且无从裁决。
+
+#### Scenario: swarm 没在跑时先报 STOPPED
+
+- **GIVEN** `tmux-socket` 存在，但其后没有活的 tmux server
+- **WHEN** 运行 `dashboard`，无论带不带 `--tailnet`
+- **THEN** 退出 `3`，报文说明 swarm 没在跑
+- **AND** MUST NOT 建隧道、MUST NOT 打 tailnet 地址、MUST NOT 调用 cmux
+- **AND** 去掉这道 gate，本 scenario 失败
+
 ## MODIFIED Requirements
 
 ### Requirement: 端口后面必须是本项目自己的 pack_web
@@ -29,33 +53,7 @@ HTTP 200 只证明**有东西**在应答那个端口，不证明它是本项目�
 
 - **GIVEN** swarm 已停：`pack_web.pid` 不存在，而 `dashboard-url` 仍留在磁盘上
 - **WHEN** 运行 `dashboard`，无论带不带 `--tailnet`
-- **THEN** 退出 `3`，报文说明 swarm 没在跑
+- **THEN** 退出 `3`，报文说明没在跑
 - **AND** MUST NOT 退出 `5`——把「没开机」报成「verb 坏了」，会让人去查隧道与网络，而
   正确动作只是 `start swarm`
-- **AND** 把两个检查的顺序换回改动前的版本，本 scenario 失败
-
-### Requirement: 走 tailnet 时不建隧道也不碰 tailscale
-
-带 `--tailnet` 时，本 verb SHALL 从 `--target` 取 tailscale IP、确认 `http://<ip>:<port>/`
-应答 200，并报 `TUNNEL=tailnet`。它 MUST NOT 执行任何 `tailscale` 命令——发布端口是操作者
-的一次性动作，那份 serve 配置不归本 verb 创建、修复或清理。
-
-不带该 flag 时行为不变：建 SSH local-forward，报 `TUNNEL=created` 或 `reused`。
-
-端口不应答时，报文 SHALL 区分两种原因，MUST NOT 一律归为「没发布」：端口确实没有发布在
-tailnet 上，与端口已发布但后面无人监听，需要的人类动作不同。建议一条已经执行过的命令，
-不是含糊，是把人引到死路上。
-
-#### Scenario: 端口没发布时干净退出并给出该敲的命令
-
-- **GIVEN** `--tailnet`，且该端口没有在 tailnet 上发布
-- **WHEN** 运行 `dashboard`
-- **THEN** 退出 `5`，报文含目标 URL 与该执行的 `tailscale serve` 命令原文
-- **AND** 没有建 workspace，没有建隧道，也没有执行任何 `tailscale` 命令
-
-#### Scenario: 端口已发布但无人监听时不建议重跑 tailscale serve
-
-- **GIVEN** `--tailnet`，该端口**已经**发布在 tailnet 上，但后面没有进程在监听
-- **WHEN** 运行 `dashboard`
-- **THEN** 报文 MUST NOT 建议执行 `tailscale serve`——那条命令已经生效，再跑一次什么都不会改变
-- **AND** 报文说明的是真实原因：那个端口后面没有东西在服务
+- **AND** 把归属检查换回可达性之后，本 scenario 失败
