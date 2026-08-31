@@ -117,6 +117,22 @@ run() {  # run [extra args...]
     bash "$STOP" --local --root "$ROOT" "$@" 2>&1)
   RC=$?
 }
+run_cs() {  # run_cs <close-swarm-path> [extra args...]
+  local cs=$1; shift
+  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB CLOSE_SWARM="$cs" \
+    bash "$STOP" --local --root "$ROOT" "$@" 2>&1)
+  RC=$?
+}
+# a close-swarm that fails the way a real one does when it cannot do its job
+cat > "$WORK/bin/close-swarm-fails" <<'EOF'
+#!/usr/bin/env bash
+STUB=${STUB:?}
+printf 'close-swarm-fails %s\n' "$*" >> "$STUB/calls.log"
+echo "no tmux server on that socket" >&2
+exit 1
+EOF
+chmod +x "$WORK/bin/close-swarm-fails"
+
 close_swarm_called() { grep -q '^close-swarm ' "$STUB/calls.log"; }
 kill_session_called() { grep -q 'kill-session' "$STUB/calls.log"; }
 
@@ -310,6 +326,88 @@ printf '%s\n' "$OUT" | head -1 | grep -q '^STATUS=UNSAFE$' \
   && ok "grok busy blocks: UNSAFE" || bad "grok busy blocks: UNSAFE" "$OUT"
 close_swarm_called && bad "grok busy blocks: close-swarm must not run" "$(cat "$STUB/calls.log")" \
   || ok "grok busy blocks: close-swarm never ran"
+
+# ---------- issue #82: a stop that did not happen must not report STOPPED ----
+
+# 13. close-swarm exits non-zero: STATUS=ERROR/5, its stderr carried through,
+#     and STATUS=STOPPED nowhere in the report. `|| true` made this exit 0
+#     with STATUS=STOPPED while the swarm kept running — this case is the one
+#     that must go red against that version.
+all_clean
+run_cs "$WORK/bin/close-swarm-fails"
+check "close-swarm failure exit" 5 "$RC"
+printf '%s\n' "$OUT" | head -1 | grep -q '^STATUS=ERROR$' \
+  && ok "close-swarm failure status is ERROR" || bad "close-swarm failure status is ERROR" "$OUT"
+printf '%s\n' "$OUT" | grep -q 'STATUS=STOPPED' \
+  && bad "close-swarm failure never claims STOPPED" "$OUT" \
+  || ok "close-swarm failure never claims STOPPED"
+printf '%s\n' "$OUT" | grep -q 'no tmux server on that socket' \
+  && ok "close-swarm failure carries its stderr" || bad "close-swarm failure carries its stderr" "$OUT"
+
+# 14. the same on the --force path. --force waives the preflight, never the
+#     question of whether the stop actually ran.
+all_clean
+run_cs "$WORK/bin/close-swarm-fails" --force
+check "force close-swarm failure exit" 5 "$RC"
+printf '%s\n' "$OUT" | head -1 | grep -q '^STATUS=ERROR$' \
+  && ok "force close-swarm failure status is ERROR" || bad "force close-swarm failure status is ERROR" "$OUT"
+printf '%s\n' "$OUT" | grep -q 'STATUS=STOPPED' \
+  && bad "force close-swarm failure never claims STOPPED" "$OUT" \
+  || ok "force close-swarm failure never claims STOPPED"
+
+# 15. the live #82 shape: the configured close-swarm does not exist on the
+#     target at all. The report must say so and name the way out, because the
+#     default path only exists on the operator's own machine.
+all_clean
+run_cs /nonexistent/dir/close-swarm
+check "missing close-swarm exit" 5 "$RC"
+printf '%s\n' "$OUT" | grep -q 'STATUS=STOPPED' \
+  && bad "missing close-swarm never claims STOPPED" "$OUT" \
+  || ok "missing close-swarm never claims STOPPED"
+printf '%s\n' "$OUT" | grep -qF '/nonexistent/dir/close-swarm' \
+  && ok "missing close-swarm names the path it tried" || bad "missing close-swarm names the path it tried" "$OUT"
+printf '%s\n' "$OUT" | grep -q -- '--close-swarm' \
+  && ok "missing close-swarm names --close-swarm as the way out" \
+  || bad "missing close-swarm names --close-swarm" "$OUT"
+
+# 16. --close-swarm <path> selects the stopper, and beats the environment.
+all_clean
+OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB CLOSE_SWARM=/nonexistent/dir/close-swarm \
+  bash "$STOP" --local --root "$ROOT" --close-swarm "$WORK/bin/close-swarm" 2>&1)
+RC=$?
+check "--close-swarm exit" 0 "$RC"
+printf '%s\n' "$OUT" | head -1 | grep -q '^STATUS=STOPPED$' \
+  && ok "--close-swarm status is STOPPED" || bad "--close-swarm status is STOPPED" "$OUT"
+close_swarm_called && ok "--close-swarm beats CLOSE_SWARM in the environment" \
+  || bad "--close-swarm beats the environment" "$(cat "$STUB/calls.log")"
+
+# 17. pack_web does not outlive the stop. close-swarm only knows about tmux,
+#     so a surviving pack_web plus a later start on a fixed port gives one
+#     $ROOT two live dashboards — the squatting case `dashboard`'s ownership
+#     check exists to refuse. Uses a real process, not a stub: `kill` is a
+#     shell builtin and cannot be shadowed on PATH.
+all_clean
+sleep 300 &
+PW_PID=$!
+printf '%s\n' "$PW_PID" > "$ROOT/.swarmforge/pack_web.pid"
+run
+check "pack_web case exit" 0 "$RC"
+printf '%s\n' "$OUT" | grep -q '^PACK_WEB=stopped$' \
+  && ok "pack_web reported stopped" || bad "pack_web reported stopped" "$OUT"
+sleep 0.3
+kill -0 "$PW_PID" 2>/dev/null \
+  && { bad "pack_web process actually died" "pid $PW_PID still alive"; kill "$PW_PID" 2>/dev/null; } \
+  || ok "pack_web process actually died"
+[ -f "$ROOT/.swarmforge/pack_web.pid" ] \
+  && bad "pack_web.pid removed" "still there" || ok "pack_web.pid removed"
+
+# 18. no pid file at all is not an error — plenty of swarms never had one.
+all_clean
+rm -f "$ROOT/.swarmforge/pack_web.pid"
+run
+check "no pack_web.pid exit" 0 "$RC"
+printf '%s\n' "$OUT" | grep -q '^PACK_WEB=absent$' \
+  && ok "no pack_web.pid reports absent" || bad "no pack_web.pid reports absent" "$OUT"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
