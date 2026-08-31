@@ -36,6 +36,18 @@ _Avoid_: pack (when meaning the running process)
 A named role topology (`two-pack`, `four-pack`, `six-pack`) recorded in `swarmforge.conf`.
 _Avoid_: swarm (when meaning the topology file)
 
+**Board**:
+The set of tasks a swarm has been given, each sitting in one lane. A task's lane is the only authority on whether that task is finished.
+_Avoid_: task list, queue, kanban
+
+**Dashboard**:
+The web page an operator reads a swarm through and answers it through — the one place clarifications and approvals are resolved and tasks are posted.
+_Avoid_: pack web, the UI, the board (when meaning the whole page)
+
+**pack_web**:
+The server process that serves one swarm's Dashboard. It lives alongside a swarm rather than inside it: stopping it closes the Dashboard and leaves every role running.
+_Avoid_: dashboard server, web server, Dashboard (when meaning the process)
+
 ## Operator verbs
 
 An operator verb is one named operation an operator runs against a managed project. Every verb is one of three kinds, and the kind decides what the verb owes the operator when it finishes.
