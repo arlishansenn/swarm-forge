@@ -20,3 +20,15 @@ Use the canonical triage labels defined for this repository. See `docs/agents/tr
 ### Domain docs
 
 Use the single-context domain documentation layout. See `docs/agents/domain.md`.
+
+## OpenSpec
+
+The `intent-driven` schema comes from `arlishansenn/openspec-schemas`, a fork
+whose only divergence is that repository-level ADRs go to `docs/adr/` instead
+of upstream's top-level `adr/`. Re-sync the schema from that fork, never from
+`intent-driven-dev/openspec-schemas`: installing upstream moves ADRs back to
+`adr/`, which splits the folder the adr step walks to resolve the Supersedes
+chain. Reasoning is in `docs/adr/0004-adr-location-follows-forked-schema.md`.
+
+Companion skills still come from `intent-driven-dev/skills`; that repository
+carries no ADR path.

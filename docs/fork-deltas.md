@@ -11,7 +11,7 @@ fork 已经修过的 bug 时，没有文本重叠，merge 干净通过，测试�
 
 每条 B 类差异都有一份 behaviour spec，requirement 用 SHALL / MUST NOT，行为写成 Gherkin
 scenario，且尽量带一句「换成 upstream 的版本，本 scenario 失败」。决定与理由见
-[`adr/0003-fork-deltas-are-recorded-as-executable-specs.md`](../adr/0003-fork-deltas-are-recorded-as-executable-specs.md)。
+[`docs/adr/0003-fork-deltas-are-recorded-as-executable-specs.md`](../docs/adr/0003-fork-deltas-are-recorded-as-executable-specs.md)。
 
 | 差异 | capability |
 |---|---|
@@ -283,8 +283,8 @@ onboard project、update SwarmForge scripts 等动词，及其 `test-*.sh` 测�
 是 staged-then-atomic-rename 安装、装完写 `.swarmforge/scripts-manifest`。`onboard project`
 从 fork 的 Pack 分支下载，原样安装，**不做任何解压后改写**。
 
-**为什么：** 见 `adr/0001-script-snapshot-follows-this-fork.md` 与
-`adr/0002-fork-owns-the-complete-pack-artifact.md`。照 upstream 流程 onboard 出来的
+**为什么：** 见 `docs/adr/0001-script-snapshot-follows-this-fork.md` 与
+`docs/adr/0002-fork-owns-the-complete-pack-artifact.md`。照 upstream 流程 onboard 出来的
 项目会静默拿到一份 handoff 会卡死的 snapshot（D-1 与 D-5 的修复都不在 upstream）。
 
 ADR 0001 原来的实现手段是「onboard 解压后改写 `ARCHIVE_URL`」，已被 ADR-0002 取代：那次
