@@ -19,6 +19,8 @@
 # not clean up; the verb only observes the result over HTTP and, when the port
 # does not answer, prints the command to run rather than running it.
 set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/lib-wake-talk.sh"
 
 TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
@@ -45,54 +47,37 @@ BASE=$(basename "$ROOT")
 HOSTPART=local; [ "$LOCAL" = 0 ] && HOSTPART=${TARGET#*@}
 DESC="swarmforge-dashboard:${BASE}@${HOSTPART}"
 
-die() { printf 'STATUS=%s\n%s\n' "$1" "$2"; exit "${3:-5}"; }
+# ---------- is the swarm running at all? (issue #100) ----------
+# The same question, asked the same way, as open/start/stop/read swarm,
+# wake/talk role and update SwarmForge scripts: read tmux-socket, then probe
+# the server behind it. A socket FILE with no server is not "running" — that
+# rule came out of the window watchdog tearing a swarm down, and it is the one
+# judgment all those verbs share.
+#
+# This verb used to sit outside it. It read only dashboard-url and
+# pack_web.pid, and those two artifacts have different lifetimes: pack_web
+# writes both, `stop swarm` deletes the pid and NOTHING deletes the url. After
+# a stop they disagree and there was no third source to break the tie, so a
+# stopped project fell through to the reachability check and died 5 —
+# "the tunnel is broken" for a swarm that was simply off, and on the tailnet
+# path a `tailscale serve` command the operator had very likely already run.
+#
+# Asked before everything else: a project that is not running has no port to
+# reach, no owner to identify, and no workspace to open.
+if ! SOCK=$(read_file .swarmforge/tmux-socket 2>/dev/null); then
+  die STOPPED "$ROOT/.swarmforge/tmux-socket missing — swarm not running; start it first, this verb never does" 3
+fi
+SOCK=${SOCK%$'\n'}
+tmux_remote list-sessions >/dev/null 2>&1 \
+  || die STOPPED "socket $SOCK has no tmux server — swarm not running; start it first, this verb never does" 3
 
 # ---------- runtime state ----------
-URL=''
-if [ "$LOCAL" = 1 ]; then
-  [ -s "$ROOT/.swarmforge/dashboard-url" ] 2>/dev/null \
-    || die STOPPED "$ROOT/.swarmforge/dashboard-url missing — dashboard not running; refusing to start it" 3
-  URL=$(<"$ROOT/.swarmforge/dashboard-url")
-else
-  URL=$(ssh -i "$KEY" "$TARGET" "cat '$ROOT/.swarmforge/dashboard-url'" 2>/dev/null) \
-    || die STOPPED "$ROOT/.swarmforge/dashboard-url missing on $TARGET — dashboard not running; refusing to start it" 3
-fi
+URL=$(read_file .swarmforge/dashboard-url 2>/dev/null) \
+  || die STOPPED "$ROOT/.swarmforge/dashboard-url missing — dashboard not running; refusing to start it" 3
+[ -n "$URL" ] || die STOPPED "$ROOT/.swarmforge/dashboard-url is empty — dashboard not running; refusing to start it" 3
 URL=${URL%$'\n'}
 RPORT=$(python3 -c 'import re,sys; m=re.match(r"^http://127\.0\.0\.1:(\d+)/?$", sys.argv[1]); print(m.group(1) if m else "")' "$URL")
 [ -n "$RPORT" ] || die ERROR "dashboard-url has unexpected format: $URL" 5
-
-# ---------- tunnel ----------
-curl_200() { # $1 url → 0 iff HTTP 200
-  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$1" 2>/dev/null)" = 200 ]
-}
-
-TUNNEL=local
-if [ "$TAILNET" = 1 ]; then
-  # The tailscale IP is already in $TARGET; HOSTPART pulled it out above.
-  URL="http://${HOSTPART}:${RPORT}/"
-  curl_200 "$URL" || die ERROR "$(printf '%s does not answer 200 — that port is not published on the tailnet.\nRun this once on %s:\n  tailscale serve --bg --tcp %s tcp://127.0.0.1:%s\nIt survives reboots and tailscale down/up, so it is a one-time action.' \
-    "$URL" "$TARGET" "$RPORT" "$RPORT")" 5
-  TUNNEL=tailnet
-elif [ "$LOCAL" = 0 ]; then
-  LPORT=$RPORT
-  if curl_200 "http://127.0.0.1:$LPORT/"; then
-    TUNNEL=reused
-  else
-    # ponytail: two attempts only — preferred port, then any free port
-    if ! ssh -f -N -o ExitOnForwardFailure=yes -L "$LPORT:127.0.0.1:$RPORT" -i "$KEY" "$TARGET" 2>/dev/null; then
-      LPORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
-      ssh -f -N -o ExitOnForwardFailure=yes -L "$LPORT:127.0.0.1:$RPORT" -i "$KEY" "$TARGET" 2>/dev/null \
-        || die ERROR "ssh local-forward $LPORT→$RPORT failed for $TARGET" 5
-    fi
-    up=0
-    for _ in $(seq 1 20); do curl_200 "http://127.0.0.1:$LPORT/" && { up=1; break; }; sleep 0.5; done
-    [ "$up" = 1 ] || die ERROR "tunnel up but http://127.0.0.1:$LPORT/ did not return 200 in 10s" 5
-    TUNNEL=created
-  fi
-  URL="http://127.0.0.1:${LPORT}/"
-else
-  curl_200 "http://127.0.0.1:$RPORT/" || die ERROR "dashboard-url says port $RPORT but it does not answer locally" 5
-fi
 
 # ---------- port ownership (issue #18) ----------
 # curl_200 only proves *something* answers on the port; on a host running
@@ -134,6 +119,39 @@ print(toks[i + 1] if 0 <= i < len(toks) - 1 else "")
 ' "$CMDLINE")
 [ "$SERVED_ROOT" = "$ROOT" ] \
   || die DRIFT "dashboard-url's port is served by pack_web for '$SERVED_ROOT', not '$ROOT' — another project's dashboard is squatting this dashboard-url" 4
+
+# ---------- tunnel ----------
+curl_200() { # $1 url → 0 iff HTTP 200
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$1" 2>/dev/null)" = 200 ]
+}
+
+TUNNEL=local
+if [ "$TAILNET" = 1 ]; then
+  # The tailscale IP is already in $TARGET; HOSTPART pulled it out above.
+  URL="http://${HOSTPART}:${RPORT}/"
+  curl_200 "$URL" || die ERROR "$(printf '%s does not answer 200 — that port is not published on the tailnet.\nRun this once on %s:\n  tailscale serve --bg --tcp %s tcp://127.0.0.1:%s\nIt survives reboots and tailscale down/up, so it is a one-time action.' \
+    "$URL" "$TARGET" "$RPORT" "$RPORT")" 5
+  TUNNEL=tailnet
+elif [ "$LOCAL" = 0 ]; then
+  LPORT=$RPORT
+  if curl_200 "http://127.0.0.1:$LPORT/"; then
+    TUNNEL=reused
+  else
+    # ponytail: two attempts only — preferred port, then any free port
+    if ! ssh -f -N -o ExitOnForwardFailure=yes -L "$LPORT:127.0.0.1:$RPORT" -i "$KEY" "$TARGET" 2>/dev/null; then
+      LPORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+      ssh -f -N -o ExitOnForwardFailure=yes -L "$LPORT:127.0.0.1:$RPORT" -i "$KEY" "$TARGET" 2>/dev/null \
+        || die ERROR "ssh local-forward $LPORT→$RPORT failed for $TARGET" 5
+    fi
+    up=0
+    for _ in $(seq 1 20); do curl_200 "http://127.0.0.1:$LPORT/" && { up=1; break; }; sleep 0.5; done
+    [ "$up" = 1 ] || die ERROR "tunnel up but http://127.0.0.1:$LPORT/ did not return 200 in 10s" 5
+    TUNNEL=created
+  fi
+  URL="http://127.0.0.1:${LPORT}/"
+else
+  curl_200 "http://127.0.0.1:$RPORT/" || die ERROR "dashboard-url says port $RPORT but it does not answer locally" 5
+fi
 
 # ---------- cmux plumbing (contract: cmux skill) ----------
 cmux ping >/dev/null 2>&1 || die ERROR "cmux app not reachable (cmux ping failed)" 5

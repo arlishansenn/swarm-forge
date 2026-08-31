@@ -110,6 +110,18 @@ if printf '%s\n' "$*" | grep -q "dashboard-url"; then
   cat "${DASHURL_FIXTURE:?}" 2>/dev/null && exit 0
   exit 1
 fi
+if printf '%s\n' "$*" | grep -q "tmux-socket"; then
+  SF=$(printf '%s\n' "$*" | sed -n "s/.*cat '\(.*tmux-socket\)'.*/\1/p")
+  cat "$SF" 2>/dev/null && exit 0
+  exit 1
+fi
+if printf '%s\n' "$*" | grep -q 'list-sessions'; then
+  # $STUB/tmux-dead makes the socket file exist with no server behind it —
+  # the state a killed swarm leaves, and the one every other verb already
+  # refuses to read as "running".
+  [ -f "$STUB/tmux-dead" ] && exit 1
+  exit 0
+fi
 if printf '%s\n' "$*" | grep -q "pack_web.pid"; then
   PIDFILE=$(printf '%s\n' "$*" | sed -n "s/.*cat '\(.*pack_web\.pid\)'.*/\1/p")
   cat "$PIDFILE" 2>/dev/null && exit 0
@@ -175,6 +187,10 @@ mk_fixture() { # <name> <url|->  (- = no file)
   local root=$WORK/fixtures/$1
   mkdir -p "$root/.swarmforge"
   if [ "$2" != - ]; then printf '%s\n' "$2" > "$root/.swarmforge/dashboard-url"; fi
+  # issue #100: this verb now asks the same liveness question its six siblings
+  # ask — read tmux-socket, probe list-sessions. Every fixture here models a
+  # RUNNING swarm unless a case says otherwise, so they all get a socket.
+  printf '/tmp/sf-dash-test.sock\n' > "$root/.swarmforge/tmux-socket"
 }
 
 # pack_web.pid fixture + fake ps registry entry (issue #18 ownership check).
@@ -373,6 +389,71 @@ run gov
 check "no-flag still tunnels" created "$(val TUNNEL)"
 check "no-flag url still loopback" "http://127.0.0.1:54870/" "$(val URL)"
 check "no-flag one tunnel" 1 "$(tunnelcount)"
+
+# ---------- issue #100: a stopped swarm must read as STOPPED, not ERROR ------
+# `stop swarm` deletes pack_web.pid but leaves dashboard-url behind, so after a
+# stop the two inputs this verb reads disagree — and it had no third source to
+# break the tie. It checked HTTP reachability FIRST, died 5, and never reached
+# the ownership check that would have said 3. Live symptom on podsum: "tunnel
+# up but ... did not return 200 in 10s" on one path, and on the other a
+# `tailscale serve` command that had already been run.
+#
+# The deeper problem is that this verb was the only one that never asked "is
+# the swarm running" at all — the one judgment its six siblings share. These
+# cases pin both halves: the shared gate, and the ordering.
+
+# 11. socket file present, no server behind it → 3, and nothing was touched.
+reset_stub
+: > "$STUB/tmux-dead"
+run gov
+check "dead socket exit" 3 "$RC"
+check "dead socket status" STOPPED "$(val STATUS)"
+check "dead socket: no cmux at all" 0 "$(grep -c '^cmux' "$STUB/calls.log" || true)"
+check "dead socket: no tunnel" 0 "$(tunnelcount)"
+
+# 12. same on the --tailnet path — a stopped swarm must not be told its port
+#     is unpublished, which is a command the operator may already have run.
+reset_stub
+: > "$STUB/tmux-dead"
+: > "$STUB/tailnet-54870"
+run gov --tailnet
+check "dead socket + tailnet exit" 3 "$RC"
+check "dead socket + tailnet status" STOPPED "$(val STATUS)"
+printf '%s\n' "$OUT" | grep -q 'tailscale serve' \
+  && bad "dead socket + tailnet: no serve advice" "$OUT" \
+  || ok "dead socket + tailnet: no serve advice"
+
+# 13. swarm alive but pack_web gone (the exact shape `stop swarm` leaves):
+#     3 on BOTH paths, and the reachability check never runs. Before this
+#     change the port answered nothing and the verb died 5.
+reset_stub
+run pidmissing
+check "stopped pack_web exit" 3 "$RC"
+check "stopped pack_web status" STOPPED "$(val STATUS)"
+check "stopped pack_web: never built a tunnel" 0 "$(tunnelcount)"
+
+reset_stub
+run pidmissing --tailnet
+check "stopped pack_web + tailnet exit" 3 "$RC"
+printf '%s\n' "$OUT" | grep -q 'tailscale serve' \
+  && bad "stopped pack_web + tailnet: no serve advice" "$OUT" \
+  || ok "stopped pack_web + tailnet: no serve advice"
+
+# 14. pid file present, process gone — same answer on both paths.
+reset_stub
+run piddead
+check "dead pid exit" 3 "$RC"
+reset_stub
+run piddead --tailnet
+check "dead pid + tailnet exit" 3 "$RC"
+
+# 15. the squatting case must still be 4 DRIFT, and must now refuse BEFORE
+#     leaving an ssh tunnel behind — the ownership check moved ahead of it.
+reset_stub
+: > "$STUB/tailnet-54871"
+run squat
+check "squat still DRIFT" 4 "$RC"
+check "squat no longer leaves a tunnel behind" 0 "$(tunnelcount)"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
