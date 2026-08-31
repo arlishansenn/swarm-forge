@@ -40,6 +40,12 @@ repository-level ADR 写在 openspec/ 的同级。留在 `docs/adr/` 会让 adr 
 scenario 失败」。这是把 `docs/fork-deltas.md` 里那句硬判据（「每条差异都必须有一条会因为
 upstream 的版本而失败的测试」）搬进可执行载体。
 
+**ADR 放在 `adr/` 与 pi-governance 放在 `docs/adr/` 不冲突，别去「统一」。** pi-governance
+用的是 `behaviour-driven` schema，它**没有 adr artifact**，所以那边的 ADR 放哪儿是自由选择，
+它的 config 选了 `docs/adr/`。本仓库用 `intent-driven`，它的 adr artifact 明文要求
+repository-level ADR 在 `<repo>/adr/`。两边不一样是各自 schema 的要求，不是漂移；以「跨仓库
+一致」为由把本仓库改回 `docs/adr/`，会让 adr step 看不见在效的 ADR。
+
 **`docs/fork-deltas.md` 保留，降级为索引与操作手册。** 它仍然承载 merge 流程、两类差异的
 成本模型、以及「攒 3-5 个 commit 就合一次」这类经验；这些不是 behaviour，塞进 spec 会让
 spec 变成散文。差异本身的真相源改为 spec。
