@@ -252,6 +252,12 @@ add/add 冲突，upstream 侧只有 `test-ensure-codex-trust!`）。被测的
 `sync-worktree-scripts!` / `scripts-mirror-matches?` 本体没事，但测试无法调用。补回后
 14/14 PASS。
 
+**又发生了一次。** 2026-08 那轮 merge（upstream 9 个 commit，`eb15d81` 的 forge 重构）
+再次删掉了同样这两个 defn 与 dispatch 条目——这次连冲突都没有，`git merge` 零冲突通过。
+被测本体 `sync-worktree-scripts!` / `scripts-mirror-matches?` 与 merge 前**逐字一致**，
+但两个 flag 落到 `-main` 的默认分支去启真 swarm，套件从 14/0 变成 3 PASS / 11 FAIL。
+**同一条差异、同一种死法、两次 merge。** 这一格是本表命中率最高的地方，下次先看它。
+
 ### D-10 `start-pack-web!` 读 `SWARMFORGE_DASHBOARD_PORT`
 
 **差异：** `swarmforge.bb` 把 `pack_web.sh --serve <root>` 的 argv 构造抽成纯函数
@@ -320,6 +326,14 @@ upstream 的 bootstrap 是 `rm -rf` 目标再 `cp -R`，不是崩溃安全的；
 本 fork 把默认值改为 `arlishansenn/swarm-forge`，保留 `SWARMFORGE_REPO_URL` 覆盖，
 所以「有意装别的树」仍然可以，只是不再是默认。
 
+**2026-08 那轮 merge 把它按回去了。** `eb15d81` 的 forge 重构整体重写了
+`get-swarm-forge`（从「装一个 pack 分支」改成「装一座 forge：main 的脚本 + `packs/` 下
+三个 pack + 空的 `projects/`」），连同那行默认值与解释它的注释一起换成 upstream 的版本。
+这一次 `bb test` 抓住了——`get-swarm-forge-installs-this-fork-by-default` 直接变红，是本轮
+唯一被 `bb test` 抓到的覆盖。**暴露面还变大了**：新的安装器从同一个 `repo_url` 拉三个
+pack 分支，所以这行默认值现在同时决定 host 脚本与三个 pack 的来源，正是 ADR-0002 说的
+「fork 拥有完整 pack artifact」那件事。补回时把注释一并改写说明了这一点。
+
 **钉子：**
 - `script_test.clj` 的 `get-swarm-forge-installs-this-fork-by-default`（issue #67）：
   默认源是本 fork、没有 unclebob 默认残留、`SWARMFORGE_REPO_URL` 覆盖仍在
@@ -368,6 +382,45 @@ upstream 的副作用发生。翻案只需改 `swarmforge.conf` 里那三行的 
 可能还指着 upstream。它不与已删除的 onboard 改写合并。
 
 ---
+
+## `main` 的 merge 记录
+
+### 2026-08-31：upstream 9 个 commit（forge 重构）
+
+`0daf165` → upstream `95e95e4`。40 个文件，+3326 / −643。主线是 `eb15d81`
+「Turn SwarmForge into a multi-project forge」：新增 `forge.bb`，`pack_web.bb` 与
+`dashboard.html` 大改，仓库根多出 `swarm`、`swarmforge/swarmforge.conf`、`projects/`
+的概念。
+
+**`git merge -X theirs` 零冲突通过。** 两条 fork 差异照样被覆盖——这正是本表存在的理由。
+
+| 差异 | 被覆盖了吗 | 怎么发现的 |
+|---|---|---|
+| D-1 收件箱按 roles.tsv 解析 | 否，逐字未变 | 比对 `handoff_lib.bb` 的 `project-root` / `state-dir` |
+| D-2 提交键裸回车 / CSI-u | 否，`submit-keys` 逐字未变 | 比对函数体 |
+| D-3 `notify!` 按 backend 分发 | 否，逐字未变 | 比对函数体 |
+| D-4 helper 集中在 `handoff_lib.bb` | 否 | 无重复 defn，无 cwd 解析 |
+| D-5 handoffd 对账与重试 | 否，48 处标记一个不少 | upstream 只是把配置改成 `configure!`，行为未动 |
+| **D-6 `sync-worktree-scripts!` 的两个测试接缝** | **是** | `test-sync-worktree-scripts.sh` 从 14/0 变 3/11 |
+| D-8 remote ssh 带 `-n` | 否 | `.agents/` 本轮零改动 |
+| **D-9 script snapshot 指向本 fork** | **是** | `bb test` 直接变红 |
+| D-10 `start-pack-web!` 读固定端口 | 否 | `pack-web-argv` 逐字未变 |
+
+**只有 D-9 被 `bb test` 抓到。** D-6 的覆盖 `bb test` 全绿也看不见——它删的是测试接缝，
+而钉着 D-6 的套件不在 `bb test` 里。**「绿的测试只证明没被改红」这句话，本轮又验证了一次。**
+
+**upstream 顺手修了同一族症状的另一端。** `46f8613` 给 `start-pack-web!` 前面加了
+`stop-existing-pack-web!`：启动 pack_web 前杀掉残留 pid 并删掉旧的 `dashboard-url`。
+这是 server 侧的做法，与 fork 在 operator 侧做的 issue #99（复用 browser surface 时校验
+它指向哪）互补，不冲突。**但不能因此认为 issue #100 的 liveness gate 可以撤掉**：upstream
+只在**下次启动时**清 `dashboard-url`，停机之后那个文件照样留着。
+
+没有任何 fork 差异被 upstream 采纳，表里没有可删的条目。
+
+**这一轮的钉子数：** `bb test` 264 tests / 1167 assertions 0 failures（merge 前基线
+222 / 968）；`test-sync-worktree-scripts.sh` 14/0；11 个 operator 套件全绿
+（onboard 39、update-scripts 95、e2e 48、read 36、accept 76、stop 67、dashboard 91、
+open 39、wake-talk 28、start 87、run-issue 125）。
 
 ## 关于把修复推给 upstream
 

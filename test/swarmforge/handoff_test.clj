@@ -1453,6 +1453,7 @@
     (is (str/includes? (handoff-body reverse) (str "merge_and_process.sh refactorer " sha)))
     (is (str/includes? (handoff-body reverse) "inbound tree is the structure"))
     (is (str/includes? (handoff-body forward) (str "merge_and_process.sh refactorer " sha)))
+    (is (str/includes? (handoff-body forward) "current tree is the structure"))
     (is (not (str/includes? (handoff-body forward) "inbound tree is the structure")))
     (is (not (str/includes? (handoff-body forward) extra)))
     (is (not (str/includes? (handoff-body reverse) extra)))
@@ -1484,7 +1485,8 @@
       (is (= "specifier" (header forward "to")))
       (is (= "true" (header forward "non-forwarding")))
       (is (str/includes? (handoff-body forward) "merge_and_process.sh architect"))
-      (is (not (str/includes? (handoff-body forward) "inbound tree is the structure")))
+      (is (str/includes? (handoff-body forward) "inbound tree is the structure"))
+      (is (not (str/includes? (handoff-body forward) "current tree is the structure")))
       (is (not (str/includes? (handoff-body forward) extra))))))
 
 (deftest swarm-handoff-six-pack-architect-back-all-skips-downstream
@@ -1542,8 +1544,10 @@
     (is (zero? (:exit result)))
     (is (= 1 (count (outbox-handoffs root))))
     (is (= "true" (header (outbox-to root "coder") "non-forwarding")))
+    (is (str/includes? (handoff-body (outbox-to root "coder"))
+                       "inbound tree is the structure"))
     (is (not (str/includes? (handoff-body (outbox-to root "coder"))
-                            "inbound tree is the structure")))))
+                            "current tree is the structure")))))
 
 (deftest swarm-handoff-refuses-git-handoff-when-inbound-is-non-forwarding
   ;; Given an in-process inbound git_handoff tagged non-forwarding
@@ -1565,6 +1569,26 @@
       (is (not (zero? (:exit result))))
       (is (str/includes? (str (:err result) (:out result)) "non-forwarding"))
       (is (fs/exists? draft)))))
+
+(deftest done-with-current-after-reverse-copy-does-not-queue-git-handoff
+  ;; Given an in-process reverse git_handoff
+  ;; When done_with_current runs
+  ;; Then the inbound is completed and no outbox git_handoff is written
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        inbound (fs/path root ".swarmforge/handoffs/inbox/in_process/00_from_architect.handoff")]
+    (write-file inbound (str "from: architect\nto: sender\npriority: 00\ntype: git_handoff\n"
+                             "task: HTW\nnon-forwarding: true\n\nmerge\n"))
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
+                      (script "done_with_current.sh"))
+          completed (fs/path root ".swarmforge/handoffs/inbox/completed/00_from_architect.handoff")
+          outbox (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff")]
+      (is (zero? (:exit result)))
+      (is (str/includes? (:out result) "COMPLETED:"))
+      (is (fs/exists? completed))
+      (is (not (fs/exists? inbound)))
+      (is (empty? outbox)))))
 
 (deftest swarm-handoff-keeps-draft-task-that-names-a-lane-card
   ;; Given Command syntax and Holy Hand Grenade cards in the sender lane

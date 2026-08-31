@@ -7,7 +7,10 @@
             [handoff-lib :as hl]))
 
 (def script-dir (fs/parent *file*))
-(load-file (str (fs/path script-dir "ready_for_next_guard.bb")))
+(try
+  (require 'ready-for-next-guard)
+  (catch Exception _
+    (load-file (str (fs/path script-dir "ready_for_next_guard.bb")))))
 
 (defn timestamp []
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
@@ -138,9 +141,5 @@
               (merge-git-handoff! target-file)
               (print-task target-file))))))))
 
-(try
-  (-main)
-  ;; handoff-lib reports a broken roles.tsv by throwing. The agent reading this
-  ;; pane needs one actionable line, not a stack trace.
-  (catch clojure.lang.ExceptionInfo e
-    (fail! (or (:exit (ex-data e)) 1) (ex-message e))))
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (-main))

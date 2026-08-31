@@ -145,4 +145,5 @@
                       (Thread/sleep 2000)
                       (recur (assoc missing-counts cleanup-owner-index count)))))))))))))
 
-(apply -main *command-line-args*)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

@@ -9,6 +9,7 @@
             [org.httpkit.server :as http]))
 
 (def script-dir (fs/parent *file*))
+(load-file (str (fs/path script-dir "forge.bb")))
 
 (def usage-text
   (str "Usage:\n"
@@ -24,6 +25,7 @@
        "  pack_web.sh --test-pane <root> <role>\n"
        "  pack_web.sh --test-agent-page [role]\n"
        "  pack_web.sh --test-heat <root>\n"
+       "  pack_web.sh --test-heat-isolation <root-a> <root-b>\n"
        "  pack_web.sh --test-heat-codex <root>\n"
        "  pack_web.sh --test-heat-reorder <root>\n"
        "  pack_web.sh --test-heat-head <root>\n"
@@ -39,7 +41,12 @@
        "  pack_web.sh --test-retry-task <root> <id> <comments>\n"
        "  pack_web.sh --test-save-comments <root> <id> <path> <comments>\n"
        "  pack_web.sh --test-doc <root> <path>\n"
-       "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
+       "  pack_web.sh --test-teardown <root> [TEARDOWN]\n"
+       "  pack_web.sh --test-new-project <root> <name> <pack> [mission]\n"
+       "  pack_web.sh --test-open-project <root> <name>\n"
+       "  pack_web.sh --test-close-project <root> <name>\n"
+       "  pack_web.sh --test-inferred-name <input> [github]\n"
+       "  pack_web.sh --test-mission <root> [project]"))
 
 (def example-task-name "htw-console-app")
 (def example-task-text
@@ -52,11 +59,13 @@
 (def pane-capture-lines 2000)
 (def pane-heat (atom {}))
 (def pane-status (atom {}))
+(def pane-status-lines (atom {}))
 
 (declare session-name pane-target live-pane-text role-row pane-sample backend-name
          in-process-for-row in-process-task-names approvals
          handoff-files batch-dirs in-process-dir allowed-doc?
-         delete-approval! retry-approval!)
+         delete-approval! retry-approval! parse-message pane-status-for role-rows
+         recorded-pane)
 
 (defn usage []
   (binding [*out* *err*]
@@ -245,21 +254,73 @@
        (not (pane-chrome? sentence))
        (or (i-status? sentence) (other-status? sentence))))
 
-(defn im-status [role text backend]
+(defn strip-bullet [sentence]
+  (str/replace (or sentence "") #"^[•*]\s*" ""))
+
+(defn codex-throwaway-bullet? [sentence]
+  (let [n (str/lower-case (fold-apostrophe (strip-bullet sentence)))]
+    (boolean (or (re-find #"^(?:working|ran|edited|added|searching|searched)\b" n)
+                 (re-find #"you have \d+ usage limit reset available" n)
+                 (mail-banner? sentence)
+                 (pane-chrome? sentence)))))
+
+(defn codex-bullets [text]
+  (loop [lines (mapv str/trim (str/split-lines (or text "")))
+         current nil
+         out []]
+    (if-let [line (first lines)]
+      (cond
+        (str/blank? line)
+        (recur (next lines) current out)
+
+        (re-find #"^[•*]\s*" line)
+        (recur (next lines) line (cond-> out current (conj current)))
+
+        current
+        (recur (next lines) (str current " " line) out)
+
+        :else
+        (recur (next lines) current out))
+      (cond-> out current (conj current)))))
+
+(defn pane-cache-key [root role]
+  [(str root) (str role)])
+
+(defn matching-status-sentences [text backend]
   (let [tail (last-n-lines (pane-sample text backend) 20)
-        found (last (filter status-sentence? (pane-sentences (str/join "\n" tail))))]
+        joined (str/join "\n" tail)
+        from-sentences (filterv status-sentence? (pane-sentences joined))]
+    (if (= "codex" backend)
+      (let [bullets (vec (remove codex-throwaway-bullet? (codex-bullets joined)))]
+        (if (seq bullets) bullets from-sentences))
+      from-sentences)))
+
+(defn im-status-lines [role text backend]
+  (let [found (vec (take-last 2 (matching-status-sentences text backend)))]
     (if (seq found)
-      (do (swap! pane-status assoc role found) found)
-      (get @pane-status role ""))))
+      (do (swap! pane-status-lines assoc role found)
+          (swap! pane-status assoc role (last found))
+          found)
+      (or (not-empty (get @pane-status-lines role))
+          (let [one (get @pane-status role "")]
+            (if (str/blank? one) [] [one]))))))
+
+(defn im-status [role text backend]
+  (or (last (im-status-lines role text backend)) ""))
 
 (defn board-tasks [root]
   (mapv task-entry (lines (pack-board root "list"))))
 
-(defn pane-status-for [root role]
+(defn pane-status-lines-for [root role]
   (let [row (role-row root role)
         text (when row (live-pane-text root role))
         backend (when row (backend-name row))]
-    (im-status role text backend)))
+    (if row
+      (im-status-lines (pane-cache-key root role) text backend)
+      [])))
+
+(defn pane-status-for [root role]
+  (or (last (pane-status-lines-for root role)) ""))
 
 (defn active-card-names [root role]
   (let [row (role-row root role)
@@ -326,13 +387,37 @@
           {}
           (role-rows root)))
 
+(defn reverse-handoff? [path]
+  (let [h (:headers (parse-message path))]
+    (and (= "git_handoff" (get h "type"))
+         (= "true" (get h "non-forwarding")))))
+
+(defn merging-card [root row]
+  (when-let [file (first (filter reverse-handoff? (in-process-for-row row)))]
+    (let [h (:headers (parse-message file))
+          name (or (get h "task") (get h "task_id"))
+          role (first row)
+          sender (str/trim (or (get h "from") ""))]
+      (when-not (str/blank? name)
+        {:name name
+         :id (str "merging-" (or (get h "task_id") name))
+         :lane role
+         :updated_at (or (not-empty (get h "dequeued_at")) "")
+         :audit_count 0
+         :merging true
+         :status (str "Merging " sender)}))))
+
+(defn merging-cards [root]
+  (vec (keep #(merging-card root %) (role-rows root))))
+
 (defn tasks [root]
-  (let [idx (batch-index root)]
-    (mapv (fn [task]
-            (if-let [batch (get idx (:name task))]
-              (assoc (task-with-status root task) :batch batch)
-              (task-with-status root task)))
-          (board-tasks root))))
+  (let [idx (batch-index root)
+        board (mapv (fn [task]
+                      (if-let [batch (get idx (:name task))]
+                        (assoc (task-with-status root task) :batch batch)
+                        (task-with-status root task)))
+                    (board-tasks root))]
+    (into (merging-cards root) board)))
 
 (defn parse-message [path]
   (let [content (slurp (str path))
@@ -384,6 +469,42 @@
 
 (defn drop-reviews! [root id]
   (fs/delete-if-exists (reviews-file root id)))
+
+(defn task-reviews-file [root task-id]
+  (fs/path root ".swarmforge" "rejected-tasks" task-id "reviews.json"))
+
+(defn read-task-reviews [root task-id]
+  (let [file (task-reviews-file root task-id)]
+    (if (and (not (str/blank? task-id)) (fs/regular-file? file))
+      (try
+        (let [parsed (json/parse-string (slurp (str file)))]
+          (if (map? parsed) parsed {}))
+        (catch Exception _ {}))
+      {})))
+
+(defn write-task-reviews! [root task-id store]
+  (when-not (str/blank? task-id)
+    (let [file (task-reviews-file root task-id)]
+      (fs/create-dirs (fs/parent file))
+      (spit (str file) (json/generate-string store)))))
+
+(defn drop-task-reviews! [root task-id]
+  (when-not (str/blank? task-id)
+    (fs/delete-if-exists (task-reviews-file root task-id))))
+
+(defn iso-now []
+  (.format java.time.format.DateTimeFormatter/ISO_INSTANT (java.time.Instant/now)))
+
+(defn append-task-review! [root task-id path comments]
+  (let [text (str/trim (or comments ""))]
+    (when (and (not (str/blank? task-id)) (not (str/blank? path)) (not (str/blank? text)))
+      (let [store (read-task-reviews root task-id)
+            entry {"at" (iso-now) "text" text}
+            history (conj (vec (get store path [])) entry)]
+        (write-task-reviews! root task-id (assoc store path history))))))
+
+(defn path-review-history [root task-id path]
+  (vec (get (read-task-reviews root task-id) path [])))
 
 (defn approval-entry [root path]
   (let [headers (:headers (parse-message path))
@@ -486,18 +607,18 @@
 (defn heat-from-count [n]
   (min 6 (long n)))
 
-(defn record-heat! [role text backend]
+(defn record-heat! [key text backend]
   (let [tail (last-n-lines (pane-sample text backend) 20)
         bag (frequencies tail)
-        prev (get @pane-heat role)
+        prev (get @pane-heat key)
         n (if (:bag prev) (bag-diff (:bag prev) bag) 0)
         heat (heat-from-count n)]
-    (swap! pane-heat assoc role {:bag bag :heat heat})
+    (swap! pane-heat assoc key {:bag bag :heat heat})
     heat))
 
-(defn role-heat [role alive? text backend]
+(defn role-heat [root role alive? text backend]
   (if alive?
-    (record-heat! role text backend)
+    (record-heat! (pane-cache-key root role) text backend)
     0))
 
 (defn cards-in-lane [all-tasks lane]
@@ -545,7 +666,7 @@
         names (work-task-names files cards)
         batch-names (in-process-batch-task-names row)]
     (queue-row role names batch-names busy? alive?
-               (role-heat role (or alive? (some? *pane-text*)) text (backend-name row))
+               (role-heat root role (or alive? (some? *pane-text*)) text (backend-name row))
                (or (:updated_at from-file) (:updated_at card) ""))))
 
 (defn work-in-flight [root]
@@ -648,6 +769,59 @@
      :work_in_flight (work-in-flight root)
      :chat (list-chat root)
      :clarifications (list-clarifications root)}))
+
+(defn tagged [project items]
+  (mapv #(assoc % :project project) items))
+
+(defn open-project-root [forge name]
+  (str (forge/project-dir forge name)))
+
+(defn project-slice [forge name]
+  (let [root (open-project-root forge name)]
+    (try
+      {:name name
+       :open true
+       :lanes (lanes root)
+       :tasks (tagged name (tasks root))
+       :work_in_flight (tagged name (work-in-flight root))}
+      (catch Exception _
+        {:name name
+         :open true
+         :lanes []
+         :tasks []
+         :work_in_flight []}))))
+
+(defn forge-dashboard-state [root]
+  (let [open (forge/read-open-projects root)
+        projects (mapv #(project-slice root %) open)]
+    {:forge true
+     :master_role "lieutenant"
+     :master_display "Lieutenant"
+     :packs (mapv (fn [p] {:name p :conf (or (forge/pack-conf root p) "")})
+                  (forge/list-pack-names root))
+     :all_projects (forge/list-project-names root)
+     :open_projects open
+     :projects projects
+     :approvals (vec (mapcat (fn [name]
+                               (try
+                                 (tagged name (approvals (open-project-root root name)))
+                                 (catch Exception _ [])))
+                             open))
+     :clarifications (vec (mapcat (fn [name]
+                                    (try
+                                      (tagged name (list-clarifications (open-project-root root name)))
+                                      (catch Exception _ [])))
+                                  open))
+     :chat (list-chat root)
+     :lieutenant_status (pane-status-lines-for root "lieutenant")
+     :lanes []
+     :tasks []
+     :work_in_flight (vec (mapcat :work_in_flight projects))}))
+
+(defn api-state [root]
+  (if (forge/forge? root)
+    (forge-dashboard-state root)
+    (dashboard-state root)))
 
 (defn require-root! [root]
   (when (str/blank? root)
@@ -787,7 +961,8 @@
   (let [task-id (task-id-for-name root name)]
     (archive-rejected! root task-id name)
     (drop-task-handoffs! root task-id name)
-    (drop-task-audits! root task-id name))
+    (drop-task-audits! root task-id name)
+    (drop-task-reviews! root task-id))
   (pack-board root "delete" "--name" name)
   (fs/delete-if-exists (reject-notify root name)))
 
@@ -826,9 +1001,14 @@
     (queue-new-task-note! root task-id name (or text ""))))
 
 (defn post-tasks [root body]
-  (let [{:keys [name text]} (json/parse-string (or body "{}") true)]
+  (let [{:keys [name text project]} (json/parse-string (or body "{}") true)
+        dest (if (and (forge/forge? root) (not (str/blank? project)))
+               (str (forge/project-dir root project))
+               root)]
     (try
-      (create-task! root name text)
+      (when (and (forge/forge? root) (str/blank? project))
+        (throw (ex-info "Missing project" {:http-status 400})))
+      (create-task! dest name text)
       (json-ok)
       (catch Exception e
         (http-error (or (:http-status (ex-data e)) 400) (.getMessage e))))))
@@ -897,17 +1077,23 @@
 
 (defn approve! [root id]
   (let [src (require-pending! root id)
+        headers (:headers (parse-message src))
         dest (fs/path root ".swarmforge" "handoffs" "outbox" (fs/file-name src))]
     (fs/create-dirs (fs/parent dest))
     (spit (str dest) (with-approved (slurp (str src))))
     (fs/delete-if-exists src)
-    (drop-reviews! root id)))
+    (drop-reviews! root id)
+    (drop-task-reviews! root (or (not-empty (get headers "task_id")) (get headers "task")))))
 
 (defn save-review! [root id path comments]
   (when (str/blank? path)
     (throw (ex-info "Missing path" {:http-status 400})))
-  (require-pending! root id)
-  (write-reviews! root id (assoc (read-reviews root id) path (str/trim (or comments "")))))
+  (let [src (require-pending! root id)
+        headers (:headers (parse-message src))
+        task-id (or (not-empty (get headers "task_id")) (get headers "task"))
+        text (str/trim (or comments ""))]
+    (write-reviews! root id (assoc (read-reviews root id) path text))
+    (append-task-review! root task-id path text)))
 
 (defn write-reject-notify! [root task]
   (when-not (str/blank? task)
@@ -1035,6 +1221,10 @@
         (fs/move src (fs/path dest-dir (fs/file-name src)) {:replace-existing true}))
       :else (write-retry-in-process! wt headers))))
 
+(defn approval-doc-paths [headers reviews]
+  (vec (distinct (concat (comma-list (get headers "artifacts"))
+                         (keys reviews)))))
+
 (defn retry-approval! [root id comments]
   (let [src (require-pending! root id)
         headers (:headers (parse-message src))
@@ -1044,6 +1234,8 @@
         n (if (git-repo? root) (next-rejected-n root task-id) 1)
         wt (worktree-for root (get headers "from"))
         reviews (read-reviews root id)]
+    (doseq [path (approval-doc-paths headers reviews)]
+      (append-task-review! root task-id path comments))
     (when commit
       (snapshot-rejected! root task-id commit n)
       (restore-commit! wt commit))
@@ -1071,7 +1263,8 @@
     (drop-task-audits! root task-id task)
     (pack-board root "delete" "--name" task)
     (fs/delete-if-exists (reject-notify root task))
-    (drop-reviews! root id)))
+    (drop-reviews! root id)
+    (drop-task-reviews! root task-id)))
 
 (defn approval-route [uri]
   (let [path (first (str/split (or uri "") #"\?"))]
@@ -1117,6 +1310,12 @@
                (under-dir? file (existing-path root "qa"))
                (under-dir? file (existing-path root "tasks")))))))
 
+(defn get-mission [root]
+  (let [file (fs/path root "mission.md")]
+    {:status 200
+     :headers {"Content-Type" "text/plain; charset=utf-8"}
+     :body (if (fs/regular-file? file) (slurp (str file)) "")}))
+
 (defn get-doc [root uri]
   (let [rel (query-value uri "path")]
     (if (allowed-doc? root rel)
@@ -1124,6 +1323,61 @@
        :headers {"Content-Type" "text/plain; charset=utf-8"}
        :body (slurp (str (existing-path root rel)))}
       {:status 404 :body "Not found"})))
+
+(defn parse-unified-diff [text]
+  (->> (str/split-lines (or text ""))
+       (drop-while #(not (str/starts-with? % "@@")))
+       rest
+       (keep (fn [line]
+               (cond
+                 (str/starts-with? line "+") {:type "add" :text (subs line 1)}
+                 (str/starts-with? line "-") {:type "del" :text (subs line 1)}
+                 (str/starts-with? line "\\") nil
+                 (str/starts-with? line " ") {:type "same" :text (subs line 1)}
+                 (str/blank? line) {:type "same" :text ""}
+                 :else {:type "same" :text line})))
+       vec))
+
+(defn file-diff-lines [root prior commit rel]
+  (let [result (apply sh ["git" "-C" (str root) "diff" "--no-color" "-U999999"
+                          prior commit "--" rel])]
+    (cond
+      (not (zero? (:exit result))) nil
+      (str/blank? (:out result))
+      (mapv (fn [line] {:type "same" :text line})
+            (str/split-lines (slurp (str (existing-path root rel)))))
+      :else (parse-unified-diff (:out result)))))
+
+(defn pending-headers [root id]
+  (let [path (when-not (str/blank? id) (pending-file root id))]
+    (when (and path (fs/regular-file? path))
+      (:headers (parse-message path)))))
+
+(defn get-api-doc [root uri]
+  (let [rel (query-value uri "path")
+        id (query-value uri "id")]
+    (if-not (allowed-doc? root rel)
+      {:status 404 :body "Not found"}
+      (let [text (slurp (str (existing-path root rel)))
+            headers (pending-headers root id)
+            task-id (or (not-empty (get headers "task_id")) (get headers "task"))
+            commit (not-empty (get headers "commit"))
+            prior (when (and task-id (git-ref-exists? root (rejected-latest task-id)))
+                    (rejected-latest task-id))
+            lines (when (and prior commit)
+                    (file-diff-lines root prior commit rel))
+            has-diff (some? lines)
+            history (mapv (fn [item]
+                            {:at (or (get item "at") (:at item))
+                             :text (or (get item "text") (:text item))})
+                          (path-review-history root task-id rel))]
+        {:status 200
+         :headers {"Content-Type" "application/json; charset=utf-8"}
+         :body (json/generate-string {:path rel
+                                      :text text
+                                      :has_diff has-diff
+                                      :lines (or lines [])
+                                      :history history})}))))
 
 (defn task-query-name [uri]
   (when (str/starts-with? (or uri "") "/task")
@@ -1176,7 +1430,8 @@
 
 (defn live-pane-text [root role]
   (or *pane-text*
-      (capture-pane root role)))
+      (capture-pane root role)
+      (recorded-pane root role)))
 
 (defn pane-files [root role]
   (let [dir (fs/path root ".swarmforge" "sessions" role)]
@@ -1211,9 +1466,13 @@
       (not-empty (recorded-pane root role))
       (str "(no pane capture for " role ")\n")))
 
-(defn pane-page [role snapshot]
+(defn project-query [project]
+  (when (not-empty project)
+    (str "?project=" (java.net.URLEncoder/encode (str project) "UTF-8"))))
+
+(defn pane-page [role snapshot & [project]]
   (let [role-html (html-escape role)
-        pane-url (str "/api/agents/" role-html "/pane")]
+        pane-url (str "/api/agents/" role-html "/pane" (or (project-query project) ""))]
     (str "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
          "<title>Agent " role-html "</title>"
          "<style>html,body{height:100%;margin:0;overflow:hidden;background:#111;color:#f4f4f4;"
@@ -1262,7 +1521,7 @@
   (if-let [role (agent-role uri)]
     {:status 200
      :headers {"Content-Type" "text/html; charset=utf-8"}
-     :body (pane-page role (pane-content root role))}
+     :body (pane-page role (pane-content root role) (query-value uri "project"))}
     {:status 404 :body "Not found"}))
 
 (defn get-agent-pane [root uri]
@@ -1271,6 +1530,39 @@
      :headers {"Content-Type" "text/plain; charset=utf-8"}
      :body (pane-content root role)}
     {:status 404 :body "Not found"}))
+
+(defn request-project-root [forge uri]
+  (if-not (forge/forge? forge)
+    forge
+    (if-let [name (not-empty (query-value uri "project"))]
+      (str (forge/project-dir forge name))
+      forge)))
+
+(defn body-map [body]
+  (try
+    (json/parse-string (or body "{}") true)
+    (catch Exception _ {})))
+
+(defn json-ok-data [m]
+  {:status 200
+   :headers {"Content-Type" "application/json"}
+   :body (json/generate-string (merge {:ok true} m))})
+
+(defn find-approval-root [forge id]
+  (or (some (fn [name]
+              (let [proot (str (forge/project-dir forge name))]
+                (when (fs/regular-file? (pending-file proot id))
+                  proot)))
+            (forge/read-open-projects forge))
+      (throw (ex-info (str "Unknown approval: " id) {:http-status 404}))))
+
+(defn find-clar-root [forge id]
+  (or (some (fn [name]
+              (let [proot (str (forge/project-dir forge name))]
+                (when (fs/regular-file? (clar-pending-file proot id))
+                  proot)))
+            (forge/read-open-projects forge))
+      (throw (ex-info (str "Unknown clarification: " id) {:http-status 404}))))
 
 (defn handle-get [root uri]
   (cond
@@ -1282,19 +1574,25 @@
     (= "/api/state" uri)
     {:status 200
      :headers {"Content-Type" "application/json"}
-     :body (json/generate-string (dashboard-state root))}
+     :body (json/generate-string (api-state root))}
 
     (agent-pane-role uri)
-    (get-agent-pane root uri)
+    (get-agent-pane (request-project-root root uri) uri)
 
     (agent-role uri)
-    (get-agent root uri)
+    (get-agent (request-project-root root uri) uri)
 
     (task-query-name uri)
-    (get-task root uri)
+    (get-task (request-project-root root uri) uri)
+
+    (str/starts-with? (first (str/split (or uri "") #"\?")) "/api/doc")
+    (get-api-doc (request-project-root root uri) uri)
 
     (str/starts-with? (or uri "") "/doc")
-    (get-doc root uri)
+    (get-doc (request-project-root root uri) uri)
+
+    (= "/api/mission" (first (str/split (or uri "") #"\?")))
+    (get-mission (request-project-root root uri))
 
     :else {:status 404 :body "Not found"}))
 
@@ -1364,6 +1662,8 @@
     (swarm-cleanup! root (tmux-socket root))))
 
 (defn run-teardown! [root]
+  (when (forge/forge? root)
+    (forge/close-all-projects! root))
   (close-swarm! root)
   (stop-handoffd! root)
   (kill-all-sessions-on-socket! (tmux-socket root))
@@ -1404,15 +1704,50 @@
      :headers {"Content-Type" "text/plain; charset=utf-8"}
      :body "Teardown requires confirm=TEARDOWN (JSON {\"confirm\":\"TEARDOWN\"}).\n"}))
 
+(defn post-new-project [root body]
+  (let [parsed (body-map body)
+        created (forge/instantiate! root parsed)]
+    (forge/open-project! root (:name created))
+    (json-ok-data created)))
+
+(defn post-open-project [root body]
+  (json-ok-data (forge/open-project! root (:name (body-map body)))))
+
+(defn post-close-project [root body]
+  (json-ok-data (forge/close-project! root (:name (body-map body)))))
+
+(defn scoped-approval-root [root uri body]
+  (if-not (forge/forge? root)
+    root
+    (let [m (body-map body)
+          id (or (:id (approval-route uri)) (:id m))
+          project (:project m)]
+      (cond
+        (not (str/blank? project)) (str (forge/project-dir root project))
+        (not (str/blank? id)) (find-approval-root root id)
+        :else (throw (ex-info "Missing project" {:http-status 400}))))))
+
+(defn scoped-clar-root [root uri]
+  (if-not (forge/forge? root)
+    root
+    (find-clar-root root (clarification-route uri))))
+
 (defn handle-post [root uri body]
   (cond
+    (= "/api/projects" uri) (post-new-project root body)
+    (= "/api/projects/open" uri) (post-open-project root body)
+    (= "/api/projects/close" uri) (post-close-project root body)
     (= "/api/tasks" uri) (post-tasks root body)
-    (= "/api/tasks/delete" uri) (post-delete-task root body)
-    (= "/api/tasks/retry" uri) (post-retry-task root body)
+    (= "/api/tasks/delete" uri)
+    (post-delete-task (scoped-approval-root root uri body) body)
+    (= "/api/tasks/retry" uri)
+    (post-retry-task (scoped-approval-root root uri body) body)
     (= "/api/chat" uri) (post-chat root body)
     (= "/api/teardown" uri) (teardown-response root body)
-    (str/starts-with? (or uri "") "/api/approvals/") (post-approval root uri body)
-    (str/starts-with? (or uri "") "/api/clarifications/") (post-clarification root uri body)
+    (str/starts-with? (or uri "") "/api/approvals/")
+    (post-approval (scoped-approval-root root uri body) uri body)
+    (str/starts-with? (or uri "") "/api/clarifications/")
+    (post-clarification (scoped-clar-root root uri) uri body)
     :else {:status 404 :body "Not found"}))
 
 (defn handle-request [root {:keys [method uri body]}]
@@ -1519,16 +1854,17 @@
                                :uri (str "/api/approvals/" id "/comments")
                                :body (json/generate-string {:path path :comments (or comments "")})})))
 
-(defn test-pane! [root role]
+(defn test-pane! [root role & [project]]
   (when (str/blank? role)
     (exit! 1 "Missing role"))
   (print (:body (handle-request (require-root! root)
                                 {:method "GET"
-                                 :uri (str "/api/agents/" role "/pane")})))
+                                 :uri (str "/api/agents/" role "/pane"
+                                          (or (project-query project) ""))})))
   (flush))
 
-(defn test-agent-page! [role]
-  (print (pane-page (or role "specifier") ""))
+(defn test-agent-page! [role & [project]]
+  (print (pane-page (or role "specifier") "" project))
   (flush))
 
 (defn print-heat-pair! [root before-text after-text]
@@ -1542,6 +1878,23 @@
 
 (defn test-heat! [root]
   (print-heat-pair! root "alpha\nline two\n" "beta\nline two\nchanged output\n"))
+
+(defn print-heat-isolation! [root-a root-b]
+  (reset! pane-heat {})
+  (binding [*pane-text* "stable-a\n"]
+    (work-in-flight root-a))
+  (binding [*pane-text* "stable-b\n"]
+    (work-in-flight root-b))
+  (let [changed (binding [*pane-text* "changed-a\nmore\n"]
+                  (:activity (first (work-in-flight root-a))))
+        stable (binding [*pane-text* "stable-b\n"]
+                 (:activity (first (work-in-flight root-b))))]
+    (println (json/generate-string {:changed changed :stable stable}))))
+
+(defn test-heat-isolation! [root-a root-b]
+  (require-root! root-a)
+  (require-root! root-b)
+  (print-heat-isolation! root-a root-b))
 
 (defn test-heat-codex! [root]
   (print-heat-pair! root
@@ -1601,6 +1954,7 @@
 (defn test-status-persist! [root first-text second-text]
   (require-root! root)
   (reset! pane-status {})
+  (reset! pane-status-lines {})
   (binding [*pane-text* (or first-text "")]
     (let [first-status (:status (first (:tasks (json/parse-string
                                                 (:body (handle-request root {:method "GET" :uri "/api/state"}))
@@ -1627,6 +1981,14 @@
                                  :uri (str "/task?name=" name)})))
   (flush))
 
+(defn test-mission! [root & [project]]
+  (print (:body (handle-request (require-root! root)
+                                {:method "GET"
+                                 :uri (str "/api/mission"
+                                           (when-not (str/blank? project)
+                                             (str "?project=" project)))})))
+  (flush))
+
 (defn test-doc! [root path]
   (when (str/blank? path)
     (exit! 1 "Missing path"))
@@ -1634,6 +1996,50 @@
                                 {:method "GET"
                                  :uri (str "/doc?path=" path)})))
   (flush))
+
+(defn test-api-doc! [root path id]
+  (when (str/blank? path)
+    (exit! 1 "Missing path"))
+  (print (:body (handle-request (require-root! root)
+                                {:method "GET"
+                                 :uri (str "/api/doc?path=" path
+                                           (when-not (str/blank? id)
+                                             (str "&id=" id)))})))
+  (flush))
+
+(defn test-project-http! [resp]
+  (print (:body resp))
+  (flush)
+  (when-not (= 200 (:status resp))
+    (binding [*out* *err*]
+      (println (:body resp)))
+    (System/exit 1)))
+
+(defn test-new-project! [root name pack mission]
+  (test-project-http!
+   (handle-request (require-root! root)
+                   {:method "POST"
+                    :uri "/api/projects"
+                    :body (json/generate-string {:name name
+                                                 :pack pack
+                                                 :mission (or mission "")})})))
+
+(defn test-open-project! [root name]
+  (test-project-http!
+   (handle-request (require-root! root)
+                   {:method "POST"
+                    :uri "/api/projects/open"
+                    :body (json/generate-string {:name name})})))
+
+(defn test-close-project! [root name]
+  (test-project-http!
+   (handle-request (require-root! root)
+                   {:method "POST"
+                    :uri "/api/projects/close"
+                    :body (json/generate-string {:name name})})))
+
+(defn test-inferred-name! [input github]
+  (println (forge/inferred-name input (= "github" github))))
 
 (defn test-teardown! [root confirm]
   (binding [*sync-teardown?* true]
@@ -1675,6 +2081,7 @@
         server (http/run-server (http-handler root)
                                 {:ip "127.0.0.1"
                                  :port (parse-port port-str)
+                                 :worker-count 8
                                  :legacy-return-value? false})
         url (str "http://127.0.0.1:" (http/server-port server))]
     (write-pack-web-pid! root)

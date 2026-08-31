@@ -1,38 +1,27 @@
 #!/bin/zsh
 set -euo pipefail
 
-valid_agents=(claude codex copilot grok)
 # D-9 (docs/fork-deltas.md, ADR-0001/0002): a managed project must get its
 # script snapshot from THIS fork. Installing upstream's tree hands the
 # project a snapshot whose handoff chain deadlocks — neither D-1 (inbox
 # resolved from roles.tsv) nor D-5 (handoffd reconciliation and retry) is
-# upstream. Override with SWARMFORGE_REPO_URL to install any other tree.
+# upstream. This now decides the pack branches too: the forge install pulls
+# two-pack/four-pack/six-pack from the same repo_url, and D-9 owns those as
+# complete artifacts (ADR-0002). Override with SWARMFORGE_REPO_URL to install
+# any other tree.
 default_repo_url="https://github.com/arlishansenn/swarm-forge"
+pack_names=(two-pack four-pack six-pack)
 
 usage() {
-  echo "usage: get-swarm-forge <branch> [agent] [extra-cli-args...]" >&2
-  echo "  branch: two-pack, four-pack, six-pack, or another runnable pack branch" >&2
-  echo "  agent: ${valid_agents[*]}" >&2
-  echo "  extra-cli-args: appended to each window line after the optional task|batch and forward-only|back-one|back-all fields" >&2
+  echo "usage: get-swarm-forge" >&2
+  echo "  Installs SwarmForge as a forge: host scripts from main, every pack" >&2
+  echo "  under packs/, and an empty projects/ directory." >&2
 }
 
-if [[ -z "${1:-}" ]]; then
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
-  exit 1
+  exit 0
 fi
-
-branch="$1"
-shift
-
-agent=""
-extra_args=()
-
-if [[ -n "${1:-}" && " ${valid_agents[*]} " == *" $1 "* ]]; then
-  agent="$1"
-  shift
-fi
-
-extra_args=("$@")
 
 repo_url="${SWARMFORGE_REPO_URL:-$default_repo_url}"
 base_branch="${SWARMFORGE_BASE_BRANCH:-main}"
@@ -56,87 +45,102 @@ fail_missing() {
   exit 1
 }
 
+copy_pack_template() {
+  local src="$1"
+  local dest="$2"
+  mkdir -p "$dest/swarmforge"
+  [[ -f "$src/swarm" ]] && cp "$src/swarm" "$dest/swarm"
+  [[ -f "$src/swarmforge/swarmforge.conf" ]] || fail_missing "swarmforge/swarmforge.conf in pack"
+  [[ -d "$src/swarmforge/roles" ]] || fail_missing "swarmforge/roles in pack"
+  cp "$src/swarmforge/swarmforge.conf" "$dest/swarmforge/swarmforge.conf"
+  [[ -f "$src/swarmforge/constitution.prompt" ]] \
+    && cp "$src/swarmforge/constitution.prompt" "$dest/swarmforge/constitution.prompt"
+  rm -rf "$dest/swarmforge/roles"
+  cp -R "$src/swarmforge/roles" "$dest/swarmforge/roles"
+  mkdir -p "$dest/swarmforge/constitution/articles"
+  if [[ -d "$src/swarmforge/constitution/articles" ]]; then
+    for pack_article in "$src/swarmforge/constitution/articles"/*; do
+      [[ -f "$pack_article" ]] || continue
+      article_name="${pack_article:t}"
+      case "$article_name" in
+        engineering.prompt|workflow.prompt|handoffs.prompt) continue ;;
+      esac
+      cp "$pack_article" "$dest/swarmforge/constitution/articles/$article_name"
+    done
+  fi
+}
+
 base_dir="${SWARMFORGE_BASE_DIR:-$tmp_dir/base}"
-pack_dir="${SWARMFORGE_PACK_DIR:-$tmp_dir/pack}"
+packs_src="${SWARMFORGE_PACKS_DIR:-}"
 
 if [[ -z "${SWARMFORGE_BASE_DIR:-}" ]]; then
   download_branch "$base_branch" "$base_dir"
 fi
-if [[ -z "${SWARMFORGE_PACK_DIR:-}" ]]; then
-  download_branch "$branch" "$pack_dir"
-fi
 
 [[ -d "$base_dir/swarmforge/scripts" ]] || fail_missing "swarmforge/scripts from $base_branch"
 [[ -d "$base_dir/swarmforge/constitution/articles" ]] || fail_missing "swarmforge/constitution/articles from $base_branch"
-[[ -f "$pack_dir/swarm" ]] || fail_missing "swarm from $branch"
-[[ -f "$pack_dir/swarmforge/swarmforge.conf" ]] || fail_missing "swarmforge/swarmforge.conf from $branch"
-[[ -d "$pack_dir/swarmforge/roles" ]] || fail_missing "swarmforge/roles from $branch"
 
-rm -rf swarmforge .worktrees .swarmforge
-
-mkdir -p swarmforge/constitution/articles
+mkdir -p swarmforge/constitution/articles packs projects
+rm -rf swarmforge/scripts
 cp -R "$base_dir/swarmforge/scripts" swarmforge/scripts
 for shared_article in engineering.prompt workflow.prompt handoffs.prompt; do
   [[ -f "$base_dir/swarmforge/constitution/articles/$shared_article" ]] \
     && cp "$base_dir/swarmforge/constitution/articles/$shared_article" \
          "swarmforge/constitution/articles/$shared_article"
 done
-
-cp "$pack_dir/swarm" swarm
-cp "$pack_dir/swarmforge/swarmforge.conf" swarmforge/swarmforge.conf
-[[ -f "$pack_dir/swarmforge/constitution.prompt" ]] \
-  && cp "$pack_dir/swarmforge/constitution.prompt" swarmforge/constitution.prompt
-cp -R "$pack_dir/swarmforge/roles" swarmforge/roles
-if [[ -d "$pack_dir/swarmforge/constitution/articles" ]]; then
-  for pack_article in "$pack_dir/swarmforge/constitution/articles"/*; do
-    [[ -f "$pack_article" ]] || continue
-    article_name="${pack_article:t}"
-    case "$article_name" in
-      engineering.prompt|workflow.prompt|handoffs.prompt) continue ;;
-    esac
-    cp "$pack_article" "swarmforge/constitution/articles/$article_name"
-  done
+[[ -f "$base_dir/swarmforge/constitution.prompt" ]] \
+  && cp "$base_dir/swarmforge/constitution.prompt" swarmforge/constitution.prompt
+mkdir -p swarmforge/roles
+[[ -f "$base_dir/swarmforge/roles/lieutenant.prompt" ]] \
+  && cp "$base_dir/swarmforge/roles/lieutenant.prompt" swarmforge/roles/lieutenant.prompt
+if [[ ! -f swarmforge/swarmforge.conf && -f "$base_dir/swarmforge/swarmforge.conf" ]]; then
+  cp "$base_dir/swarmforge/swarmforge.conf" swarmforge/swarmforge.conf
 fi
+if [[ -f "$base_dir/swarm" ]]; then
+  cp "$base_dir/swarm" swarm
+elif [[ ! -f swarm ]]; then
+  cat > swarm <<'WRAP'
+#!/bin/zsh
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$SCRIPT_DIR/swarmforge/scripts/swarmforge.sh" "$@"
+WRAP
+fi
+chmod +x swarm
+
+for pack_name in "${pack_names[@]}"; do
+  pack_src=""
+  if [[ -n "$packs_src" && -d "$packs_src/$pack_name" ]]; then
+    pack_src="$packs_src/$pack_name"
+  elif [[ -z "$packs_src" && -z "${SWARMFORGE_BASE_DIR:-}" ]]; then
+    pack_src="$tmp_dir/packs/$pack_name"
+    download_branch "$pack_name" "$pack_src"
+  fi
+  [[ -n "$pack_src" && -d "$pack_src" ]] || fail_missing "pack $pack_name"
+  copy_pack_template "$pack_src" "packs/$pack_name"
+  [[ -f "packs/$pack_name/swarmforge/swarmforge.conf" ]] || fail_missing "packs/$pack_name/swarmforge/swarmforge.conf"
+  while IFS= read -r role; do
+    [[ -f "packs/$pack_name/swarmforge/roles/${role}.prompt" ]] \
+      || fail_missing "packs/$pack_name/swarmforge/roles/${role}.prompt"
+  done < <(awk '/^window/ { print $2 }' "packs/$pack_name/swarmforge/swarmforge.conf")
+done
 
 required_files=(
   swarm
-  swarmforge/swarmforge.conf
-  swarmforge/constitution.prompt
-  swarmforge/constitution/articles/handoffs.prompt
-  swarmforge/constitution/articles/workflow.prompt
-  swarmforge/constitution/articles/engineering.prompt
   swarmforge/scripts/swarmforge.sh
   swarmforge/scripts/handoffd.bb
   swarmforge/scripts/done_with_current.sh
+  swarmforge/constitution/articles/handoffs.prompt
+  swarmforge/constitution/articles/workflow.prompt
+  swarmforge/constitution/articles/engineering.prompt
+  swarmforge/roles/lieutenant.prompt
+  packs/two-pack/swarmforge/swarmforge.conf
+  packs/four-pack/swarmforge/swarmforge.conf
+  packs/six-pack/swarmforge/swarmforge.conf
 )
 
 for required_path in "${required_files[@]}"; do
   [[ -e "$required_path" ]] || fail_missing "$required_path"
 done
 
-while IFS= read -r role; do
-  [[ -f "swarmforge/roles/${role}.prompt" ]] || fail_missing "swarmforge/roles/${role}.prompt"
-done < <(awk '/^window/ { print $2 }' swarmforge/swarmforge.conf)
-
-chmod +x swarm
-
-if [[ ( -n "$agent" || ${#extra_args[@]} -gt 0 ) && -f swarmforge/swarmforge.conf ]]; then
-  extra_args_str="${(j: :)extra_args}"
-  awk -v agent="$agent" -v extra_args="$extra_args_str" '
-    /^window/ {
-      if (agent != "") $3 = agent
-      if (extra_args != "") {
-        printf "%s", $1
-        for (i = 2; i <= NF; i++) printf " %s", $i
-        printf " %s\n", extra_args
-        next
-      }
-      print
-      next
-    }
-    { print }
-  ' swarmforge/swarmforge.conf > swarmforge/swarmforge.conf.tmp \
-    && mv swarmforge/swarmforge.conf.tmp swarmforge/swarmforge.conf
-fi
-
-echo "SwarmForge ${branch} installed. Run ./swarm to start."
+echo "SwarmForge forge installed. Run ./swarm to start the dashboard."
