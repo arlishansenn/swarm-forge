@@ -7,6 +7,34 @@
 fork 已经修过的 bug 时，没有文本重叠，merge 干净通过，测试也可能照绿——除非有一条
 专门为此写的测试。issue #45 的 merge 里真实发生过一次（见下面 D-1）。
 
+## 差异的真相源现在是 spec，本表是索引
+
+每条 B 类差异都有一份 behaviour spec，requirement 用 SHALL / MUST NOT，行为写成 Gherkin
+scenario，且尽量带一句「换成 upstream 的版本，本 scenario 失败」。决定与理由见
+[`adr/0003-fork-deltas-are-recorded-as-executable-specs.md`](../adr/0003-fork-deltas-are-recorded-as-executable-specs.md)。
+
+| 差异 | capability |
+|---|---|
+| D-1 收件箱路径按 `roles.tsv` 解析 | `handoff-inbox-resolution` |
+| D-2 提交键用裸回车 / CSI-u | `tmux-submit-keys` |
+| D-3 `notify!` 按 backend 分发 | `tmux-submit-keys`（同一条 requirement 的直接后果） |
+| D-4 handoff helper 集中在 `handoff_lib.bb` | `handoff-helper-library` |
+| D-5 handoffd 的对账与重试 | `handoff-daemon-redelivery` |
+| D-6 `sync-worktree-scripts!` 完整镜像 | `role-worktree-script-mirroring` |
+| D-8 remote ssh 一律带 `-n` | `remote-ssh-stdin-isolation` |
+| D-9 script snapshot 指向本 fork | `script-snapshot-provenance` |
+| D-10 `start-pack-web!` 读固定端口 | `dashboard-port-binding` |
+
+**D-7（`swarmforge-operator` skill 整体）没有 capability**：它是 A 类，落在 upstream 没有
+的文件里，merge 从不碰它，契约写在它自己的 `SKILL.md` 里。
+
+**本表仍然要读。** spec 说「差异是什么」，本表说「merge 时怎么找到它、上次是怎么丢的」——
+成本模型、攒几个 commit 合一次、每条差异的历史事故，这些不是 behaviour，塞进 spec 只会让
+spec 变回散文。
+
+**注意 scenario 现在还不可执行。** 它们描述的行为由既有的 `bb test` 与 `test-*.sh` 覆盖，
+所以 merge 后的用法是「逐条对照」，不是「一条命令跑完」。
+
 ## 怎么用
 
 ```sh
@@ -238,8 +266,8 @@ onboard project、update SwarmForge scripts 等动词，及其 `test-*.sh` 测�
 是 staged-then-atomic-rename 安装、装完写 `.swarmforge/scripts-manifest`。`onboard project`
 从 fork 的 Pack 分支下载，原样安装，**不做任何解压后改写**。
 
-**为什么：** 见 `docs/adr/0001-script-snapshot-follows-this-fork.md` 与
-`docs/adr/0002-fork-owns-the-complete-pack-artifact.md`。照 upstream 流程 onboard 出来的
+**为什么：** 见 `adr/0001-script-snapshot-follows-this-fork.md` 与
+`adr/0002-fork-owns-the-complete-pack-artifact.md`。照 upstream 流程 onboard 出来的
 项目会静默拿到一份 handoff 会卡死的 snapshot（D-1 与 D-5 的修复都不在 upstream）。
 
 ADR 0001 原来的实现手段是「onboard 解压后改写 `ARCHIVE_URL`」，已被 ADR-0002 取代：那次
