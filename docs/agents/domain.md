@@ -7,7 +7,7 @@ This repository uses a single-context domain documentation layout.
 Read these files when they exist:
 
 - `CONTEXT.md`
-- ADRs under `docs/adr/`
+- ADRs under `adr/`
 
 Proceed silently when they do not exist. Create domain documentation lazily
 when terminology or architectural decisions are resolved.
