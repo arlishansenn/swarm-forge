@@ -462,10 +462,27 @@ scripts/open-dashboard.sh --root "$ROOT" [--window <ref>] \
   [--target admin@host] [--key ~/.ssh/key] [--local] [--tailnet]
 ```
 
-It reads `$ROOT/.swarmforge/dashboard-url`, reaches the port (tunnel or
-tailnet, below), confirms the port is owned by *this* project's own
-`pack_web`, then opens or reuses one workspace named `Dashboard · <basename>`
-with a browser surface on the resulting URL. `TUNNEL=` in the report says
+It asks four questions in this order, and stops at the first `no` (issue #100):
+**is the swarm running** (read `tmux-socket`, probe `list-sessions` — the same
+judgment `open`/`start`/`stop`/`read swarm`, `wake`/`talk role` and `update
+SwarmForge scripts` all use), **is there a dashboard-url**, **is that port owned
+by this project's own `pack_web`**, and only then **can I reach it** (tunnel or
+tailnet). Then it opens or reuses one workspace named `Dashboard · <basename>`
+with a browser surface on the resulting URL.
+
+The order matters and used to be wrong. `stop swarm` deletes `pack_web.pid` but
+**nothing deletes `dashboard-url`**, so after a stop those two disagree — and
+with reachability checked first, a stopped project died `5` `ERROR`
+("the tunnel is broken") instead of `3` `STOPPED`. On the `--tailnet` path it
+went further and told the operator to run a `tailscale serve` command they had
+already run. A swarm that is not running has no port to reach, no owner to
+identify and no workspace to open, so that question is asked first now.
+
+**One deliberate consequence:** a project whose swarm is stopped but whose
+`pack_web` is somehow still up is now refused with `3`. This verb opens *a
+swarm's* Dashboard; with no swarm there is nothing to look at. Since issue #82
+`stop swarm` stops `pack_web` too, so that state only arises when something
+stopped the swarm without going through the verb. `TUNNEL=` in the report says
 which path was taken: `created`, `reused`, `tailnet`, or `local`.
 
 ### How to run it
