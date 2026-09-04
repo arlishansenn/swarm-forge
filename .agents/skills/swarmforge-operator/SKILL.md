@@ -919,7 +919,8 @@ issue, so the accepting human had to reverse-engineer what the PR closed.
 
 ```sh
 scripts/run-issue.sh --root <project-root> --issue <N> \
-  [--target user@host] [--key <path>] [--local] [--max-wait <seconds>]
+  [--target user@host] [--key <path>] [--local] [--max-wait <seconds>] \
+  [--round <N>]
 ```
 
 Six steps, in this order:
@@ -931,11 +932,13 @@ Six steps, in this order:
    the slug: `feat/issue-<N>-<slug>` for the branch, `issue-<N>-<slug>` for
    the task name, one source for both.
 3. `BASE` = the newest open PR's `headRefName`, or `main` when there is none.
-4. Read **both** markers — the Board card and the branch — and answer all four
-   states: neither is a fresh run, both is a resume, the branch alone is a
-   resume that still owes a POST, the card alone is refused. Refuse too if the
-   swarm is waiting on a human. Create the branch from `BASE` unless it is
-   already there.
+4. Read the markers — the Board card's **lane**, the branch, and (only when the
+   lane is `done`) the PR — and answer every state: neither marker is a fresh
+   run, an active lane with its branch is a resume, the branch alone is a
+   resume that still owes a POST, an active lane alone is refused, and a `done`
+   lane is a round this verb will finish shipping but never restart. Refuse too
+   if the swarm is waiting on a human. Create the branch from `BASE` unless it
+   is already there.
 5. `POST {dashboard-url}/api/tasks` once — skipped only when the card is
    already on the Board — then poll the Board lane until `done`.
 6. `accept work` for the commit — **retried until the delivery record is
@@ -977,6 +980,15 @@ between calls.**
   #65, see *If the run is killed*). The converse holds as well: a branch with
   no card is an earlier run of this verb that was killed before it posted, so
   the POST is *owed*, not skipped (issue #76).
+- **It never reuses a finished task identity.** The card is read by its **lane
+  value**, not for its presence (issue #115). `CONTEXT.md` makes a task's lane
+  the only authority on whether that task is finished, so a `done` lane is that
+  authority speaking: the round is over. Continuing on it is not harmless —
+  `accept work` is keyed by the task name alone, so it answers with the
+  *finished* round's delivery record, and the PR then carries a commit that is
+  not on the head it names (live on podsum `#112`). Putting the same issue
+  through again is `--round N`, which suffixes the derived identity; it is
+  never a hand-edited Board.
 - **It stops when the swarm is waiting on a human.** A blocked agent does not
   fail — it writes a clarification request or a pending approval and waits, so
   its task never reaches `done`. `/api/state`'s `clarifications` (status
@@ -1024,10 +1036,13 @@ Exit codes / STATUS line:
   `accept work` for the whole delivery window (`SF_RUN_ISSUE_DELIVERY_SECONDS`,
   default 600s) — never open a PR from a branch whose commit was not confirmed.
   Neither ceiling ever pushes, opens a PR, or re-posts the task.
-- `6` `UNSAFE` — a card by that name exists **and its branch does not**, so it
-  is not this verb's card, or a pending clarification/approval is blocking.
-  Both name the thing to clear, and nothing was created in either case. A card
-  *with* its branch is resumed, not refused.
+- `6` `UNSAFE` — one of three: a card in an **active** lane whose branch does
+  not exist, so it is not this verb's card; a card in lane **`done`** whose
+  round already shipped (its branch is gone, or its head's PR is `MERGED`/
+  `CLOSED`), so the identity is spent and the report names `--round N`; or a
+  pending clarification/approval is blocking. Nothing was created in any of the
+  three. A card in an active lane *with* its branch is resumed, not refused,
+  and so is a `done` card whose round has not shipped yet.
 - `7` `STILL_RUNNING` — `--max-wait` ran out. The task is posted and the swarm
   is still working: nothing was pushed, no PR was opened, and the task was
   **not** re-posted. The body carries `lane:` and `waiting_for:` so the caller
@@ -1145,16 +1160,30 @@ a second branch, and never opens a second PR. A resumed run prints
 
 What it looks at, and what it does:
 
-| Board card for `issue-<N>-<slug>` | branch `feat/issue-<N>-<slug>` | what happens |
+| lane of `issue-<N>-<slug>` | branch `feat/issue-<N>-<slug>` | what happens |
 |---|---|---|
 | absent | absent | fresh run |
 | absent | **present** | **resume** — skip the branch, POST the task that never got posted |
-| present | present | **resume** — skip the branch and the POST, pick up at the poll |
-| present | absent | `6` `UNSAFE` — that card is not this verb's; nothing is touched |
+| active (`coder`, `cleaner`, …) | present | **resume** — skip the branch and the POST, pick up at the poll |
+| active | absent | `6` `UNSAFE` — that card is not this verb's; nothing is touched |
+| **`done`**, no PR on the head | present | **resume** — the swarm's half is over, the shipping half is not: `accept work`, push, PR |
+| **`done`**, PR `OPEN` | present | that PR *is* the terminal state: `0` `PR_OPENED`, reported again, nothing re-done |
+| **`done`**, PR `MERGED`/`CLOSED` | present | `6` `UNSAFE` — round finished; re-run with `--round N` |
+| **`done`** | absent | `6` `UNSAFE` — round finished, branch gone; re-run with `--round N` |
 
 The branch is the marker because this verb always creates it *before* it posts.
-A card whose branch is missing was typed into the Dashboard by hand or made by
-something else, and continuing on it would push work this verb never scoped.
+A card in an **active** lane whose branch is missing was typed into the
+Dashboard by hand or made by something else, and continuing on it would push
+work this verb never scoped.
+
+The lane is read by **value** (issue #115). A decision that only asks whether a
+card exists cannot tell a finished round from an interrupted one, and the two
+need opposite answers. But `done` is not by itself a stop either: the round has
+two halves — the swarm reaching `done`, then this verb shipping it — and
+`STILL_RUNNING` promises that re-running continues the second half. The window
+it points at (`done` on the Board, delivery record not yet visible, nothing
+pushed) is exactly a `done` card with a branch and no PR, so the PR is the third
+marker: no PR, or an open one, means the round is still this verb's to finish.
 
 The second row is the window **between** those two writes, about two ssh round
 trips wide, and until issue #76 it had no exit: with no card the verb took the
@@ -1168,20 +1197,20 @@ To see which state you are in without running anything:
 
 ```sh
 scripts/read-swarm.sh --root <project-root>          # is the swarm still working?
-ssh <target> "grep '^issue-<N>-' <root>/.swarmforge/board/tasks.tsv"
+ssh <target> "grep '^issue-<N>-' <root>/.swarmforge/board/tasks.tsv"   # lane, column 2
 ```
 
-A card in any lane means the task is posted; re-running is then always the
-right move, whether the lane is still `coder` or already `done`.
+An **active** lane means the task is posted and re-running is always the right
+move. A **`done`** lane means the swarm finished: re-run to ship it if no PR
+exists yet, and `--round N` if one already does.
 
 **Boundary:** this verb opens a PR and stops. It never merges (`--merge` and
 `--auto` are never passed), never answers a clarification (`read swarm` does
 not even know the concept exists — that is a separate issue), and never
 changes the Dashboard's listen address or the role topology. Recovery from
-either `UNSAFE` is a human's: resolve the clarification in the Dashboard, or
-delete the duplicate card — and if the task had already been posted before the
-block, take it the rest of the way with `accept work` by hand rather than
-re-running this verb, which would refuse on the card it created.
+an `UNSAFE` is a human's: resolve the clarification in the Dashboard; give a
+spent identity a new round with `--round N`; and for a foreign card in an active
+lane, rename it in the Dashboard or take its work with `accept work` by hand.
 
 **Never hand-clear Board or handoff state to force a re-run.** A Board card and
 the records under `inbox/completed/` are history, not levers: `CONTEXT.md` makes
@@ -1191,12 +1220,16 @@ verb's own contract makes `accept work` a report that changes nothing under
 verb see a "fresh" run is doing by hand what the verb must decide for itself —
 and it cannot be done completely: the task name keys three separate state
 sources (the card, the branch, the delivery record), so clearing the two the
-resume table names still leaves the third to be matched by the next run. Today
-the resume decision reads the card's lane but only tests whether a card exists,
-so a `done` card from a finished earlier run is indistinguishable from an
-interrupted one; that gap is issue #115. Until it closes, take a finished run
-the rest of the way with `accept work` by hand, or give the re-run a different
-task identity — do not delete the record of the earlier one.
+resume table names still leaves the third to be matched by the next run. That
+is how podsum `#112` opened a PR naming a commit that was not on its head: the
+run's wait for "this round's delivery record" was satisfied by the *previous*
+round's, 8 minutes before the real one landed.
+
+**Re-run a finished issue with `--round N`.** The identity stays derived —
+`issue-<N>-<slug>-r2`, branch `feat/issue-<N>-<slug>-r2` — so round 2 is itself
+resumable by re-running the same command, and round 1's card, branch and
+delivery record stay exactly where they are as the history they are. Round 1
+carries no suffix, so every name this verb has ever produced is unchanged.
 
 ## Verb: `stop swarm`
 
@@ -1404,7 +1437,19 @@ covered four ways: `0` exits `7` `STILL_RUNNING` after exactly one lane check
 with no push and no PR and is then resumable like any other kill, `0` during
 the delivery window exits `7` rather than `5`, a negative value still reaches
 the old `5` `ERROR` ceiling, and a non-numeric value exits `2` having run no
-command at all. For these the `git` stub
+command at all. Issue #115's split of the card row by lane value gets five: a
+`done` card with its branch and no PR still ships the round it was left in
+(exit 0, `resumed: yes`, no re-POST); the same card whose head carries a
+`CLOSED` PR exits `6` naming that PR and `--round`, with the board and handoffs
+byte-identical and no push; the same card whose PR is `OPEN` still exits 0
+reporting it; a `done` card with no branch exits `6` naming `--round` and
+explicitly **not** the old "delete or rename it" remedy, while an *active* lane
+with no branch keeps that remedy word for word; and `--round 2` runs fresh
+under the suffixed identity, leaving round 1's card untouched, with `--round 0`
+and a non-numeric value exiting `2` before any command runs. One structural
+check backs them: the script must compare `EXISTING_LANE` against `done`
+outside its comments, because a decision that only tests the lane for
+emptiness is the bug itself, however green the behavioural cases look. For these the `git` stub
 keeps a real branch registry — `checkout -b` records a name and `rev-parse
 --verify` answers from it — because a stub that always exits 0 would let both
 the resume case and the not-our-card case pass for the wrong reason. Its `accept work` stub prints a `WARN=` line and a

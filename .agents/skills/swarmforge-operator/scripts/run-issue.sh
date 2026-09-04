@@ -12,24 +12,51 @@
 # never merges (no --merge/--auto), never answers a clarification, and never
 # re-posts a task it already posted.
 #
-# RESUMABLE (issues #65, #76). This verb blocks for as long as the swarm takes,
-# so sooner or later an agent harness kills it mid-run. A second run with the
-# same --root/--issue CONTINUES the first one instead of refusing or crashing.
-# What it does is derived from the observable world — the branch and the card
-# are two independent markers, giving four states, and every one has an exit:
+# RESUMABLE (issues #65, #76, #115). This verb blocks for as long as the swarm
+# takes, so sooner or later an agent harness kills it mid-run. A second run with
+# the same --root/--issue CONTINUES the first one instead of refusing or
+# crashing. What it does is derived from the observable world — the card's LANE,
+# the branch, and the PR are three independent markers, and every state has an
+# exit:
 #
-#   branch + card    -> resume: skip the branch, skip the POST, pick up at the poll
-#   branch, no card  -> resume: skip the branch, POST the task that never got
+#   no card, no branch  -> fresh run
+#   no card, branch     -> resume: skip the branch, POST the task that never got
 #                       posted. This is the step-4-to-step-5 window, about two
 #                       ssh round trips wide, and it used to be a dead end: the
 #                       old code keyed the decision off the card alone, so with
 #                       no card it took the fresh path and ran `git checkout -b`
 #                       onto a branch that already existed — 5 ERROR on every
 #                       re-run until a human deleted the branch (issue #76).
-#   card, no branch  -> not this verb's card; refuse (6 UNSAFE)
-#   neither          -> fresh run
+#   active lane, branch -> resume: skip the branch, skip the POST, pick up at
+#                       the poll
+#   active lane, none   -> not this verb's card; refuse (6 UNSAFE)
+#   done, still shipping-> resume: the swarm's half is over, this verb's is not
+#   done, shipped       -> that round is finished; refuse (6 UNSAFE), --round
 #
-# Re-running is the recovery procedure; there is nothing else to remember.
+# The lane is read by VALUE, not for emptiness (issue #115). CONTEXT.md makes a
+# task's lane the only authority on whether that task is finished, and a
+# decision that only asks whether a card exists has thrown that authority away:
+# a `done` card left by a finished round was indistinguishable from an
+# interrupted one. Continuing on a finished one is not harmless — `accept work`
+# is keyed by task name alone, so it answers with the FINISHED round's delivery
+# record, and the PR ends up carrying a commit that is not on the head it names
+# (live failure on podsum #112).
+#
+# `done` alone is still not a stop, because the round has two halves: the swarm
+# reaching `done`, and then this verb shipping it. STILL_RUNNING's own report
+# promises that re-running continues the second half, and the window it points
+# at — `done` on the Board, delivery record not yet visible, nothing pushed — is
+# precisely a `done` card with a branch and no PR. So the third marker is the
+# PR: a `done` card whose branch is present and whose head carries no PR, or an
+# open one (this verb's own terminal state), is a round still being shipped and
+# resumes exactly as it always did.
+#
+# Re-running is the recovery procedure; there is nothing else to remember. When
+# a round really is finished and the issue has to go through again, --round N
+# gives the re-run its own derived identity. Nothing on the Board or under
+# inbox/ is ever cleared to force a re-run: the task name keys three separate
+# state sources, clearing them by hand cannot be done completely, and they are
+# history rather than levers.
 #
 # --max-wait <seconds> lets the CALLER say how long it can wait (issue #76).
 # The ceilings below are the callee's own, and some harnesses kill well under
@@ -64,7 +91,8 @@
 # Contract details live in ../SKILL.md (verb: run issue).
 #
 # Usage: run-issue.sh --root <project-root> --issue <N> \
-#   [--target user@host] [--key <path>] [--local] [--max-wait <seconds>]
+#   [--target user@host] [--key <path>] [--local] [--max-wait <seconds>] \
+#   [--round <N>]
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib-wake-talk.sh"
@@ -73,6 +101,12 @@ TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
 ROOT='' ISSUE='' LOCAL=0
 MAX_WAIT=-1
+# Which attempt at this issue this is. Round 1 carries no suffix, so every name
+# this verb has ever produced is unchanged; a later round suffixes the task
+# name (and with it the branch), which is the only supported way to run an
+# issue whose earlier round finished. Derived, not invented, so a round is
+# itself resumable by re-running the same command.
+ROUND=1
 
 # Poll cadence and ceiling. A real chain hop is minutes, not seconds, so a
 # tight interval buys nothing but ssh round trips; the ceiling is generous
@@ -90,7 +124,7 @@ DELIVERY_SECONDS=${SF_RUN_ISSUE_DELIVERY_SECONDS:-600}
 # same trick as start-swarm.sh's SWARM_LAUNCHER.
 ACCEPT_WORK=${ACCEPT_WORK:-$HERE/accept-work.sh}
 
-usage() { printf 'STATUS=USAGE\n'; sed -n '2,67p' "$0"; exit 2; }
+usage() { printf 'STATUS=USAGE\n'; sed -n '2,95p' "$0"; exit 2; }
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -100,6 +134,7 @@ while [ $# -gt 0 ]; do
     --key) KEY=${2:-}; shift 2 ;;
     --local) LOCAL=1; shift ;;
     --max-wait) MAX_WAIT=${2:-}; shift 2 ;;
+    --round) ROUND=${2:-}; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -110,6 +145,9 @@ case $ISSUE in ''|*[!0-9]*) usage ;; esac
 # One optional leading minus, then digits. Anything else is a typo, and a typo
 # in a deadline is worth an exit 2 rather than a silently wrong wait.
 case ${MAX_WAIT#-} in ''|*[!0-9]*) usage ;; esac
+# Positive digits only. Round 0 is not "the round before the first one", it is
+# a typo, and a typo in an identity would silently start a second round.
+case $ROUND in ''|*[!0-9]*|0) usage ;; esac
 # The caller's budget covers the whole call, branch and POST included, not just
 # the polling — an agent that says "I have 300 seconds" means the command.
 if [ "$MAX_WAIT" -lt 0 ]; then WAIT_DEADLINE=''
@@ -151,6 +189,7 @@ SLUG=$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]' \
   | sed 's/[^a-z0-9]\{1,\}/-/g' | cut -c1-60 | sed 's/^-*//; s/-*$//')
 [ -n "$SLUG" ] || die ERROR "issue #$ISSUE title yields an empty slug: $TITLE" 5
 TASK_NAME="issue-$ISSUE-$SLUG"
+[ "$ROUND" = 1 ] || TASK_NAME="$TASK_NAME-r$ROUND"
 BRANCH="feat/$TASK_NAME"
 
 # ---------- step 2: BASE — the newest open PR's head, else main ----------
@@ -169,13 +208,13 @@ BASE=${BASE%$'\n'}
 # (issue #65). This verb always creates the branch BEFORE it posts, so the
 # branch is the marker of its own earlier run.
 #
-# Both markers are read every time and the four states are answered
-# independently (issue #76). Reading the card first and only then asking about
-# the branch left "branch, no card" with no answer at all: it fell through to
-# the fresh path and re-ran `git checkout -b` on an existing branch, which is a
-# hard failure and stayed one on every re-run. Nothing is inferred from which
-# marker was noticed first; each of the two decisions this block makes — create
-# the branch or not, post the task or not — comes from its own marker.
+# Every marker is read on every run and each state is answered independently
+# (issue #76). Reading the card first and only then asking about the branch
+# left "branch, no card" with no answer at all: it fell through to the fresh
+# path and re-ran `git checkout -b` on an existing branch, which is a hard
+# failure and stayed one on every re-run. Nothing is inferred from which marker
+# was noticed first; each of the two decisions this block makes — create the
+# branch or not, post the task or not — comes from its own marker.
 #
 # The branch is checked as a ref, not by name matching, because the name alone
 # is derived from the issue and would be identical for a card a human typed
@@ -189,6 +228,27 @@ EXISTING_LANE=$(board_lane "$TASK_NAME")
 BRANCH_EXISTS=0
 if in_root "git rev-parse --verify --quiet $(printf '%q' "refs/heads/$BRANCH")" >/dev/null 2>&1; then
   BRANCH_EXISTS=1
+fi
+# `done` first: it is the lane saying this identity's round is over, and it
+# answers before the "is this card mine" question, which cannot tell a finished
+# round from a foreign card. The PR is looked up only in this branch of the
+# decision, so an ordinary run costs no extra call.
+if [ "$EXISTING_LANE" = done ]; then
+  PRIOR_STATE='' PRIOR_URL=''
+  if [ "$BRANCH_EXISTS" = 1 ]; then
+    # `.[0] | .state, .url` prints two lines, and yields two nulls rather than
+    # an error on an empty list — a gh hiccup therefore reads as "no PR" and
+    # keeps the old resume behaviour, never as a new refusal.
+    PRIOR=$(in_root "gh pr list --head $(printf '%q' "$BRANCH") --state all --json state,url --jq '.[0] | .state, .url'") || PRIOR=''
+    PRIOR_STATE=$(printf '%s\n' "$PRIOR" | head -1)
+    PRIOR_URL=$(printf '%s\n' "$PRIOR" | tail -1)
+  fi
+  FINISHED=''
+  case "$BRANCH_EXISTS:$PRIOR_STATE" in
+    0:*)               FINISHED="its branch $BRANCH is gone" ;;
+    1:MERGED|1:CLOSED) FINISHED="its PR $PRIOR_URL is $PRIOR_STATE" ;;
+  esac
+  [ -z "$FINISHED" ] || die UNSAFE "$TASK_NAME is in lane done on $BOARD_FILE and $FINISHED — that round is finished, and this verb will not reuse a finished task identity: accept work is keyed by the task name alone, so it would answer with the finished round's delivery record. Nothing on the Board or under inbox/ needs clearing (both are history, not levers). To put issue #$ISSUE through again, give the re-run its own identity: --round $((ROUND + 1))" 6
 fi
 if [ "$BRANCH_EXISTS" = 0 ] && [ -n "$EXISTING_LANE" ]; then
   die UNSAFE "$BOARD_FILE already has a card named $TASK_NAME (lane $EXISTING_LANE) but $BRANCH does not exist in $ROOT — that card was not created by this verb; delete or rename it, or accept the work it already produced" 6

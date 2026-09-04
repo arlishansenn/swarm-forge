@@ -42,9 +42,15 @@ STUB=${STUB:?}
 case "$1 $2" in
   "issue view") printf '%s\n' "${GH_ISSUE_TITLE:?}" ;;
   "pr list")
-    # Two different lookups share this subcommand: BASE resolution (no --head)
-    # and the issue #65 "does a PR already exist for our branch" check.
+    # Three lookups share this subcommand: BASE resolution (no --head), the
+    # issue #65 "does an OPEN PR already exist for our branch" check, and
+    # issue #115's "did this identity's round already ship" check, which asks
+    # for --state all and gets `state` then `url`, one per line.
     case " $* " in
+      *" --state all "*)
+        [ -n "${GH_PRIOR_PR_STATE:-}" ] || exit 0
+        printf '%s\n%s\n' "$GH_PRIOR_PR_STATE" \
+          "${GH_PRIOR_PR_URL:-https://github.com/o/r/pull/42}" ;;
       *" --head "*) [ -n "${GH_EXISTING_PR:-}" ] && printf '%s\n' "$GH_EXISTING_PR" ;;
       *) [ -n "${GH_OPEN_HEAD:-}" ] && printf '%s\n' "$GH_OPEN_HEAD" ;;
     esac
@@ -556,6 +562,125 @@ if grep -v '^[[:space:]]*#' "$SCRIPT" | grep -qE 'proposal.*design.*tasks|propos
     "$(grep -vn '^[[:space:]]*#' "$SCRIPT" | grep -E 'proposal.*design.*tasks|proposal -> ')"
 else
   ok "openspec: artifact order is not hardcoded in the script"
+fi
+
+# ---------- 21. `done` card + branch + no PR: still this round, ship it ----------
+# Issue #115 splits the old "card present" row by the lane's VALUE, but `done`
+# alone does not mean the round is over: the verb's own STILL_RUNNING report
+# says "re-run the same command to continue", and the window it points at —
+# Board `done`, delivery record not yet visible, nothing pushed — is exactly a
+# `done` card with a branch and no PR. That state must still finish the round.
+reset "${TASK}${TAB}done"
+printf '%s\n' "$BRANCH" > "$STUB/branches"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "done card with branch and no PR exits 0" 0 "$rc"
+check "done card with branch and no PR STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
+has "done card with branch and no PR resumes" "$out" "resumed: yes"
+check "done card with branch and no PR never re-posts" "0" "$(count curl-post)"
+check "done card with branch and no PR creates no branch" "0" \
+  "$(grep -c 'git <checkout> <-b>' "$STUB/calls.log" || true)"
+check "done card with branch and no PR opens exactly one PR" "1" \
+  "$(grep -c 'gh <pr> <create>' "$STUB/calls.log" || true)"
+
+# ---------- 22. `done` card + branch + a PR that is no longer open ----------
+# The round finished AND shipped; its PR was merged or closed. Re-running the
+# same identity here is what produced issue #115's live failure: `accept work`
+# is keyed by task name alone, so it answers with the FINISHED round's delivery
+# record and a second PR gets opened carrying a commit that is not on the head
+# it names. Refuse, and name the way forward that edits no state.
+reset "${TASK}${TAB}done"
+printf '%s\n' "$BRANCH" > "$STUB/branches"
+before=$(tree_digest)
+out=$(GH_PRIOR_PR_STATE=CLOSED "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "finished round with a closed PR exits 6" 6 "$rc"
+check "finished round with a closed PR STATUS" "STATUS=UNSAFE" "$(printf '%s\n' "$out" | head -1)"
+has "finished round names the lane it read" "$out" "done"
+has "finished round names the PR it already produced" "$out" "https://github.com/o/r/pull/42"
+has "finished round names the no-cleanup way forward" "$out" "--round"
+hasnt "finished round never asks for hand-cleared state" "$out" "delete"
+check "finished round posts nothing" "0" "$(count curl-post)"
+check "finished round pushes nothing" "0" "$(grep -c 'git <push>' "$STUB/calls.log" || true)"
+check "finished round opens no PR" "no" \
+  "$([ -f "$STUB/pr-create.argvlines" ] && echo yes || echo no)"
+check "finished round leaves board+handoffs byte-identical" "$before" "$(tree_digest)"
+
+# 22b. the same board state, but the PR is still OPEN: that is the terminal
+# report of the round, not a new one. Exit 0 and say which PR it is (test 13
+# reaches this by a longer road; here the card is already `done` on entry).
+reset "${TASK}${TAB}done"
+printf '%s\n' "$BRANCH" > "$STUB/branches"
+out=$(GH_PRIOR_PR_STATE=OPEN GH_EXISTING_PR='https://github.com/o/r/pull/99' \
+  "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "finished round with an open PR exits 0" 0 "$rc"
+has "finished round with an open PR reports it" "$out" "https://github.com/o/r/pull/99"
+check "finished round with an open PR opens no second PR" "0" \
+  "$(grep -c 'gh <pr> <create>' "$STUB/calls.log" || true)"
+
+# ---------- 23. `done` card, no branch: a finished round, not a foreign card ----------
+# Before issue #115 this fell into the "not this verb's card" refusal, whose
+# remedy line is "delete or rename it" — the hand-cleared state CONTEXT.md and
+# this verb's own boundary forbid. The lane's value tells the two apart: `done`
+# is a round that finished and whose branch is gone (merged and deleted, or
+# discarded), never a card someone typed in mid-flight.
+reset "${TASK}${TAB}done"
+before=$(tree_digest)
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "done card without a branch exits 6" 6 "$rc"
+check "done card without a branch STATUS" "STATUS=UNSAFE" "$(printf '%s\n' "$out" | head -1)"
+has "done card without a branch names the task" "$out" "$TASK"
+has "done card without a branch names --round" "$out" "--round"
+hasnt "done card without a branch does not ask for a deletion" "$out" "delete or rename"
+check "done card without a branch posts nothing" "0" "$(count curl-post)"
+check "done card without a branch creates no branch" "0" \
+  "$(grep -c 'git <checkout> <-b>' "$STUB/calls.log" || true)"
+check "done card without a branch writes nothing" "$before" "$(tree_digest)"
+
+# 23b. an ACTIVE lane with no branch is still the foreign card of issue #65,
+# word for word. Only the `done` row moved.
+reset "${TASK}${TAB}coder"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "active lane without a branch still exits 6" 6 "$rc"
+has "active lane without a branch keeps the foreign-card remedy" "$out" "delete or rename it"
+
+# ---------- 24. --round gives the re-run a new identity, state untouched ----------
+# The escape hatch the refusals name. The identity is still derived, not
+# invented, so round 2 is itself resumable by re-running the same command.
+TASK2=$TASK-r2
+reset "${TASK}${TAB}done"
+printf '%s\n' "$BRANCH" > "$STUB/branches"
+printf 'done\n' > "$STUB/lane-script"
+out=$(TASK_UNDER_TEST=$TASK2 GH_PRIOR_PR_STATE=CLOSED \
+  "$SCRIPT" --root "$ROOT" --issue 28 --local --round 2 2>&1); rc=$?
+check "--round 2 exits 0" 0 "$rc"
+check "--round 2 STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
+has "--round 2 reports itself fresh" "$out" "resumed: no"
+has "--round 2 posts the suffixed task name" "$(cat "$STUB/post.payloads")" "\"name\": \"$TASK2\""
+has "--round 2 branches under the suffixed name" "$(cat "$STUB/calls.log")" \
+  "git <checkout> <-b> <feat/$TASK2>"
+check "--round 2 leaves round 1's card exactly as it was" "1" \
+  "$(grep -c "^$TASK${TAB}done${TAB}" "$BOARD_FILE" || true)"
+check "--round 1 is the unsuffixed default" "0" \
+  "$(grep -c 'r1' "$STUB/post.payloads" || true)"
+
+# 24b. --round must be a positive number, checked before anything runs
+reset
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --round again 2>&1); rc=$?
+check "non-numeric --round exits 2" 2 "$rc"
+check "non-numeric --round STATUS" "STATUS=USAGE" "$(printf '%s\n' "$out" | head -1)"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --round 0 2>&1); rc=$?
+check "--round 0 exits 2" 2 "$rc"
+check "--round rejected before any command ran" "0" \
+  "$(wc -l < "$STUB/calls.log" | tr -d ' ')"
+
+# ---------- 25. the lane's VALUE is what the decision reads ----------
+# CONTEXT.md: "A task's lane is the only authority on whether that task is
+# finished." A decision that only tests the lane for emptiness has thrown that
+# authority away, which is the whole of issue #115.
+if grep -v '^[[:space:]]*#' "$SCRIPT" | grep -q 'EXISTING_LANE" = done'; then
+  ok "the resume decision compares the lane against done"
+else
+  bad "the resume decision compares the lane against done" \
+    "no test of EXISTING_LANE's value outside comments"
 fi
 
 echo "  $PASS passed, $FAIL failed"
