@@ -1183,6 +1183,21 @@ delete the duplicate card — and if the task had already been posted before the
 block, take it the rest of the way with `accept work` by hand rather than
 re-running this verb, which would refuse on the card it created.
 
+**Never hand-clear Board or handoff state to force a re-run.** A Board card and
+the records under `inbox/completed/` are history, not levers: `CONTEXT.md` makes
+a task's lane the only authority on whether that task is finished, and this
+verb's own contract makes `accept work` a report that changes nothing under
+`inbox/`. Deleting a row from `tasks.tsv`, or a completed handoff, to make this
+verb see a "fresh" run is doing by hand what the verb must decide for itself —
+and it cannot be done completely: the task name keys three separate state
+sources (the card, the branch, the delivery record), so clearing the two the
+resume table names still leaves the third to be matched by the next run. Today
+the resume decision reads the card's lane but only tests whether a card exists,
+so a `done` card from a finished earlier run is indistinguishable from an
+interrupted one; that gap is issue #115. Until it closes, take a finished run
+the rest of the way with `accept work` by hand, or give the re-run a different
+task identity — do not delete the record of the earlier one.
+
 ## Verb: `stop swarm`
 
 Run the bundled script; it preflights before it stops anything (issue #11):
