@@ -79,16 +79,17 @@
 # script owns only the fields something downstream parses — `Closes #N`,
 # `task`, `commit`, `completed_at` — because a hallucinated issue number costs
 # a human the reverse-engineering this verb exists to avoid. The four
-# body's prose can only be written by something that read the diff. The SHAPE of
-# that prose is NOT defined here: the model is told to use the `to-pr` skill,
-# which pi-governance distributes to every machine, and pi resolves it the way
-# it resolves any skill. This script holds no copy of the shape, so it cannot
-# drift from it; what it still refuses is an empty or unstructured answer.
-# Opening a PR whose body is empty of content is worse than not opening one:
-# podsum#149 sat there looking finished.
-# Overridable: SF_RUN_ISSUE_PI_PROVIDER, SF_RUN_ISSUE_PI_MODEL,
-# SF_RUN_ISSUE_DIFF_BYTES, SF_RUN_ISSUE_PR_INSTRUCTION. `pi` is resolved from
-# PATH on the TARGET host.
+# body's prose can only be written by something that read the diff, and this
+# script is not that something. It stops at `NEEDS_PR_BODY` (exit 8) and hands
+# back the commit; the CALLER writes the body — the intended shape is to send a
+# subagent with the `to-pr` skill, so the diff lands in the subagent's context
+# and not in the orchestrator's — then re-runs with `--body-file`. That second
+# run walks the same markers and goes straight to `gh pr create`.
+#
+# No model is invoked from here, on purpose. An earlier version shelled out to
+# `pi -p`, which bound an operator verb to one harness: a Claude Code
+# orchestrator on a box with no `pi` could not run it at all. Every harness has
+# some way to dispatch a subagent; none of them is spelled here.
 #
 # One issue per call, deliberately. A `--issues 28,29,30` flag would need
 # exactly one piece of error handling, and the caller already has it:
@@ -96,6 +97,7 @@
 #
 # Exit codes / STATUS line:
 #   0 PR_OPENED   2 USAGE   5 ERROR   6 UNSAFE   7 STILL_RUNNING
+#   8 NEEDS_PR_BODY
 # 7 is deliberately not 5: reaching the caller's deadline means the task is
 # posted and the swarm is working, and the fix is to run the same command
 # again. The `for ... || break` chain above breaks on both, but has to report
@@ -107,7 +109,7 @@
 #
 # Usage: run-issue.sh --root <project-root> --issue <N> \
 #   [--target user@host] [--key <path>] [--local] [--max-wait <seconds>] \
-#   [--round <N>]
+#   [--round <N>] [--body-file <path>]
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib-wake-talk.sh"
@@ -138,17 +140,7 @@ DELIVERY_SECONDS=${SF_RUN_ISSUE_DELIVERY_SECONDS:-600}
 # Overridable so tests can point step 5 at a stub instead of the real report,
 # same trick as start-swarm.sh's SWARM_LAUNCHER.
 ACCEPT_WORK=${ACCEPT_WORK:-$HERE/accept-work.sh}
-# The PR-body model call. Defaults are what was measured on the macmini target
-# (`pi auth check --provider openai-codex` -> ready; a trivial prompt returns
-# in ~9s). The diff is capped because it is pasted into a prompt: a 400-file
-# vendoring commit would otherwise blow the context and cost a run.
-PI_PROVIDER=${SF_RUN_ISSUE_PI_PROVIDER:-openai-codex}
-PI_MODEL=${SF_RUN_ISSUE_PI_MODEL:-gpt-6-astra}
-DIFF_BYTES=${SF_RUN_ISSUE_DIFF_BYTES:-60000}
-# What pi is asked to do. It names the skill rather than restating the shape:
-# the skill is the spec, this is only the invocation. Overridable so a caller
-# can point the same verb at a differently-shaped body without editing this.
-PR_INSTRUCTION=${SF_RUN_ISSUE_PR_INSTRUCTION:-用 to-pr skill，为上面这次改动写 PR 描述正文。只输出正文本身，不要开 PR，不要写 Closes #N 或 task/commit 这些字段，脚本会自己拼。}
+BODY_FILE=${BODY_FILE:-}
 
 usage() { printf 'STATUS=USAGE\n'; sed -n '2,95p' "$0"; exit 2; }
 
@@ -161,6 +153,10 @@ while [ $# -gt 0 ]; do
     --local) LOCAL=1; shift ;;
     --max-wait) MAX_WAIT=${2:-}; shift 2 ;;
     --round) ROUND=${2:-}; shift 2 ;;
+    # The PR body, written by the caller between the first run (which stops at
+    # NEEDS_PR_BODY) and this one. Read on the CALLER, not the target: the
+    # subagent that wrote it has no reason to have shell access over there.
+    --body-file) BODY_FILE=${2:-}; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -476,56 +472,30 @@ PR_URL=$(in_root "gh pr list --head $(printf '%q' "$BRANCH") --state open --json
   || PR_URL=''
 PR_URL=${PR_URL%$'\n'}
 if [ -z "$PR_URL" ]; then
-  # ---------- step 8b: the body, written by the model via the to-pr skill ----------
-  # The shape lives in the `to-pr` skill, and this script does not read it.
-  # It asks pi to use the skill, which is what skills are for: pi resolves it
-  # from ~/.agents/skills the same way any other invocation does, and
-  # pi-governance already puts it on every machine. So there is no copy of the
-  # shape here to drift, and editing what a PR body looks like is a skills-repo
-  # change reviewed on its own.
+  # ---------- step 8b: the body comes from the caller ----------
+  # Until issue #118 the body was four lines of printf. podsum#149 is what that
+  # looks like from a reviewer's seat: `Closes #138`, task, commit, timestamp,
+  # and nothing a human could review against. No model was on this path at all,
+  # so no amount of prompt or skill work could have fixed it.
   #
-  # An earlier version of this step read the skill file and parsed its headings
-  # out to validate against. That was one layer too many, and a brittle one:
-  # the skill's own prose names its markers when it explains the contract, so
-  # the range re-opened there and swallowed a heading that was never part of
-  # the template.
-  #
-  # pi resolves the skill itself, so this script never reads it — but it does
-  # check that it is THERE. Measured on a target without it: pi answers anyway,
-  # in its own shape (`## 改动`, `关联 #1。`), and a body that merely has some
-  # `## ` in it sails through the check below. That is the #118 failure exactly
-  # — a PR that opens, looks finished, and never followed the skill. Presence is
-  # the one thing about the skill this script can assert without holding a copy
-  # of its contents.
-  TO_PR_SKILL=${SF_RUN_ISSUE_TO_PR_SKILL:-$HOME/.agents/skills/to-pr/SKILL.md}
-  in_root "test -f $(printf '%q' "$TO_PR_SKILL")" >/dev/null 2>&1 \
-    || die ERROR "the to-pr skill is not installed on the target ($TO_PR_SKILL) — pi would answer in its own shape and this verb cannot tell the difference; install it with scripts/install-skills.sh install in the skills repo. $BRANCH is pushed, no PR was opened" 5
-
-  # The patch never touches the local shell: issue + diff go into a temp file on
-  # the TARGET, handed to pi as an @file. Pushing 60 KB of patch through a
-  # quoted remote command string is how quoting bugs ship.
-  PR_CMD=$(cat <<REMOTE
-set -e
-f=\$(mktemp)
-trap 'rm -f "\$f"' EXIT
-printf '## issue #%s: %s\n\n' $(printf '%q' "$ISSUE") $(printf '%q' "$TITLE") > "\$f"
-gh issue view $(printf '%q' "$ISSUE") --json body --jq .body >> "\$f" 2>/dev/null || true
-printf '\n\n## changes %s..%s\n' $(printf '%q' "$BASE") $(printf '%q' "$COMMIT") >> "\$f"
-git diff $(printf '%q' "$BASE")..$(printf '%q' "$COMMIT") | head -c $DIFF_BYTES >> "\$f"
-pi -p --mode text --provider $(printf '%q' "$PI_PROVIDER") --model $(printf '%q' "$PI_MODEL") @"\$f" $(printf '%q' "$PR_INSTRUCTION")
-REMOTE
-)
-  PR_PROSE=$(in_root "$PR_CMD") \
-    || die ERROR "the PR-body model call failed ($PI_PROVIDER/$PI_MODEL) in $ROOT — $BRANCH is pushed but no PR was opened; re-run the same command to try again" 5
-  # The script no longer knows which sections the skill asks for, so it cannot
-  # check for them by name — that knowledge is exactly what used to drift. What
-  # it can still refuse is the failure that looks like success: an empty answer,
-  # or a wall of prose where a structured body was asked for. Both of those,
-  # and a failed call, are ERRORs rather than a silent fall back to the old
-  # metadata-only template, which is the state issue #118 is about.
-  PR_HEADING_COUNT=$(printf '%s\n' "$PR_PROSE" | grep -c '^## ' || true)
-  [ "$PR_HEADING_COUNT" -ge 1 ] \
-    || die ERROR "the PR-body model output has no '## ' sections — the to-pr skill was probably not applied ($PI_PROVIDER/$PI_MODEL); $BRANCH is pushed, no PR was opened, re-run to try again" 5
+  # The split now: this script owns the fields something downstream parses,
+  # because a hallucinated issue number costs a human exactly the archaeology
+  # this verb exists to prevent. The prose belongs to whoever read the diff.
+  # That is the caller, and the shape it should follow is the `to-pr` skill.
+  if [ -z "$BODY_FILE" ]; then
+    printf 'STATUS=NEEDS_PR_BODY\nissue: %s\ntask: %s\nbranch: %s\nbase: %s\ncommit: %s\nresumed: %s\nthe branch is pushed and no PR is open. Write the body for %s..%s, then re-run the same command with --body-file <path>. Send a subagent with the to-pr skill to write it: the diff belongs in that subagent, not in yours. Do not write Closes #%s, task, commit or completed_at — this verb appends them.\n' \
+      "$ISSUE" "$TASK_NAME" "$BRANCH" "$BASE" "$COMMIT" \
+      "$([ "$RESUMING" = 1 ] && echo yes || echo no)" \
+      "$BASE" "$COMMIT" "$ISSUE"
+    exit 8
+  fi
+  [ -f "$BODY_FILE" ] \
+    || die ERROR "--body-file $BODY_FILE does not exist; $BRANCH is pushed and no PR was opened" 5
+  PR_PROSE=$(cat "$BODY_FILE")
+  # An empty file would open a PR that looks finished and says nothing — the
+  # exact state #118 is about. Cheaper to refuse than to explain later.
+  [ -n "$(printf '%s' "$PR_PROSE" | tr -d '[:space:]')" ] \
+    || die ERROR "--body-file $BODY_FILE is empty; refusing to open a PR with no body. $BRANCH is pushed, no PR was opened" 5
 
   # Explicit --title/--body, never --fill: --fill would use the swarm's own
   # commit messages, which do not carry `Closes #N` — that is precisely how a

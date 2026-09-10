@@ -152,56 +152,12 @@ fi
 printf 'task: %s\ncommit: %s\ncompleted_at: 2026-08-26T12:34:56Z\n\n' \
   "${TASK_UNDER_TEST:?}" "${FAKE_COMMIT:-abc1234}"
 EOF
-# ---------- stub pi ----------
-# The PR-body model call (issue #118). PI_OUT is what the "model" answers and
-# defaults to a complete four-heading body; PI_FAILS makes the call fail, which
-# has to abort the run rather than quietly fall back to a metadata-only body —
-# that fallback IS the bug #118 was opened over, and it would look like success.
-# The prompt arrives as an @file, so it is copied out for assertions.
-cat > "$WORK/bin/pi" <<'EOF'
-#!/usr/bin/env bash
-STUB=${STUB:?}
-{ printf 'pi'; printf ' <%s>' "$@"; printf '\n'; } >> "$STUB/calls.log"
-for a in "$@"; do
-  case "$a" in @*) cp "${a#@}" "$STUB/pi-prompt.txt" 2>/dev/null || true ;; esac
-done
-# The instruction is a plain message argument, not part of the @file — that is
-# what tells pi to apply the skill, so it has to be asserted separately.
-printf '%s\n' "${@: -1}" > "$STUB/pi-instruction.txt"
-[ -n "${PI_FAILS:-}" ] && exit 1
-printf '%s\n' "${PI_OUT:-## 可读 diff
-\`\`\`diff
- render_email
-   classify_stage
-+  record_stage_ms
-   wait_for_window
-\`\`\`
-
-## 伪代码
-渲染每一段时，先分类，再把这一段花掉的毫秒记进耗时表，最后才进等待窗口。
-
-## Mermaid
-\`\`\`mermaid
-flowchart LR
-  r[render_email] -->|分类当前段| c[classify_stage]
-  c -->|记录本段耗时| m[record_stage_ms]
-  m -->|按累计耗时定窗口| w[wait_for_window]
-\`\`\`
-
-## TDD 证据
-test/email_test.clj 的 records-stage-timings：不记录耗时时耗时表为空，断言拿不到分段数据而红。}"
-EOF
-
 chmod +x "$WORK/bin"/*
 export PATH=$WORK/bin:$PATH
-# ---------- a to-pr skill on the "target" ----------
-# The script never reads this file; it only checks that it exists, because pi
-# resolves the skill on its own and answers in its own shape when it cannot.
-# An empty file is therefore the honest fixture: content here would imply the
-# script cares about it.
-mkdir -p "$WORK/skill"
-: > "$WORK/skill/SKILL.md"
-export SF_RUN_ISSUE_TO_PR_SKILL=$WORK/skill/SKILL.md
+# Stands in for what a subagent carrying the to-pr skill hands back. The script
+# only reads it, so its content matters exactly as much as a body does: it must
+# be non-empty and it must land in the PR verbatim.
+printf '## 可读 diff\n形状变了。\n\n## 伪代码\n先分类再记账。\n' > "$WORK/prbody.md"
 
 export ACCEPT_WORK=$WORK/bin/fake-accept-work.sh
 export SF_RUN_ISSUE_POLL_SECONDS=0
@@ -255,13 +211,13 @@ echo "run-issue.sh"
 
 # ---------- 1. usage ----------
 reset
-out=$("$SCRIPT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "missing --root exits 2" 2 "$rc"
 check "missing --root STATUS" "STATUS=USAGE" "$(printf '%s\n' "$out" | head -1)"
-out=$("$SCRIPT" --root "$ROOT" --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "missing --issue exits 2" 2 "$rc"
 check "missing --issue STATUS" "STATUS=USAGE" "$(printf '%s\n' "$out" | head -1)"
-out=$("$SCRIPT" --root "$ROOT" --issue twenty-eight --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue twenty-eight --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "non-numeric --issue exits 2" 2 "$rc"
 check "usage path ran no command at all" "0" "$(wc -l < "$STUB/calls.log" | tr -d ' ')"
 
@@ -273,7 +229,7 @@ check "usage path ran no command at all" "0" "$(wc -l < "$STUB/calls.log" | tr -
 # so there is nothing to resume — refuse (issue #65).
 reset "${TASK}${TAB}coder"
 before=$(tree_digest)
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "foreign card exits 6" 6 "$rc"
 check "foreign card STATUS" "STATUS=UNSAFE" "$(printf '%s\n' "$out" | head -1)"
 has "foreign card names the card" "$out" "$TASK"
@@ -287,7 +243,7 @@ check "foreign card creates no branch" "0" \
 reset
 printf '%s\n' "$STATE_PENDING_CLAR" > "$STUB/state.json"
 before=$(tree_digest)
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "pre-post pending clarification exits 6" 6 "$rc"
 check "pre-post pending clarification STATUS" "STATUS=UNSAFE" "$(printf '%s\n' "$out" | head -1)"
 has "pre-post clarification reports its id" "$out" "clar-20260826T093739982543Z"
@@ -298,7 +254,7 @@ check "pre-post clarification writes nothing" "$before" "$(tree_digest)"
 # ---------- 4. pending approval blocks the same way ----------
 reset
 printf '%s\n' "$STATE_PENDING_APPROVAL" > "$STUB/state.json"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "pending approval exits 6" 6 "$rc"
 has "pending approval reports its id" "$out" "appr-77"
 check "pending approval posts nothing" "0" "$(count curl-post)"
@@ -306,7 +262,13 @@ check "pending approval posts nothing" "0" "$(count curl-post)"
 # ---------- 5. happy path with no open PR: BASE is main ----------
 reset
 printf 'done\n' > "$STUB/lane-script"
-out=$(GH_OPEN_HEAD='' "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+# The body is the caller's to write (#118): a first run stops at NEEDS_PR_BODY,
+# the caller writes it — the intended shape is a subagent carrying the to-pr
+# skill, so the diff lands there and not in the orchestrator — and re-runs with
+# --body-file. The fixture body stands in for that subagent's output.
+printf '## 可读 diff\n形状变了。\n\n## 伪代码\n先分类再记账。\n' > "$WORK/prbody.md"
+out=$(GH_OPEN_HEAD='' "$SCRIPT" --root "$ROOT" --issue 28 --local \
+  --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "happy path exits 0" 0 "$rc"
 check "happy path STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
 has "happy path prints the PR URL" "$out" "https://github.com/o/r/pull/99"
@@ -328,28 +290,21 @@ hasnt "gh pr create has no --fill"  "$lines" "<--fill>"
 has "PR body closes the issue" "$argv" "Closes #28"
 has "PR body carries accept work's commit" "$argv" "commit: abc1234"
 has "PR head is the new branch" "$argv" "--head $BRANCH"
-# Issue #118: the body's prose comes from the model, its parseable fields do
-# not. podsum#149 carried the fields and nothing else, and read as finished work.
-# The four sections are show-me's shape, not github-workflow.md's four questions.
-has "PR body carries the model's 可读 diff"  "$argv" "## 可读 diff"
-has "PR body carries the model's 伪代码"     "$argv" "## 伪代码"
-has "PR body carries the model's Mermaid"    "$argv" "## Mermaid"
-has "PR body carries the model's TDD 证据"   "$argv" "## TDD 证据"
-has "the model call names the declared channel" "$(cat "$STUB/calls.log")" \
-  "pi <-p> <--mode> <text> <--provider> <openai-codex> <--model> <gpt-6-astra>"
-has "the prompt carries the issue" "$(cat "$STUB/pi-prompt.txt")" "## issue #28"
-# The shape is the skill's, so the script must NAME it, not inline it. A script
-# that pasted the template in would be a second copy to keep in sync — the
-# drift this indirection exists to remove.
-has "pi is told to use the to-pr skill" "$(cat "$STUB/pi-instruction.txt")" "to-pr"
-hasnt "the script does not inline the skill" "$(cat "$STUB/pi-prompt.txt")" \
-  "<pr-body-template>"
+# Issue #118: the caller's prose goes in verbatim, the parseable fields are the
+# script's. podsum#149 carried the fields and nothing else, and read as
+# finished work.
+has "PR body carries the caller's prose" "$argv" "## 可读 diff"
+has "PR body carries all of it" "$argv" "## 伪代码"
+# No model is invoked from this script any more (#119 review): binding an
+# operator verb to `pi` made it unrunnable from a Claude Code orchestrator on a
+# box without pi installed.
+hasnt "the script invokes no model" "$(cat "$STUB/calls.log")" "pi <"
 
 # ---------- 6. an open PR exists: BASE is its head branch (stacked) ----------
 reset
 printf 'done\n' > "$STUB/lane-script"
 out=$(GH_OPEN_HEAD='feat/issue-27-expose-append-only-email-evidence-as-via' \
-  "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+  "$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "stacked run exits 0" 0 "$rc"
 has "BASE is the open PR head" "$(cat "$STUB/pr-create.argv")" \
   "--base feat/issue-27-expose-append-only-email-evidence-as-via"
@@ -362,7 +317,7 @@ has "branches off the open PR head" "$(cat "$STUB/calls.log")" \
 # only the Board lane says whether the task finished.
 reset
 printf 'cleaner\ncoder\ndone\n' > "$STUB/lane-script"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "idle-but-not-done still exits 0" 0 "$rc"
 check "idle-but-not-done waited out every lane" "4" "$(count curl-state)"
 check "idle-but-not-done posted once" "1" "$(count curl-post)"
@@ -380,7 +335,7 @@ fi
 reset
 printf 'cleaner\ncoder\ndone\n' > "$STUB/lane-script"
 printf '%s\n' "$STATE_PENDING_CLAR" > "$STUB/state-after.json"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "mid-poll clarification exits 6" 6 "$rc"
 check "mid-poll clarification STATUS" "STATUS=UNSAFE" "$(printf '%s\n' "$out" | head -1)"
 has "mid-poll clarification reports its id" "$out" "clar-20260826T093739982543Z"
@@ -391,7 +346,7 @@ check "mid-poll clarification never opens a PR" "no" \
 # ---------- 9. poll timeout: ERROR, and never a second POST ----------
 reset
 printf 'cleaner\ncoder\ncleaner\ncoder\n' > "$STUB/lane-script"
-out=$(SF_RUN_ISSUE_TIMEOUT_SECONDS=0 "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$(SF_RUN_ISSUE_TIMEOUT_SECONDS=0 "$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "timeout exits 5" 5 "$rc"
 check "timeout STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
 check "timeout posts exactly one task" "1" "$(count curl-post)"
@@ -407,7 +362,7 @@ check "timeout never opens a PR" "no" \
 reset
 printf 'done\n' > "$STUB/lane-script"
 printf '2\n' > "$STUB/aw-hide"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "delayed delivery record still exits 0" 0 "$rc"
 check "delayed delivery record STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
 check "waited and retried accept work" "3" "$(count aw-call)"
@@ -420,7 +375,7 @@ has "PR still carries the commit" "$(cat "$STUB/pr-create.argv")" "commit: abc12
 reset
 printf 'done\n' > "$STUB/lane-script"
 printf '999\n' > "$STUB/aw-hide"
-out=$(SF_RUN_ISSUE_DELIVERY_SECONDS=0 "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$(SF_RUN_ISSUE_DELIVERY_SECONDS=0 "$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "invisible delivery record exits 5" 5 "$rc"
 check "invisible delivery record STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
 has "invisible delivery record names in_process" "$out" "in_process"
@@ -439,7 +394,7 @@ check "invisible delivery record never re-posts" "1" "$(count curl-post)"
 # arguments against the state it left behind.
 reset
 printf 'coder\n' > "$STUB/lane-script"
-out=$(SF_RUN_ISSUE_TIMEOUT_SECONDS=0 "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$(SF_RUN_ISSUE_TIMEOUT_SECONDS=0 "$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "interrupted first pass exits 5" 5 "$rc"
 check "first pass created the branch" "1" \
   "$(grep -c 'git <checkout> <-b>' "$STUB/calls.log" || true)"
@@ -447,7 +402,7 @@ check "first pass posted once" "1" "$(count curl-post)"
 first_cards=$(grep -c "^$TASK	" "$BOARD_FILE" || true)
 
 printf 'done\n' > "$STUB/lane-script"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "resumed run exits 0" 0 "$rc"
 check "resumed run STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
 has "resumed run says so" "$out" "resumed: yes"
@@ -468,14 +423,14 @@ check "opened exactly one PR across both runs" "1" \
 # so the resume path asks first.
 reset
 printf 'done\n' > "$STUB/lane-script"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "first run before the PR-exists case exits 0" 0 "$rc"
 printf 'done\n' > "$STUB/lane-script"
 # The assignment must sit INSIDE the substitution: `A=1 out=$(...)` is two
 # variable assignments, not a command with an environment prefix, so the stub
 # would never see it.
 out=$(GH_EXISTING_PR='https://github.com/o/r/pull/99' \
-  "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+  "$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "re-run with an existing PR exits 0" 0 "$rc"
 has "re-run reports the existing PR" "$out" "https://github.com/o/r/pull/99"
 check "gh pr create was not called a second time" "1" \
@@ -484,7 +439,7 @@ check "gh pr create was not called a second time" "1" \
 # ---------- 14. a fresh run reports itself as not resumed ----------
 reset
 printf 'done\n' > "$STUB/lane-script"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "fresh run exits 0" 0 "$rc"
 has "fresh run says resumed: no" "$out" "resumed: no"
 
@@ -498,7 +453,7 @@ has "fresh run says resumed: no" "$out" "resumed: no"
 reset
 printf 'done\n' > "$STUB/lane-script"
 printf '%s\n' "$BRANCH" > "$STUB/branches"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "orphan branch exits 0" 0 "$rc"
 check "orphan branch STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
 has "orphan branch reports itself resumed" "$out" "resumed: yes"
@@ -517,7 +472,7 @@ check "orphan branch opens exactly one PR" "1" \
 # has to tell "still running, re-run me" from "something broke".
 reset
 printf 'coder\n' > "$STUB/lane-script"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --max-wait 0 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --max-wait 0 --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "--max-wait 0 exits 7" 7 "$rc"
 check "--max-wait 0 STATUS" "STATUS=STILL_RUNNING" "$(printf '%s\n' "$out" | head -1)"
 has "--max-wait 0 reports the lane it saw" "$out" "lane: coder"
@@ -529,7 +484,7 @@ check "--max-wait 0 never opens a PR" "no" \
   "$([ -f "$STUB/pr-create.argvlines" ] && echo yes || echo no)"
 # and the run it left behind is resumable exactly like any other kill
 printf 'done\n' > "$STUB/lane-script"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "re-run after --max-wait 0 exits 0" 0 "$rc"
 has "re-run after --max-wait 0 says resumed" "$out" "resumed: yes"
 check "re-run after --max-wait 0 never re-posts" "1" "$(count curl-post)"
@@ -540,7 +495,7 @@ check "re-run after --max-wait 0 never re-posts" "1" "$(count curl-post)"
 reset
 printf 'done\n' > "$STUB/lane-script"
 printf '999\n' > "$STUB/aw-hide"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --max-wait 0 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --max-wait 0 --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "--max-wait during the delivery wait exits 7" 7 "$rc"
 check "--max-wait during the delivery wait STATUS" "STATUS=STILL_RUNNING" \
   "$(printf '%s\n' "$out" | head -1)"
@@ -551,7 +506,7 @@ check "--max-wait during the delivery wait never pushes" "0" \
 reset
 printf 'coder\n' > "$STUB/lane-script"
 out=$(SF_RUN_ISSUE_TIMEOUT_SECONDS=0 \
-  "$SCRIPT" --root "$ROOT" --issue 28 --local --max-wait -1 2>&1); rc=$?
+  "$SCRIPT" --root "$ROOT" --issue 28 --local --max-wait -1 --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "negative --max-wait still exits 5 on the poll ceiling" 5 "$rc"
 check "negative --max-wait STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
 has "negative --max-wait says it may still be running" "$out" "may still be running"
@@ -586,7 +541,7 @@ reset
 printf 'done\n' > "$STUB/lane-script"
 mkdir -p "$ROOT/openspec"
 printf 'schema: foo-bar\nrules:\n  proposal: []\n' > "$ROOT/openspec/config.yaml"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "openspec: exits 0" 0 "$rc"
 has "openspec: payload names the schema read from the project" \
   "$(cat "$STUB/post.payloads")" "foo-bar"
@@ -597,7 +552,7 @@ has "openspec: payload names the schema read from the project" \
 reset
 rm -rf "$ROOT/openspec"
 printf 'done\n' > "$STUB/lane-script"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "no openspec: exits 0" 0 "$rc"
 hasnt "no openspec: payload carries no schema name" \
   "$(cat "$STUB/post.payloads")" "foo-bar"
@@ -613,7 +568,7 @@ reset
 printf 'done\n' > "$STUB/lane-script"
 mkdir -p "$ROOT/openspec"
 printf 'schema: other-schema\n' > "$ROOT/openspec/config.yaml"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 has "openspec: a different project gets its own schema name" \
   "$(cat "$STUB/post.payloads")" "other-schema"
 hasnt "openspec: and not the first project's" \
@@ -637,7 +592,7 @@ fi
 # `done` card with a branch and no PR. That state must still finish the round.
 reset "${TASK}${TAB}done"
 printf '%s\n' "$BRANCH" > "$STUB/branches"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "done card with branch and no PR exits 0" 0 "$rc"
 check "done card with branch and no PR STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
 has "done card with branch and no PR resumes" "$out" "resumed: yes"
@@ -656,7 +611,7 @@ check "done card with branch and no PR opens exactly one PR" "1" \
 reset "${TASK}${TAB}done"
 printf '%s\n' "$BRANCH" > "$STUB/branches"
 before=$(tree_digest)
-out=$(GH_PRIOR_PR_STATE=CLOSED "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$(GH_PRIOR_PR_STATE=CLOSED "$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "finished round with a closed PR exits 6" 6 "$rc"
 check "finished round with a closed PR STATUS" "STATUS=UNSAFE" "$(printf '%s\n' "$out" | head -1)"
 has "finished round names the lane it read" "$out" "done"
@@ -675,7 +630,7 @@ check "finished round leaves board+handoffs byte-identical" "$before" "$(tree_di
 reset "${TASK}${TAB}done"
 printf '%s\n' "$BRANCH" > "$STUB/branches"
 out=$(GH_PRIOR_PR_STATE=OPEN GH_EXISTING_PR='https://github.com/o/r/pull/99' \
-  "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+  "$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "finished round with an open PR exits 0" 0 "$rc"
 has "finished round with an open PR reports it" "$out" "https://github.com/o/r/pull/99"
 check "finished round with an open PR opens no second PR" "0" \
@@ -689,7 +644,7 @@ check "finished round with an open PR opens no second PR" "0" \
 # discarded), never a card someone typed in mid-flight.
 reset "${TASK}${TAB}done"
 before=$(tree_digest)
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "done card without a branch exits 6" 6 "$rc"
 check "done card without a branch STATUS" "STATUS=UNSAFE" "$(printf '%s\n' "$out" | head -1)"
 has "done card without a branch names the task" "$out" "$TASK"
@@ -703,7 +658,7 @@ check "done card without a branch writes nothing" "$before" "$(tree_digest)"
 # 23b. an ACTIVE lane with no branch is still the foreign card of issue #65,
 # word for word. Only the `done` row moved.
 reset "${TASK}${TAB}coder"
-out=$("$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "active lane without a branch still exits 6" 6 "$rc"
 has "active lane without a branch keeps the foreign-card remedy" "$out" "delete or rename it"
 
@@ -715,7 +670,7 @@ reset "${TASK}${TAB}done"
 printf '%s\n' "$BRANCH" > "$STUB/branches"
 printf 'done\n' > "$STUB/lane-script"
 out=$(TASK_UNDER_TEST=$TASK2 GH_PRIOR_PR_STATE=CLOSED \
-  "$SCRIPT" --root "$ROOT" --issue 28 --local --round 2 2>&1); rc=$?
+  "$SCRIPT" --root "$ROOT" --issue 28 --local --round 2 --body-file "$WORK/prbody.md" 2>&1); rc=$?
 check "--round 2 exits 0" 0 "$rc"
 check "--round 2 STATUS" "STATUS=PR_OPENED" "$(printf '%s\n' "$out" | head -1)"
 has "--round 2 reports itself fresh" "$out" "resumed: no"
@@ -748,44 +703,43 @@ else
     "no test of EXISTING_LANE's value outside comments"
 fi
 
-# ---------- 26. the PR-body model call fails: no PR, explicit ERROR ----------
-# The alternative — open the PR with the old metadata-only body — is the exact
-# state issue #118 is about, and it looks like success to every caller.
+# ---------- 26. no --body-file: stop at NEEDS_PR_BODY, open nothing ----------
+# The alternative — open the PR with a metadata-only body — is the exact state
+# issue #118 is about, and it looks like success to every caller.
 reset
 printf 'done\n' > "$STUB/lane-script"
-out=$(GH_OPEN_HEAD='' PI_FAILS=1 "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
-check "model failure exits 5" 5 "$rc"
-check "model failure STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
-has "model failure names the channel" "$out" "openai-codex/gpt-6-astra"
-check "model failure opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
+out=$(GH_OPEN_HEAD='' "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "no body file exits 8" 8 "$rc"
+check "no body file STATUS" "STATUS=NEEDS_PR_BODY" "$(printf '%s\n' "$out" | head -1)"
+has "it reports the commit to describe" "$out" "commit: abc1234"
+has "it names the range to describe" "$out" "main..abc1234"
+has "it points at the to-pr skill" "$out" "to-pr skill"
+has "it says the diff belongs in the subagent" "$out" "subagent"
+check "no body file opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
+# It got far enough to push: the caller needs the commit to describe it.
+has "the branch is pushed before asking" "$(cat "$STUB/calls.log")" \
+  "git <push> <-u> <origin> <$BRANCH>"
 
-# ---------- 27. the model answers with unstructured prose ----------
-# The script no longer knows the skill's section names, so it cannot check for
-# them by name. What it must still refuse is the answer that looks like success
-# to the caller and is empty of content to a reviewer.
+# ---------- 27. an empty --body-file is refused ----------
+# A PR with an empty body looks finished and says nothing. Cheaper to refuse
+# than to explain later.
 reset
 printf 'done\n' > "$STUB/lane-script"
-out=$(GH_OPEN_HEAD='' PI_OUT='抱歉，我无法完成这个请求。' \
-  "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
-check "unstructured body exits 5" 5 "$rc"
-check "unstructured body STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
-has "unstructured body blames the skill not being applied" "$out" "to-pr skill"
-check "unstructured body opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
+: > "$WORK/empty.md"
+out=$(GH_OPEN_HEAD='' "$SCRIPT" --root "$ROOT" --issue 28 --local \
+  --body-file "$WORK/empty.md" 2>&1); rc=$?
+check "empty body file exits 5" 5 "$rc"
+check "empty body file STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
+check "empty body file opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
 
-# ---------- 28. the to-pr skill is not installed on the target ----------
-# Measured on a real target without it: pi answers anyway in its own shape, and
-# a body with any `## ` in it passes the structure check. Presence is the only
-# thing about the skill this verb can assert, so it asserts it before spending
-# a model call.
+# ---------- 28. a missing --body-file path is refused ----------
 reset
 printf 'done\n' > "$STUB/lane-script"
-out=$(GH_OPEN_HEAD='' SF_RUN_ISSUE_TO_PR_SKILL=$WORK/skill/NOPE.md \
-  "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
-check "absent to-pr skill exits 5" 5 "$rc"
-check "absent to-pr skill STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
-has "absent to-pr skill names the repair" "$out" "install-skills.sh install"
-check "absent to-pr skill opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
-hasnt "absent to-pr skill spends no model call" "$(cat "$STUB/calls.log" 2>/dev/null)" "pi <-p>"
+out=$(GH_OPEN_HEAD='' "$SCRIPT" --root "$ROOT" --issue 28 --local \
+  --body-file "$WORK/nope.md" 2>&1); rc=$?
+check "missing body file exits 5" 5 "$rc"
+check "missing body file STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
+check "missing body file opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
