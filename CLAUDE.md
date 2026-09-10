@@ -51,7 +51,9 @@ commit 收的。
 
 1. `scripts/<verb>.sh` —— `STATUS=` 首行，共用那张退出码表。
 2. `scripts/test-<verb>.sh` —— 对着 stub 跑，不碰真实网络。
-3. `SKILL.md` 的 `## Verb: <verb>` 一节 —— **写给 agent 的**。
+3. `SKILL.md` 的 `## Verb: <verb>` 一节 —— **写给 agent 的**，**正文写中文**
+   （issue #120）。code block、frontmatter 的 `description:`、verb 名、flag、
+   `STATUS=` 的值、退出码表的 key 一律保持英文原文。
 4. `README.md` 的 verb 表一行 + 契约一节 —— **写给用户的**。
 
 **判据：下一个 agent 只读 `SKILL.md`，能不能正确地把这个动词跑起来？** 只写到「脚本能干
