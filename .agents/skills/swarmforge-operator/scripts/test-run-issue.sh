@@ -165,6 +165,9 @@ STUB=${STUB:?}
 for a in "$@"; do
   case "$a" in @*) cp "${a#@}" "$STUB/pi-prompt.txt" 2>/dev/null || true ;; esac
 done
+# The instruction is a plain message argument, not part of the @file — that is
+# what tells pi to apply the skill, so it has to be asserted separately.
+printf '%s\n' "${@: -1}" > "$STUB/pi-instruction.txt"
 [ -n "${PI_FAILS:-}" ] && exit 1
 printf '%s\n' "${PI_OUT:-## 可读 diff
 \`\`\`diff
@@ -191,6 +194,15 @@ EOF
 
 chmod +x "$WORK/bin"/*
 export PATH=$WORK/bin:$PATH
+# ---------- a to-pr skill on the "target" ----------
+# The script never reads this file; it only checks that it exists, because pi
+# resolves the skill on its own and answers in its own shape when it cannot.
+# An empty file is therefore the honest fixture: content here would imply the
+# script cares about it.
+mkdir -p "$WORK/skill"
+: > "$WORK/skill/SKILL.md"
+export SF_RUN_ISSUE_TO_PR_SKILL=$WORK/skill/SKILL.md
+
 export ACCEPT_WORK=$WORK/bin/fake-accept-work.sh
 export SF_RUN_ISSUE_POLL_SECONDS=0
 # Safety net, not a case: no case here is meant to reach the ceiling except
@@ -326,8 +338,12 @@ has "PR body carries the model's TDD 证据"   "$argv" "## TDD 证据"
 has "the model call names the declared channel" "$(cat "$STUB/calls.log")" \
   "pi <-p> <--mode> <text> <--provider> <openai-codex> <--model> <gpt-6-astra>"
 has "the prompt carries the issue" "$(cat "$STUB/pi-prompt.txt")" "## issue #28"
-has "the prompt asks for all four sections" "$(cat "$STUB/pi-prompt.txt")" \
-  "## TDD 证据"
+# The shape is the skill's, so the script must NAME it, not inline it. A script
+# that pasted the template in would be a second copy to keep in sync — the
+# drift this indirection exists to remove.
+has "pi is told to use the to-pr skill" "$(cat "$STUB/pi-instruction.txt")" "to-pr"
+hasnt "the script does not inline the skill" "$(cat "$STUB/pi-prompt.txt")" \
+  "<pr-body-template>"
 
 # ---------- 6. an open PR exists: BASE is its head branch (stacked) ----------
 reset
@@ -743,24 +759,33 @@ check "model failure STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
 has "model failure names the channel" "$out" "openai-codex/gpt-6-astra"
 check "model failure opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
 
-# ---------- 27. the model writes only three of the four sections ----------
-# A body missing one heading still reads complete to a skimming reviewer, so
-# this is an ERROR rather than a warning, and the run opens nothing.
+# ---------- 27. the model answers with unstructured prose ----------
+# The script no longer knows the skill's section names, so it cannot check for
+# them by name. What it must still refuse is the answer that looks like success
+# to the caller and is empty of content to a reviewer.
 reset
 printf 'done\n' > "$STUB/lane-script"
-PARTIAL='## 可读 diff
-形状变了。
+out=$(GH_OPEN_HEAD='' PI_OUT='抱歉，我无法完成这个请求。' \
+  "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "unstructured body exits 5" 5 "$rc"
+check "unstructured body STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
+has "unstructured body blames the skill not being applied" "$out" "to-pr skill"
+check "unstructured body opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
 
-## 伪代码
-先分类再记账。
-
-## Mermaid
-没有结构可画。'
-out=$(GH_OPEN_HEAD='' PI_OUT="$PARTIAL" "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
-check "missing heading exits 5" 5 "$rc"
-check "missing heading STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
-has "missing heading is named in the error" "$out" "## TDD 证据"
-check "missing heading opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
+# ---------- 28. the to-pr skill is not installed on the target ----------
+# Measured on a real target without it: pi answers anyway in its own shape, and
+# a body with any `## ` in it passes the structure check. Presence is the only
+# thing about the skill this verb can assert, so it asserts it before spending
+# a model call.
+reset
+printf 'done\n' > "$STUB/lane-script"
+out=$(GH_OPEN_HEAD='' SF_RUN_ISSUE_TO_PR_SKILL=$WORK/skill/NOPE.md \
+  "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "absent to-pr skill exits 5" 5 "$rc"
+check "absent to-pr skill STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
+has "absent to-pr skill names the repair" "$out" "install-skills.sh install"
+check "absent to-pr skill opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
+hasnt "absent to-pr skill spends no model call" "$(cat "$STUB/calls.log" 2>/dev/null)" "pi <-p>"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

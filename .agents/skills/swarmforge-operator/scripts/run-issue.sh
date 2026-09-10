@@ -79,17 +79,16 @@
 # script owns only the fields something downstream parses — `Closes #N`,
 # `task`, `commit`, `completed_at` — because a hallucinated issue number costs
 # a human the reverse-engineering this verb exists to avoid. The four
-# sections below can only be written by something that read the diff, so the
-# model writes them under four fixed headings and the run FAILS if any heading
-# is missing. The shape is show-me's, not github-workflow.md's four questions:
-# a readable diff of the resulting SHAPE, pseudocode, one Mermaid diagram, and
-# which test pins the change. A PR body without them is the bug #118 was opened
-# over, and opening one silently is worse than not opening it: podsum#149 sat
-# there looking finished.
-# The model never ran anything, so the prompt forbids invented command output —
-# "附 TDD 证据" is an invitation to hallucinate a passing test run otherwise.
+# body's prose can only be written by something that read the diff. The SHAPE of
+# that prose is NOT defined here: the model is told to use the `to-pr` skill,
+# which pi-governance distributes to every machine, and pi resolves it the way
+# it resolves any skill. This script holds no copy of the shape, so it cannot
+# drift from it; what it still refuses is an empty or unstructured answer.
+# Opening a PR whose body is empty of content is worse than not opening one:
+# podsum#149 sat there looking finished.
 # Overridable: SF_RUN_ISSUE_PI_PROVIDER, SF_RUN_ISSUE_PI_MODEL,
-# SF_RUN_ISSUE_DIFF_BYTES. `pi` is resolved from PATH on the TARGET host.
+# SF_RUN_ISSUE_DIFF_BYTES, SF_RUN_ISSUE_PR_INSTRUCTION. `pi` is resolved from
+# PATH on the TARGET host.
 #
 # One issue per call, deliberately. A `--issues 28,29,30` flag would need
 # exactly one piece of error handling, and the caller already has it:
@@ -146,6 +145,10 @@ ACCEPT_WORK=${ACCEPT_WORK:-$HERE/accept-work.sh}
 PI_PROVIDER=${SF_RUN_ISSUE_PI_PROVIDER:-openai-codex}
 PI_MODEL=${SF_RUN_ISSUE_PI_MODEL:-gpt-6-astra}
 DIFF_BYTES=${SF_RUN_ISSUE_DIFF_BYTES:-60000}
+# What pi is asked to do. It names the skill rather than restating the shape:
+# the skill is the spec, this is only the invocation. Overridable so a caller
+# can point the same verb at a differently-shaped body without editing this.
+PR_INSTRUCTION=${SF_RUN_ISSUE_PR_INSTRUCTION:-用 to-pr skill，为上面这次改动写 PR 描述正文。只输出正文本身，不要开 PR，不要写 Closes #N 或 task/commit 这些字段，脚本会自己拼。}
 
 usage() { printf 'STATUS=USAGE\n'; sed -n '2,95p' "$0"; exit 2; }
 
@@ -473,65 +476,56 @@ PR_URL=$(in_root "gh pr list --head $(printf '%q' "$BRANCH") --state open --json
   || PR_URL=''
 PR_URL=${PR_URL%$'\n'}
 if [ -z "$PR_URL" ]; then
-  # ---------- step 8b: the body, four questions, written by the model ----------
-  # The patch never touches the local shell: it is assembled into a temp file
-  # on the TARGET and handed to `pi` as an @file. Pushing 60 KB of patch
-  # through a quoted remote command string is how quoting bugs get shipped.
-  PR_PROMPT=$(cat <<'PROMPT'
-你要写一个 GitHub PR 的描述正文（body），读者是要 review 这个 PR 的人。
-目标是让人不逐行读 patch 也能看懂这次改动的形状。
+  # ---------- step 8b: the body, written by the model via the to-pr skill ----------
+  # The shape lives in the `to-pr` skill, and this script does not read it.
+  # It asks pi to use the skill, which is what skills are for: pi resolves it
+  # from ~/.agents/skills the same way any other invocation does, and
+  # pi-governance already puts it on every machine. So there is no copy of the
+  # shape here to drift, and editing what a PR body looks like is a skills-repo
+  # change reviewed on its own.
+  #
+  # An earlier version of this step read the skill file and parsed its headings
+  # out to validate against. That was one layer too many, and a brittle one:
+  # the skill's own prose names its markers when it explains the contract, so
+  # the range re-opened there and swallowed a heading that was never part of
+  # the template.
+  #
+  # pi resolves the skill itself, so this script never reads it — but it does
+  # check that it is THERE. Measured on a target without it: pi answers anyway,
+  # in its own shape (`## 改动`, `关联 #1。`), and a body that merely has some
+  # `## ` in it sails through the check below. That is the #118 failure exactly
+  # — a PR that opens, looks finished, and never followed the skill. Presence is
+  # the one thing about the skill this script can assert without holding a copy
+  # of its contents.
+  TO_PR_SKILL=${SF_RUN_ISSUE_TO_PR_SKILL:-$HOME/.agents/skills/to-pr/SKILL.md}
+  in_root "test -f $(printf '%q' "$TO_PR_SKILL")" >/dev/null 2>&1 \
+    || die ERROR "the to-pr skill is not installed on the target ($TO_PR_SKILL) — pi would answer in its own shape and this verb cannot tell the difference; install it with scripts/install-skills.sh install in the skills repo. $BRANCH is pushed, no PR was opened" 5
 
-必须且只能输出下面四个小节，标题逐字照抄，顺序不变：
-
-## 可读 diff
-## 伪代码
-## Mermaid
-## TDD 证据
-
-要求：
-- 「可读 diff」不要贴原始 patch。用一个 diff 代码块画出改动后的**形状**——调用树、
-  文件树、组件树或控制流任选其一，只保留与这次改动相关的那几行，用 +/- 标出变化。
-  周围结构已经存在时用 diff 形式；大部分内容是新增时直接贴那一块。
-- 「伪代码」用平白语言写出这段逻辑的步骤，不是把代码抄一遍。分支和循环要在，
-  变量名和语法不要。
-- 「Mermaid」给一张 mermaid 代码块，画这次改动涉及的部件关系、分叉或先后。
-  5 到 12 个节点，每条边都要有标签。图上必须有正文里没有的信息；确实没有结构
-  可画就只写一句「没有结构可画」，不要画一张把文字重说一遍的图。
-- 「TDD 证据」点名这次改动由哪个测试钉住：测试文件路径与用例名，以及不改代码
-  时它为什么会红。只能引用 diff 里真实存在的测试。
-- 你没有运行过任何命令。**不要编造命令输出、通过条数、耗时或覆盖率**，diff 里
-  没有的数字一个都不许写。
-- 不要写 Closes #N、task、commit 这些字段，脚本会自己拼，你写了会重复。
-- 不要输出这四个小节以外的任何内容，不要写开场白。
-
-下面是这次改动的 issue 与完整改动内容。
-PROMPT
-)
+  # The patch never touches the local shell: issue + diff go into a temp file on
+  # the TARGET, handed to pi as an @file. Pushing 60 KB of patch through a
+  # quoted remote command string is how quoting bugs ship.
   PR_CMD=$(cat <<REMOTE
 set -e
 f=\$(mktemp)
 trap 'rm -f "\$f"' EXIT
-printf '%s\n\n' $(printf '%q' "$PR_PROMPT") > "\$f"
-printf '## issue #%s: %s\n\n' $(printf '%q' "$ISSUE") $(printf '%q' "$TITLE") >> "\$f"
+printf '## issue #%s: %s\n\n' $(printf '%q' "$ISSUE") $(printf '%q' "$TITLE") > "\$f"
 gh issue view $(printf '%q' "$ISSUE") --json body --jq .body >> "\$f" 2>/dev/null || true
 printf '\n\n## changes %s..%s\n' $(printf '%q' "$BASE") $(printf '%q' "$COMMIT") >> "\$f"
 git diff $(printf '%q' "$BASE")..$(printf '%q' "$COMMIT") | head -c $DIFF_BYTES >> "\$f"
-pi -p --mode text --provider $(printf '%q' "$PI_PROVIDER") --model $(printf '%q' "$PI_MODEL") @"\$f"
+pi -p --mode text --provider $(printf '%q' "$PI_PROVIDER") --model $(printf '%q' "$PI_MODEL") @"\$f" $(printf '%q' "$PR_INSTRUCTION")
 REMOTE
 )
   PR_PROSE=$(in_root "$PR_CMD") \
     || die ERROR "the PR-body model call failed ($PI_PROVIDER/$PI_MODEL) in $ROOT — $BRANCH is pushed but no PR was opened; re-run the same command to try again" 5
-  # Not pinning the prompt text (AGENTS.md forbids that), pinning the artifact.
-  # A body carrying three of the four sections still looks complete to a
-  # skimming reviewer, so a missing heading is an ERROR, not a warning — and
-  # never a silent fall back to the old metadata template, which is the exact
-  # state issue #118 is about.
-  PR_MISSING=''
-  for h in '## 可读 diff' '## 伪代码' '## Mermaid' '## TDD 证据'; do
-    printf '%s\n' "$PR_PROSE" | grep -qF -- "$h" || PR_MISSING="$PR_MISSING $h"
-  done
-  [ -z "$PR_MISSING" ] \
-    || die ERROR "the PR-body model output is missing these headings:$PR_MISSING — refusing to open a PR whose body is missing one of the four sections; $BRANCH is pushed, re-run to try again" 5
+  # The script no longer knows which sections the skill asks for, so it cannot
+  # check for them by name — that knowledge is exactly what used to drift. What
+  # it can still refuse is the failure that looks like success: an empty answer,
+  # or a wall of prose where a structured body was asked for. Both of those,
+  # and a failed call, are ERRORs rather than a silent fall back to the old
+  # metadata-only template, which is the state issue #118 is about.
+  PR_HEADING_COUNT=$(printf '%s\n' "$PR_PROSE" | grep -c '^## ' || true)
+  [ "$PR_HEADING_COUNT" -ge 1 ] \
+    || die ERROR "the PR-body model output has no '## ' sections — the to-pr skill was probably not applied ($PI_PROVIDER/$PI_MODEL); $BRANCH is pushed, no PR was opened, re-run to try again" 5
 
   # Explicit --title/--body, never --fill: --fill would use the swarm's own
   # commit messages, which do not carry `Closes #N` — that is precisely how a

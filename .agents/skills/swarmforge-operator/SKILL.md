@@ -1008,18 +1008,22 @@ The split now:
 | Part of the body | Written by | Why that side |
 |---|---|---|
 | `Closes #N`, `task:`, `commit:`, `completed_at:` | the script | something downstream parses them; a hallucinated issue number costs a human exactly the reverse-engineering this verb exists to prevent |
-| The four `##` sections | the model | only something that read the diff can write them |
+| The `##` sections | the model, via `to-pr` | only something that read the diff can write them |
 
-**How the call is made.** The prompt — instructions, the issue, and the patch —
-is assembled into a `mktemp` file **on the target** and handed to `pi` as an
-`@file`. The patch never passes through a quoted remote command string, which
-is where 60 KB of diff would otherwise turn into a quoting bug. `pi` is
-resolved from `PATH` on the target host, next to the `git` and `gh` this verb
-already uses there.
+**How the call is made.** The issue and the patch are assembled into a
+`mktemp` file **on the target** and handed to `pi` as an `@file`; the
+instruction that goes with them names the skill rather than restating it:
 
 ```sh
-pi -p --mode text --provider openai-codex --model gpt-6-astra @<prompt-file>
+pi -p --mode text --provider openai-codex --model gpt-6-astra @<material> \
+  '用 to-pr skill，为上面这次改动写 PR 描述正文。只输出正文本身…'
 ```
+
+`pi` resolves `to-pr` from `~/.agents/skills` the way it resolves any skill, so
+**this verb holds no copy of the shape and cannot drift from it.** Changing what
+a PR body looks like is a skills-repo change, reviewed on its own, and a human
+who runs `/to-pr` by hand gets the same shape. The patch never passes through a
+quoted remote command string — 60 KB of diff in one is how quoting bugs ship.
 
 Overrides, all read from the environment:
 
@@ -1028,29 +1032,34 @@ Overrides, all read from the environment:
 | `SF_RUN_ISSUE_PI_PROVIDER` | `openai-codex` | a different provider |
 | `SF_RUN_ISSUE_PI_MODEL` | `gpt-6-astra` | a different model |
 | `SF_RUN_ISSUE_DIFF_BYTES` | `60000` | how much patch reaches the prompt |
+| `SF_RUN_ISSUE_PR_INSTRUCTION` | names `to-pr` | point the verb at another shape |
+| `SF_RUN_ISSUE_TO_PR_SKILL` | `~/.agents/skills/to-pr/SKILL.md` | where the presence check looks |
 
 **What it costs you.** One model call per PR, a few seconds on the measured
 channel — negligible against a verb whose default ceiling is 7200s of polling.
 It happens **after** the "is there already an open PR for this head" check, so
 a resume never pays for a call whose answer it would discard.
 
-**What makes it fail, loudly.** The call failing, or the answer missing any of
-the four `##` headings, is `STATUS=ERROR` / exit 5. It does **not** fall back
-to the old metadata-only body. That fallback is the bug, and it is worse than
-failing because it looks like success: the branch is pushed, a PR exists, and
-nothing tells the reviewer the description is empty of content. When it fails
-the branch is already pushed and no PR is open — re-run the same command,
-which resumes.
+**What makes it fail, loudly.** Three things are `STATUS=ERROR` / exit 5, and
+none of them falls back to the old metadata-only body — that fallback is the
+bug, and it is worse than failing because it looks like success:
 
-**Why the check is here and not in CI.** OpenHands gates this with
-`.github/scripts/check_pr_description.py`, but that lives in the repo being
-checked. This verb opens PRs in whatever project it is pointed at, so a CI gate
-would have to be installed in every managed repo. A pre-flight check inside the
-script gives the same guarantee in one place. It also sidesteps the rule in
-`AGENTS.md` that prompt text must not be pinned by automated tests: **the
-prompt is not tested, the artifact is.**
+- **The skill is not installed on the target.** Checked before the call is
+  spent. This one is not paranoia: measured on a target without the skill, `pi`
+  answers anyway in its own shape (`## 改动`, `关联 #1。`) and the structure
+  check below waves it through. Presence is the only thing about the skill this
+  script can assert without holding a copy of its contents.
+- **The call fails.**
+- **The answer has no `## ` section at all** — a refusal, or a wall of prose.
 
-### The four things it refuses to get wrong
+**What it deliberately does NOT check** is whether the body carries the
+particular sections `to-pr` asks for. Knowing those names here would mean
+holding a second copy of the shape, which is what this indirection exists to
+remove. The cost is real and worth naming: a body with *some* structure that
+ignored the skill will open a PR. Presence plus human review is what stands
+between that and a merge.
+
+### The four things it refuses to get wrong### The four things it refuses to get wrong
 
 - **It never posts the same task twice.** `pack_web`'s `create-task!` checks
   only that the name is non-empty, so a second POST really does create a
