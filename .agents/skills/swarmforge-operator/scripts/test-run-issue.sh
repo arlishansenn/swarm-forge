@@ -166,17 +166,27 @@ for a in "$@"; do
   case "$a" in @*) cp "${a#@}" "$STUB/pi-prompt.txt" 2>/dev/null || true ;; esac
 done
 [ -n "${PI_FAILS:-}" ] && exit 1
-printf '%s\n' "${PI_OUT:-## 改了什么
-渲染耗时按阶段分开记账，等待窗口不再靠猜。
+printf '%s\n' "${PI_OUT:-## 可读 diff
+\`\`\`diff
+ render_email
+   classify_stage
++  record_stage_ms
+   wait_for_window
+\`\`\`
 
-## 怎么验证的
-跑了 bash scripts/test-run-issue.sh，两个新用例都过。
+## 伪代码
+渲染每一段时，先分类，再把这一段花掉的毫秒记进耗时表，最后才进等待窗口。
 
-## 刻意没动
-没有动 handoff 协议。
+## Mermaid
+\`\`\`mermaid
+flowchart LR
+  r[render_email] -->|分类当前段| c[classify_stage]
+  c -->|记录本段耗时| m[record_stage_ms]
+  m -->|按累计耗时定窗口| w[wait_for_window]
+\`\`\`
 
-## 我自己拿的主意
-标题沿用 issue 原文，没有改写。}"
+## TDD 证据
+test/email_test.clj 的 records-stage-timings：不记录耗时时耗时表为空，断言拿不到分段数据而红。}"
 EOF
 
 chmod +x "$WORK/bin"/*
@@ -308,15 +318,16 @@ has "PR body carries accept work's commit" "$argv" "commit: abc1234"
 has "PR head is the new branch" "$argv" "--head $BRANCH"
 # Issue #118: the body's prose comes from the model, its parseable fields do
 # not. podsum#149 carried the fields and nothing else, and read as finished work.
-has "PR body carries the model's 改了什么"       "$argv" "## 改了什么"
-has "PR body carries the model's 怎么验证的"     "$argv" "## 怎么验证的"
-has "PR body carries the model's 刻意没动"       "$argv" "## 刻意没动"
-has "PR body carries the model's 我自己拿的主意" "$argv" "## 我自己拿的主意"
+# The four sections are show-me's shape, not github-workflow.md's four questions.
+has "PR body carries the model's 可读 diff"  "$argv" "## 可读 diff"
+has "PR body carries the model's 伪代码"     "$argv" "## 伪代码"
+has "PR body carries the model's Mermaid"    "$argv" "## Mermaid"
+has "PR body carries the model's TDD 证据"   "$argv" "## TDD 证据"
 has "the model call names the declared channel" "$(cat "$STUB/calls.log")" \
   "pi <-p> <--mode> <text> <--provider> <openai-codex> <--model> <gpt-6-astra>"
 has "the prompt carries the issue" "$(cat "$STUB/pi-prompt.txt")" "## issue #28"
-has "the prompt asks for all four headings" "$(cat "$STUB/pi-prompt.txt")" \
-  "## 我自己拿的主意"
+has "the prompt asks for all four sections" "$(cat "$STUB/pi-prompt.txt")" \
+  "## TDD 证据"
 
 # ---------- 6. an open PR exists: BASE is its head branch (stacked) ----------
 reset
@@ -732,23 +743,23 @@ check "model failure STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
 has "model failure names the channel" "$out" "openai-codex/gpt-6-astra"
 check "model failure opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
 
-# ---------- 27. the model answers only three of the four questions ----------
+# ---------- 27. the model writes only three of the four sections ----------
 # A body missing one heading still reads complete to a skimming reviewer, so
 # this is an ERROR rather than a warning, and the run opens nothing.
 reset
 printf 'done\n' > "$STUB/lane-script"
-PARTIAL='## 改了什么
-改了。
+PARTIAL='## 可读 diff
+形状变了。
 
-## 怎么验证的
-跑了。
+## 伪代码
+先分类再记账。
 
-## 刻意没动
-没有。'
+## Mermaid
+没有结构可画。'
 out=$(GH_OPEN_HEAD='' PI_OUT="$PARTIAL" "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
 check "missing heading exits 5" 5 "$rc"
 check "missing heading STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
-has "missing heading is named in the error" "$out" "## 我自己拿的主意"
+has "missing heading is named in the error" "$out" "## TDD 证据"
 check "missing heading opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
 
 echo "  $PASS passed, $FAIL failed"

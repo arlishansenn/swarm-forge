@@ -79,11 +79,15 @@
 # script owns only the fields something downstream parses — `Closes #N`,
 # `task`, `commit`, `completed_at` — because a hallucinated issue number costs
 # a human the reverse-engineering this verb exists to avoid. The four
-# questions (pi-governance config/instructions/github-workflow.md) can only be
-# answered by something that read the diff, so the model answers them under
-# four fixed headings and the run FAILS if any heading is missing. A PR whose
-# body does not answer them is the bug #118 was opened over, and opening one
-# silently is worse than not opening it: podsum#149 sat there looking finished.
+# sections below can only be written by something that read the diff, so the
+# model writes them under four fixed headings and the run FAILS if any heading
+# is missing. The shape is show-me's, not github-workflow.md's four questions:
+# a readable diff of the resulting SHAPE, pseudocode, one Mermaid diagram, and
+# which test pins the change. A PR body without them is the bug #118 was opened
+# over, and opening one silently is worse than not opening it: podsum#149 sat
+# there looking finished.
+# The model never ran anything, so the prompt forbids invented command output —
+# "附 TDD 证据" is an invitation to hallucinate a passing test run otherwise.
 # Overridable: SF_RUN_ISSUE_PI_PROVIDER, SF_RUN_ISSUE_PI_MODEL,
 # SF_RUN_ISSUE_DIFF_BYTES. `pi` is resolved from PATH on the TARGET host.
 #
@@ -475,19 +479,28 @@ if [ -z "$PR_URL" ]; then
   # through a quoted remote command string is how quoting bugs get shipped.
   PR_PROMPT=$(cat <<'PROMPT'
 你要写一个 GitHub PR 的描述正文（body），读者是要 review 这个 PR 的人。
+目标是让人不逐行读 patch 也能看懂这次改动的形状。
 
 必须且只能输出下面四个小节，标题逐字照抄，顺序不变：
 
-## 改了什么
-## 怎么验证的
-## 刻意没动
-## 我自己拿的主意
+## 可读 diff
+## 伪代码
+## Mermaid
+## TDD 证据
 
 要求：
-- 「改了什么」写可观察行为的变化，不是文件清单。
-- 「怎么验证的」点名跑了哪条路径或哪个命令，不要写「门全绿」。
-- 「刻意没动」写这次故意留下的东西和原因；真的没有就写「没有」。
-- 「我自己拿的主意」写 issue 没要求、实现时自己决定的取舍；没有就写「没有」。
+- 「可读 diff」不要贴原始 patch。用一个 diff 代码块画出改动后的**形状**——调用树、
+  文件树、组件树或控制流任选其一，只保留与这次改动相关的那几行，用 +/- 标出变化。
+  周围结构已经存在时用 diff 形式；大部分内容是新增时直接贴那一块。
+- 「伪代码」用平白语言写出这段逻辑的步骤，不是把代码抄一遍。分支和循环要在，
+  变量名和语法不要。
+- 「Mermaid」给一张 mermaid 代码块，画这次改动涉及的部件关系、分叉或先后。
+  5 到 12 个节点，每条边都要有标签。图上必须有正文里没有的信息；确实没有结构
+  可画就只写一句「没有结构可画」，不要画一张把文字重说一遍的图。
+- 「TDD 证据」点名这次改动由哪个测试钉住：测试文件路径与用例名，以及不改代码
+  时它为什么会红。只能引用 diff 里真实存在的测试。
+- 你没有运行过任何命令。**不要编造命令输出、通过条数、耗时或覆盖率**，diff 里
+  没有的数字一个都不许写。
 - 不要写 Closes #N、task、commit 这些字段，脚本会自己拼，你写了会重复。
 - 不要输出这四个小节以外的任何内容，不要写开场白。
 
@@ -509,16 +522,16 @@ REMOTE
   PR_PROSE=$(in_root "$PR_CMD") \
     || die ERROR "the PR-body model call failed ($PI_PROVIDER/$PI_MODEL) in $ROOT — $BRANCH is pushed but no PR was opened; re-run the same command to try again" 5
   # Not pinning the prompt text (AGENTS.md forbids that), pinning the artifact.
-  # A model that answers three of four questions produces a body that looks
-  # complete to a skimming reviewer, so a missing heading is an ERROR, not a
-  # warning — and never a silent fall back to the old metadata template, which
-  # is the exact state issue #118 is about.
+  # A body carrying three of the four sections still looks complete to a
+  # skimming reviewer, so a missing heading is an ERROR, not a warning — and
+  # never a silent fall back to the old metadata template, which is the exact
+  # state issue #118 is about.
   PR_MISSING=''
-  for h in '## 改了什么' '## 怎么验证的' '## 刻意没动' '## 我自己拿的主意'; do
+  for h in '## 可读 diff' '## 伪代码' '## Mermaid' '## TDD 证据'; do
     printf '%s\n' "$PR_PROSE" | grep -qF -- "$h" || PR_MISSING="$PR_MISSING $h"
   done
   [ -z "$PR_MISSING" ] \
-    || die ERROR "the PR-body model output is missing these headings:$PR_MISSING — refusing to open a PR whose body does not answer the four questions; $BRANCH is pushed, re-run to try again" 5
+    || die ERROR "the PR-body model output is missing these headings:$PR_MISSING — refusing to open a PR whose body is missing one of the four sections; $BRANCH is pushed, re-run to try again" 5
 
   # Explicit --title/--body, never --fill: --fill would use the swarm's own
   # commit messages, which do not carry `Closes #N` — that is precisely how a

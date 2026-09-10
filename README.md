@@ -468,7 +468,7 @@ If the backend cannot open sessions at all, set both capability functions to `re
 | `talk <role>` | 给指定角色发一条行为切片，同样验证送达且被提交，不是发了就算 |
 | `onboard project` | 把 upstream 的 two-pack/four-pack/six-pack 装进一个项目目录；拒绝 `main`，目标非空时零写入拒绝；改写 `ARCHIVE_URL` 默认值指向本 fork，装完不启动 |
 | `accept work` | 人工验收：**只读 master worktree**（按 `roles.tsv` 第 2 列 `worktree-name == master` 定位，不认 role 名，不是恰好一条就报错）的终端 handoff 报 `task`/`commit`，别的 worktree 的中间跳不再被当成结果；缺字段的记录 `WARN=` 点名而不静默丢弃；同时扫 `inbox/new`/`inbox/in_process` 的滞留，卡链了会 `WARN=` 报出来，不再跟"没活干"读起来一样 |
-| `run issue <root> --issue <N>` | 把**一张** issue 走完「投 task → 轮询 → 开 PR」：读 `dashboard-url`（端口每次起 server 会变，永远现读）→ `gh issue view` 取 slug，分支 `feat/issue-<N>-<slug>` 与 task name `issue-<N>-<slug>` 同源 → BASE 取最新 open PR 的 head branch（无则 `main`，**stacked 在上一张票上，`main` 只被人 merge 推进**）→ 读 **card 与分支两个标记**决定走哪条路，四格都有出口：两个都没有是首次运行；两个都在是 **resume**（跳过建分支与 POST，直接接着轮询）；只有分支没有 card，说明上次死在建分支与 POST 之间，**resume 但补做 POST**（issue #76，旧代码在这一格必然 `5` ERROR 且每次重跑都一样）；只有 card 没分支，那不是这个动词的 card，拒绝（退出 6，零 POST、零写入，因为 `pack_web` 的 `create-task!` 不去重）→ `/api/state` 有 pending clarification/approval 拒绝（退出 6，报出 id 与问题原文，**这是连投时唯一会自动停的人闸**）→ POST 一次 task → 轮询 board lane 到 `done`（**只认 lane，不看 `work_in_flight` 的 idle**，链路中途 coder 会短暂 idle）→ `accept work` 拿 commit（**重试到 delivery record 真的可见为止**，board `done` 只代表 handoff 已送达，master 还可能在处理，issue #63）→ push → **调一次模型写 PR body 的四问**（`pi -p --provider openai-codex --model gpt-6-astra`，失败或缺任一小节报 `ERROR` 且**不开 PR**，issue #118）→ `gh pr create` 显式 `--title/--body`（body = `Closes #N` 等字段由脚本拼 + 四问由模型写；**从不** `--merge`/`--auto`/`--fill`）；超时报 `ERROR`（退出 5）并明说可能还在跑，**绝不重投** |
+| `run issue <root> --issue <N>` | 把**一张** issue 走完「投 task → 轮询 → 开 PR」：读 `dashboard-url`（端口每次起 server 会变，永远现读）→ `gh issue view` 取 slug，分支 `feat/issue-<N>-<slug>` 与 task name `issue-<N>-<slug>` 同源 → BASE 取最新 open PR 的 head branch（无则 `main`，**stacked 在上一张票上，`main` 只被人 merge 推进**）→ 读 **card 与分支两个标记**决定走哪条路，四格都有出口：两个都没有是首次运行；两个都在是 **resume**（跳过建分支与 POST，直接接着轮询）；只有分支没有 card，说明上次死在建分支与 POST 之间，**resume 但补做 POST**（issue #76，旧代码在这一格必然 `5` ERROR 且每次重跑都一样）；只有 card 没分支，那不是这个动词的 card，拒绝（退出 6，零 POST、零写入，因为 `pack_web` 的 `create-task!` 不去重）→ `/api/state` 有 pending clarification/approval 拒绝（退出 6，报出 id 与问题原文，**这是连投时唯一会自动停的人闸**）→ POST 一次 task → 轮询 board lane 到 `done`（**只认 lane，不看 `work_in_flight` 的 idle**，链路中途 coder 会短暂 idle）→ `accept work` 拿 commit（**重试到 delivery record 真的可见为止**，board `done` 只代表 handoff 已送达，master 还可能在处理，issue #63）→ push → **调一次模型写 PR body 的四个小节**（可读 diff / 伪代码 / Mermaid / TDD 证据；`pi -p --provider openai-codex --model gpt-6-astra`，失败或缺任一小节报 `ERROR` 且**不开 PR**，issue #118）→ `gh pr create` 显式 `--title/--body`（body = `Closes #N` 等字段由脚本拼 + 四个小节由模型写；**从不** `--merge`/`--auto`/`--fill`）；超时报 `ERROR`（退出 5）并明说可能还在跑，**绝不重投** |
 | `onboard project <root> --pack <N>` | 装一个 fork Pack 进被管项目；**装完往 `$ROOT/.gitignore` 追加一段 SwarmForge 装机产物的忽略清单**（条目从刚装的 artifact 派生，不硬编码；`.gitignore` 与 `README.md` 除外，那两个归项目所有，装之前先存、装完还原，不让 tar 覆盖），否则那些文件永远以未跟踪身份让 `stop swarm` 的 DIRTY 闸常亮（issue #87）；已经装好的老项目要人工补一次同样的块 |
 | `stop swarm` | 停机前先 preflight：有角色 `BUSY`/`UNKNOWN` 或 worktree 有未提交改动就拒绝停机（退出 6），全干净才走 `close-swarm`，**并检查它真的停成了**——`close-swarm` 失败就报 `5` ERROR 带上它自己的 stderr，绝不报 `STOPPED`（issue #82，此前对非 operator 机器会假报 `STOPPED` 且退出 0）；停完顺带按 `pack_web.pid` 停掉 dashboard 并报 `PACK_WEB=stopped\|absent`；`close-swarm` 跑在 **target** 上而默认路径是 operator 自己那台机器，被管项目里没有这个脚本，所以别的机器要用 `--close-swarm <target 上的路径>` 指明；`--force` 只跳过 preflight，不跳过"停没停成"的检查 |
 
@@ -578,11 +578,17 @@ delivery record 在整个等待窗口里始终对 `accept work` 不可见）；`
 要的反应不同——GNU `timeout` 用 124 而不复用被测命令退出码，是同一个理由。成功输出里的
 `resumed:` 说明这次是首次运行还是续跑。
 
-**PR body 的四问由模型写，`Closes #N` 这些字段由脚本拼。** 在 issue #118 之前 body 是
-四行 `printf`，podsum#149 就是那个样子——没有一个字是模型写的，`github-workflow.md` 的四问
-对这条路径**从来没生效过**。现在分工是：脚本拼下游要解析的字段（`Closes #N`、`task:`、
-`commit:`、`completed_at:`），模型写四个 `##` 小节（改了什么、怎么验证的、刻意没动、
-我自己拿的主意）。
+**PR body 的四个小节由模型写，`Closes #N` 这些字段由脚本拼。** 在 issue #118 之前 body 是
+四行 `printf`，podsum#149 就是那个样子——没有一个字是模型写的。现在分工是：脚本拼下游要
+解析的字段（`Closes #N`、`task:`、`commit:`、`completed_at:`），模型写四个 `##` 小节。
+
+小节的形状取自 `show-me`，**不是** `github-workflow.md` 的四问，目标是让 review 的人不逐行
+读 patch 也能看懂改动的形状：`## 可读 diff`（画改动后的形状，不贴原始 patch）、`## 伪代码`
+（平白语言的步骤，分支与循环要在）、`## Mermaid`（一张图，5 到 12 个节点，每条边有标签）、
+`## TDD 证据`（哪个测试钉住这次改动，不改代码为什么会红）。
+
+**模型没有跑过任何命令。**「TDD 证据」这一节天然诱发编造通过条数与耗时，所以 prompt 明文
+禁止编造命令输出、通过条数、耗时与覆盖率，并限定只能引用 diff 里真实存在的测试。
 
 - **通道**：`pi -p --mode text --provider openai-codex --model gpt-6-astra @<prompt 文件>`，
   在**目标机**上跑，`pi` 从那台机器的 `PATH` 解析，与本动词已经在用的 `git`/`gh` 同处。

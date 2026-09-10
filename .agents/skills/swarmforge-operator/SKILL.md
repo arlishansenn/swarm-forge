@@ -943,8 +943,8 @@ Six steps, in this order:
    already on the Board — then poll the Board lane until `done`.
 6. `accept work` for the commit — **retried until the delivery record is
    actually visible**, not read once — then `git push`, ask a model for the PR
-   body, and `gh pr create --base BASE`. A body that does not answer the four
-   questions is an **ERROR**, not a warning: nothing gets opened.
+   body, and `gh pr create --base BASE`. A body missing any of the four
+   sections is an **ERROR**, not a warning: nothing gets opened.
 
 ### Stacked branches, and why `main` is left alone
 
@@ -984,19 +984,31 @@ completed_at: 2026-09-09T15:43:01.447590Z
 ```
 
 No model wrote any of that, and the title was `gh issue view --json title`
-verbatim. So the four questions in pi-governance's
-`config/instructions/github-workflow.md` — what observable behavior changed,
-how it was verified, what was deliberately left alone, what the agent decided
-on its own — **never applied to this path at all**. Changing role prompts,
-skill descriptions or `AGENTS.md` could not have fixed it: there was no model
-on the path to instruct.
+verbatim. Changing role prompts, skill descriptions or `AGENTS.md` could not
+have fixed it: there was no model on the path to instruct.
+
+The body is now shaped like `show-me`'s output, not like
+`github-workflow.md`'s four questions — the goal is that a reviewer sees the
+shape of the change without reading the patch line by line:
+
+| Section | What goes in it |
+|---|---|
+| `## 可读 diff` | a diff of the resulting **shape** — call tree, file tree, control flow — not the raw patch |
+| `## 伪代码` | the logic in plain language: branches and loops, no variable names or syntax |
+| `## Mermaid` | one diagram, 5–12 nodes, every edge labelled, carrying something the prose does not |
+| `## TDD 证据` | which test pins the change: path, case name, and why it goes red without the change |
+
+**The model never ran anything.** `TDD 证据` is an open invitation to invent a
+passing test run, so the prompt forbids invented command output, pass counts,
+timings and coverage outright, and restricts the section to tests that actually
+appear in the diff.
 
 The split now:
 
 | Part of the body | Written by | Why that side |
 |---|---|---|
 | `Closes #N`, `task:`, `commit:`, `completed_at:` | the script | something downstream parses them; a hallucinated issue number costs a human exactly the reverse-engineering this verb exists to prevent |
-| The four `##` sections | the model | only something that read the diff can answer them |
+| The four `##` sections | the model | only something that read the diff can write them |
 
 **How the call is made.** The prompt — instructions, the issue, and the patch —
 is assembled into a `mktemp` file **on the target** and handed to `pi` as an
