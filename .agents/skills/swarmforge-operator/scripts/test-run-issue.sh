@@ -152,6 +152,33 @@ fi
 printf 'task: %s\ncommit: %s\ncompleted_at: 2026-08-26T12:34:56Z\n\n' \
   "${TASK_UNDER_TEST:?}" "${FAKE_COMMIT:-abc1234}"
 EOF
+# ---------- stub pi ----------
+# The PR-body model call (issue #118). PI_OUT is what the "model" answers and
+# defaults to a complete four-heading body; PI_FAILS makes the call fail, which
+# has to abort the run rather than quietly fall back to a metadata-only body —
+# that fallback IS the bug #118 was opened over, and it would look like success.
+# The prompt arrives as an @file, so it is copied out for assertions.
+cat > "$WORK/bin/pi" <<'EOF'
+#!/usr/bin/env bash
+STUB=${STUB:?}
+{ printf 'pi'; printf ' <%s>' "$@"; printf '\n'; } >> "$STUB/calls.log"
+for a in "$@"; do
+  case "$a" in @*) cp "${a#@}" "$STUB/pi-prompt.txt" 2>/dev/null || true ;; esac
+done
+[ -n "${PI_FAILS:-}" ] && exit 1
+printf '%s\n' "${PI_OUT:-## 改了什么
+渲染耗时按阶段分开记账，等待窗口不再靠猜。
+
+## 怎么验证的
+跑了 bash scripts/test-run-issue.sh，两个新用例都过。
+
+## 刻意没动
+没有动 handoff 协议。
+
+## 我自己拿的主意
+标题沿用 issue 原文，没有改写。}"
+EOF
+
 chmod +x "$WORK/bin"/*
 export PATH=$WORK/bin:$PATH
 export ACCEPT_WORK=$WORK/bin/fake-accept-work.sh
@@ -279,6 +306,17 @@ hasnt "gh pr create has no --fill"  "$lines" "<--fill>"
 has "PR body closes the issue" "$argv" "Closes #28"
 has "PR body carries accept work's commit" "$argv" "commit: abc1234"
 has "PR head is the new branch" "$argv" "--head $BRANCH"
+# Issue #118: the body's prose comes from the model, its parseable fields do
+# not. podsum#149 carried the fields and nothing else, and read as finished work.
+has "PR body carries the model's 改了什么"       "$argv" "## 改了什么"
+has "PR body carries the model's 怎么验证的"     "$argv" "## 怎么验证的"
+has "PR body carries the model's 刻意没动"       "$argv" "## 刻意没动"
+has "PR body carries the model's 我自己拿的主意" "$argv" "## 我自己拿的主意"
+has "the model call names the declared channel" "$(cat "$STUB/calls.log")" \
+  "pi <-p> <--mode> <text> <--provider> <openai-codex> <--model> <gpt-6-astra>"
+has "the prompt carries the issue" "$(cat "$STUB/pi-prompt.txt")" "## issue #28"
+has "the prompt asks for all four headings" "$(cat "$STUB/pi-prompt.txt")" \
+  "## 我自己拿的主意"
 
 # ---------- 6. an open PR exists: BASE is its head branch (stacked) ----------
 reset
@@ -682,6 +720,36 @@ else
   bad "the resume decision compares the lane against done" \
     "no test of EXISTING_LANE's value outside comments"
 fi
+
+# ---------- 26. the PR-body model call fails: no PR, explicit ERROR ----------
+# The alternative — open the PR with the old metadata-only body — is the exact
+# state issue #118 is about, and it looks like success to every caller.
+reset
+printf 'done\n' > "$STUB/lane-script"
+out=$(GH_OPEN_HEAD='' PI_FAILS=1 "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "model failure exits 5" 5 "$rc"
+check "model failure STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
+has "model failure names the channel" "$out" "openai-codex/gpt-6-astra"
+check "model failure opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
+
+# ---------- 27. the model answers only three of the four questions ----------
+# A body missing one heading still reads complete to a skimming reviewer, so
+# this is an ERROR rather than a warning, and the run opens nothing.
+reset
+printf 'done\n' > "$STUB/lane-script"
+PARTIAL='## 改了什么
+改了。
+
+## 怎么验证的
+跑了。
+
+## 刻意没动
+没有。'
+out=$(GH_OPEN_HEAD='' PI_OUT="$PARTIAL" "$SCRIPT" --root "$ROOT" --issue 28 --local 2>&1); rc=$?
+check "missing heading exits 5" 5 "$rc"
+check "missing heading STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
+has "missing heading is named in the error" "$out" "## 我自己拿的主意"
+check "missing heading opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

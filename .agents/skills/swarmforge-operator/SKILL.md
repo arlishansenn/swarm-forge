@@ -942,8 +942,9 @@ Six steps, in this order:
 5. `POST {dashboard-url}/api/tasks` once — skipped only when the card is
    already on the Board — then poll the Board lane until `done`.
 6. `accept work` for the commit — **retried until the delivery record is
-   actually visible**, not read once — then `git push` and
-   `gh pr create --base BASE`.
+   actually visible**, not read once — then `git push`, ask a model for the PR
+   body, and `gh pr create --base BASE`. A body that does not answer the four
+   questions is an **ERROR**, not a warning: nothing gets opened.
 
 ### Stacked branches, and why `main` is left alone
 
@@ -968,6 +969,74 @@ two git commands (`merge-base --is-ancestor` and `merge --no-edit`), both
 against whatever `HEAD` is; nothing in the swarm names a branch. `BASE` is
 looked up fresh from `gh pr list` on every call — **this verb keeps no state
 between calls.**
+
+### The PR body: the script owns the fields, a model owns the prose
+
+Until issue #118 the body was four lines of `printf`. podsum#149 is what that
+looks like from a reviewer's seat:
+
+```text
+Closes #138
+
+task: issue-138-brief
+commit: 8ff7c7055b
+completed_at: 2026-09-09T15:43:01.447590Z
+```
+
+No model wrote any of that, and the title was `gh issue view --json title`
+verbatim. So the four questions in pi-governance's
+`config/instructions/github-workflow.md` — what observable behavior changed,
+how it was verified, what was deliberately left alone, what the agent decided
+on its own — **never applied to this path at all**. Changing role prompts,
+skill descriptions or `AGENTS.md` could not have fixed it: there was no model
+on the path to instruct.
+
+The split now:
+
+| Part of the body | Written by | Why that side |
+|---|---|---|
+| `Closes #N`, `task:`, `commit:`, `completed_at:` | the script | something downstream parses them; a hallucinated issue number costs a human exactly the reverse-engineering this verb exists to prevent |
+| The four `##` sections | the model | only something that read the diff can answer them |
+
+**How the call is made.** The prompt — instructions, the issue, and the patch —
+is assembled into a `mktemp` file **on the target** and handed to `pi` as an
+`@file`. The patch never passes through a quoted remote command string, which
+is where 60 KB of diff would otherwise turn into a quoting bug. `pi` is
+resolved from `PATH` on the target host, next to the `git` and `gh` this verb
+already uses there.
+
+```sh
+pi -p --mode text --provider openai-codex --model gpt-6-astra @<prompt-file>
+```
+
+Overrides, all read from the environment:
+
+| Variable | Default | For |
+|---|---|---|
+| `SF_RUN_ISSUE_PI_PROVIDER` | `openai-codex` | a different provider |
+| `SF_RUN_ISSUE_PI_MODEL` | `gpt-6-astra` | a different model |
+| `SF_RUN_ISSUE_DIFF_BYTES` | `60000` | how much patch reaches the prompt |
+
+**What it costs you.** One model call per PR, a few seconds on the measured
+channel — negligible against a verb whose default ceiling is 7200s of polling.
+It happens **after** the "is there already an open PR for this head" check, so
+a resume never pays for a call whose answer it would discard.
+
+**What makes it fail, loudly.** The call failing, or the answer missing any of
+the four `##` headings, is `STATUS=ERROR` / exit 5. It does **not** fall back
+to the old metadata-only body. That fallback is the bug, and it is worse than
+failing because it looks like success: the branch is pushed, a PR exists, and
+nothing tells the reviewer the description is empty of content. When it fails
+the branch is already pushed and no PR is open — re-run the same command,
+which resumes.
+
+**Why the check is here and not in CI.** OpenHands gates this with
+`.github/scripts/check_pr_description.py`, but that lives in the repo being
+checked. This verb opens PRs in whatever project it is pointed at, so a CI gate
+would have to be installed in every managed repo. A pre-flight check inside the
+script gives the same guarantee in one place. It also sidesteps the rule in
+`AGENTS.md` that prompt text must not be pinned by automated tests: **the
+prompt is not tested, the artifact is.**
 
 ### The four things it refuses to get wrong
 

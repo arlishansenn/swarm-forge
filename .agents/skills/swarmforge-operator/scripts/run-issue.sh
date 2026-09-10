@@ -75,6 +75,18 @@
 # calls. Once a human merges the lower PR, GitHub retargets the upper one to
 # `main` on its own.
 #
+# The PR body is written by a model, not by this script (issue #118). The
+# script owns only the fields something downstream parses — `Closes #N`,
+# `task`, `commit`, `completed_at` — because a hallucinated issue number costs
+# a human the reverse-engineering this verb exists to avoid. The four
+# questions (pi-governance config/instructions/github-workflow.md) can only be
+# answered by something that read the diff, so the model answers them under
+# four fixed headings and the run FAILS if any heading is missing. A PR whose
+# body does not answer them is the bug #118 was opened over, and opening one
+# silently is worse than not opening it: podsum#149 sat there looking finished.
+# Overridable: SF_RUN_ISSUE_PI_PROVIDER, SF_RUN_ISSUE_PI_MODEL,
+# SF_RUN_ISSUE_DIFF_BYTES. `pi` is resolved from PATH on the TARGET host.
+#
 # One issue per call, deliberately. A `--issues 28,29,30` flag would need
 # exactly one piece of error handling, and the caller already has it:
 #   for n in 28 29 30; do run-issue.sh --root R --issue "$n" || break; done
@@ -123,6 +135,13 @@ DELIVERY_SECONDS=${SF_RUN_ISSUE_DELIVERY_SECONDS:-600}
 # Overridable so tests can point step 5 at a stub instead of the real report,
 # same trick as start-swarm.sh's SWARM_LAUNCHER.
 ACCEPT_WORK=${ACCEPT_WORK:-$HERE/accept-work.sh}
+# The PR-body model call. Defaults are what was measured on the macmini target
+# (`pi auth check --provider openai-codex` -> ready; a trivial prompt returns
+# in ~9s). The diff is capped because it is pasted into a prompt: a 400-file
+# vendoring commit would otherwise blow the context and cost a run.
+PI_PROVIDER=${SF_RUN_ISSUE_PI_PROVIDER:-openai-codex}
+PI_MODEL=${SF_RUN_ISSUE_PI_MODEL:-gpt-6-astra}
+DIFF_BYTES=${SF_RUN_ISSUE_DIFF_BYTES:-60000}
 
 usage() { printf 'STATUS=USAGE\n'; sed -n '2,95p' "$0"; exit 2; }
 
@@ -441,20 +460,71 @@ done
 in_root "git push -u origin $(printf '%q' "$BRANCH")" \
   || die ERROR "could not push $BRANCH from $ROOT" 5
 
-# Explicit --title/--body, never --fill: --fill would use the swarm's own
-# commit messages, which do not carry `Closes #N` — that is precisely how a PR
-# ended up needing a human to reverse-engineer which issue it closed. The body
-# carries pointers, not a diff copy.
-PR_BODY=$(printf 'Closes #%s\n\ntask: %s\ncommit: %s\ncompleted_at: %s\n' \
-  "$ISSUE" "$TASK_NAME" "$COMMIT" "$COMPLETED")
 # A run killed between the push and the PR would otherwise try to open a
 # second PR for the same head on the next attempt, and `gh pr create` would
 # fail with a message about the existing one. Resuming has to be idempotent at
-# every step, not only at the POST.
+# every step, not only at the POST. This runs BEFORE the body is generated so
+# a resume never pays for a model call whose output it would throw away.
 PR_URL=$(in_root "gh pr list --head $(printf '%q' "$BRANCH") --state open --json url --jq '.[].url' | head -1") \
   || PR_URL=''
 PR_URL=${PR_URL%$'\n'}
 if [ -z "$PR_URL" ]; then
+  # ---------- step 8b: the body, four questions, written by the model ----------
+  # The patch never touches the local shell: it is assembled into a temp file
+  # on the TARGET and handed to `pi` as an @file. Pushing 60 KB of patch
+  # through a quoted remote command string is how quoting bugs get shipped.
+  PR_PROMPT=$(cat <<'PROMPT'
+你要写一个 GitHub PR 的描述正文（body），读者是要 review 这个 PR 的人。
+
+必须且只能输出下面四个小节，标题逐字照抄，顺序不变：
+
+## 改了什么
+## 怎么验证的
+## 刻意没动
+## 我自己拿的主意
+
+要求：
+- 「改了什么」写可观察行为的变化，不是文件清单。
+- 「怎么验证的」点名跑了哪条路径或哪个命令，不要写「门全绿」。
+- 「刻意没动」写这次故意留下的东西和原因；真的没有就写「没有」。
+- 「我自己拿的主意」写 issue 没要求、实现时自己决定的取舍；没有就写「没有」。
+- 不要写 Closes #N、task、commit 这些字段，脚本会自己拼，你写了会重复。
+- 不要输出这四个小节以外的任何内容，不要写开场白。
+
+下面是这次改动的 issue 与完整改动内容。
+PROMPT
+)
+  PR_CMD=$(cat <<REMOTE
+set -e
+f=\$(mktemp)
+trap 'rm -f "\$f"' EXIT
+printf '%s\n\n' $(printf '%q' "$PR_PROMPT") > "\$f"
+printf '## issue #%s: %s\n\n' $(printf '%q' "$ISSUE") $(printf '%q' "$TITLE") >> "\$f"
+gh issue view $(printf '%q' "$ISSUE") --json body --jq .body >> "\$f" 2>/dev/null || true
+printf '\n\n## changes %s..%s\n' $(printf '%q' "$BASE") $(printf '%q' "$COMMIT") >> "\$f"
+git diff $(printf '%q' "$BASE")..$(printf '%q' "$COMMIT") | head -c $DIFF_BYTES >> "\$f"
+pi -p --mode text --provider $(printf '%q' "$PI_PROVIDER") --model $(printf '%q' "$PI_MODEL") @"\$f"
+REMOTE
+)
+  PR_PROSE=$(in_root "$PR_CMD") \
+    || die ERROR "the PR-body model call failed ($PI_PROVIDER/$PI_MODEL) in $ROOT — $BRANCH is pushed but no PR was opened; re-run the same command to try again" 5
+  # Not pinning the prompt text (AGENTS.md forbids that), pinning the artifact.
+  # A model that answers three of four questions produces a body that looks
+  # complete to a skimming reviewer, so a missing heading is an ERROR, not a
+  # warning — and never a silent fall back to the old metadata template, which
+  # is the exact state issue #118 is about.
+  PR_MISSING=''
+  for h in '## 改了什么' '## 怎么验证的' '## 刻意没动' '## 我自己拿的主意'; do
+    printf '%s\n' "$PR_PROSE" | grep -qF -- "$h" || PR_MISSING="$PR_MISSING $h"
+  done
+  [ -z "$PR_MISSING" ] \
+    || die ERROR "the PR-body model output is missing these headings:$PR_MISSING — refusing to open a PR whose body does not answer the four questions; $BRANCH is pushed, re-run to try again" 5
+
+  # Explicit --title/--body, never --fill: --fill would use the swarm's own
+  # commit messages, which do not carry `Closes #N` — that is precisely how a
+  # PR ended up needing a human to reverse-engineer which issue it closed.
+  PR_BODY=$(printf 'Closes #%s\n\n%s\n\n---\ntask: %s\ncommit: %s\ncompleted_at: %s\n' \
+    "$ISSUE" "$PR_PROSE" "$TASK_NAME" "$COMMIT" "$COMPLETED")
   PR_OUT=$(in_root "gh pr create --base $(printf '%q' "$BASE") --head $(printf '%q' "$BRANCH") --title $(printf '%q' "$TITLE") --body $(printf '%q' "$PR_BODY")") \
     || die ERROR "gh pr create failed for $BRANCH -> $BASE in $ROOT" 5
   PR_URL=$(printf '%s\n' "$PR_OUT" | grep -o 'https://[^[:space:]]*' | tail -1 || true)
