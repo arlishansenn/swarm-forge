@@ -5,19 +5,18 @@ description: "Use when operating a running SwarmForge project from the local mac
 
 # SwarmForge Operator
 
-Operate a running SwarmForge project from the local machine. SwarmForge is
-config-driven: derive the active topology from the target project's runtime
-state instead of branching on two-pack, four-pack, six-pack, or role names.
+从本地机器操作一个运行中的 SwarmForge project。SwarmForge 是 config-driven 的:
+活动 topology 要从目标 project 的 runtime state 推导出来,不要按 two-pack、
+four-pack、six-pack 或角色名分支。
 
-**REQUIRED SUB-SKILL:** `cmux`. Load it before any cmux operation you perform
-yourself (creating a window the user asked for, drift recovery, inspecting a
-surface). The bundled `open-swarm.sh` script already follows the cmux contract
-internally; do not re-implement its mechanics.
+**REQUIRED SUB-SKILL:** `cmux`。你自己动手做任何 cmux 操作之前先加载它(用户要求
+新建 window、drift 恢复、检查某个 surface)。随包的 `open-swarm.sh` 脚本内部已经
+遵守 cmux 契约,不要重新实现它的机制。
 
 ## Runtime inputs
 
-Set the target project for every verb. The macmini values are defaults, not
-part of the topology:
+每个 verb 都要先设定目标 project。macmini 的这几个值是默认值,不是 topology 的
+一部分:
 
 ```sh
 TARGET=${TARGET:-admin@100.64.0.4}
@@ -31,97 +30,86 @@ ROLES=$("${SSH[@]}" "cat '$ROOT/.swarmforge/roles.tsv'")
 MASTER=$(printf '%s\n' "$ROLES" | awk -F '\t' '$2 == "master" {print $1}')
 ```
 
-Runtime files are the source of truth after launch:
+启动之后,runtime 文件就是唯一的事实来源:
 
-- `tmux-socket`: plain text containing the real socket path. Resolve it again
-after every `./swarm` restart.
-- `sessions.tsv`: config order, role, session, display name, agent backend.
-- `roles.tsv`: role, worktree name/path, session, display name, backend, receive
-mode. The row whose worktree name is `master` is the intake role.
+- `tmux-socket`:纯文本,内容是真实的 socket 路径。每次 `./swarm` 重启后都要重新
+解析一遍。
+- `sessions.tsv`:config 顺序、role、session、显示名、agent backend。
+- `roles.tsv`:role、worktree 名/路径、session、显示名、backend、接收模式。worktree
+名是 `master` 的那一行是 intake role。
 
-Stop if a runtime file is missing, the socket has no sessions, or there is not
-exactly one master row. A host can run several projects; only touch state under
-`ROOT` and the socket read from that project.
+runtime 文件缺失、socket 上没有 session、或者 master 行不是恰好一条,就停下。一台
+主机可以跑多个 project;只碰 `ROOT` 下面的状态,以及从那个 project 读到的 socket。
 
 ## Verb contract
 
-Every verb is a handover verb, a report verb, or an effect verb (see `CONTEXT.md`).
-The kind decides what the verb owes you when it finishes.
+每个 verb 要么是 handover verb,要么是 report verb,要么是 effect verb(见
+`CONTEXT.md`)。类型决定了它跑完时欠你什么。
 
-**Status line and exit codes.** A scripted verb prints `STATUS=<WORD>` as its first
-line. The exit codes have one meaning across all verbs:
+**状态行与退出码。** 有脚本的 verb 第一行打印 `STATUS=<WORD>`。退出码在所有 verb
+里是同一套含义:
 
-- `0` — the verb did its work.
-- `2` `USAGE` — bad arguments.
-- `3` — the target is not running. Never start it; that is a human decision.
-- `4` `DRIFT` — recorded state disagrees with real state. Ask before you repair.
-- `5` `ERROR` — the verb failed.
-- `6` `UNSAFE` — the verb refused to do destructive work because it found a
-  condition that a human must clear first. Nothing was changed.
-- `7` `STILL_RUNNING` — the verb hit a deadline the CALLER set, not a failure.
-  The work is still going; running the same command again continues it.
-  (`run issue --max-wait`.)
-- `8` `OWNED` — the managed project version-controls the paths the verb would
-  write, so who wins is a human's decision, not a default. Nothing was
-  changed. (`update SwarmForge scripts`.)
+- `0` —— verb 干完了它的活。
+- `2` `USAGE` —— 参数不对。
+- `3` —— 目标没在跑。绝不代为启动;那是人的决定。
+- `4` `DRIFT` —— 记录的状态与真实状态不一致。修复前先问。
+- `5` `ERROR` —— verb 失败了。
+- `6` `UNSAFE` —— verb 拒绝做破坏性的活,因为它发现了一个必须由人先清掉的条件。
+  什么都没改。
+- `7` `STILL_RUNNING` —— verb 撞上的是 CALLER 设的期限,不是失败。活还在干;同一条
+  命令再跑一次就接着往下走。(`run issue --max-wait`。)
+- `8` `OWNED` —— 被管 project 把这个 verb 要写的路径纳入了版本控制,所以谁赢是人的
+  决定,不能有默认答案。什么都没改。(`update SwarmForge scripts`。)
 
-**A failure says why in plain text.** After the `STATUS=` line, a failed verb prints
-one sentence that tells you what to do. There is no machine-readable reason field:
-exit codes are what a script branches on, and the sentence is for a person.
+**失败要用大白话说清原因。** `STATUS=` 行之后,失败的 verb 打印一句话告诉你该做
+什么。没有机器可读的 reason 字段:脚本要分支就看退出码,那句话是给人看的。
 
-**Success can also speak.** A verb that did its work but found something you must
-know prints one or more `WARN=<one sentence>` lines and still exits `0`. Only report
-a fact that is true for this run and can become false later. A fact that is always
-true must be fixed at its cause, not warned about: a warning that appears every time
-is a warning that nobody reads.
+**成功也可以说话。** verb 干完了活但发现了你必须知道的事,就打印一行或多行
+`WARN=<one sentence>`,退出码仍然是 `0`。只报对本次运行成立、且以后可能变成不成立的
+事实。永远成立的事实要在成因处修掉,不是拿来 warn 的:每次都出现的警告等于没人看
+的警告。
 
-**A handover verb only contracts up to the handover.** It checks what it can, then
-replaces itself with the target program. The exit code after that belongs to that
-program, not to this contract.
+**handover verb 的契约只到交接那一步为止。** 它检查它能检查的,然后把自己替换成
+目标程序。之后的退出码属于那个程序,不属于这份契约。
 
-**Not every verb has a script yet.** `onboard project`, `open swarm`, `dashboard`,
-`wake role`, `talk role`, `read swarm`, `stop swarm`, `accept work`,
-`start swarm`, `update SwarmForge scripts`, and `run issue` are scripted and
-follow this contract today. The other verbs
-are shell steps in this file; run them as written and read their raw output.
-Bringing them under the contract is tracked in the issue tracker.
+**不是每个 verb 都已经有脚本。** `onboard project`、`open swarm`、`dashboard`、
+`wake role`、`talk role`、`read swarm`、`stop swarm`、`accept work`、
+`start swarm`、`update SwarmForge scripts` 和 `run issue` 今天已经有脚本并遵守
+这份契约。其余 verb 是本文件里的 shell 步骤;照写的跑,读它们的原始输出。把它们
+纳入契约的工作记在 issue tracker 里。
 
 ## Verb: `onboard project`
 
-Install one fork pack into a managed project directory. This is the
-skill's only creative verb: it lands files and stops.
+把一个 fork pack 装进被管 project 的目录。这是本 skill 唯一的创建型 verb:落文件,
+然后停下。
 
 ```sh
 scripts/onboard-project.sh --root <project-dir> --pack <two-pack|four-pack|six-pack> [--local]
 ```
 
-Exit codes / STATUS line:
+退出码 / STATUS 行:
 
 - `0` `ONBOARDED`
-- `2` `USAGE` — missing arguments, or pack not in the whitelist (`main` is
-  upstream's documentary branch and never a pack)
-- `4` `OCCUPIED` — target already has `swarm` or `swarmforge/`; zero writes
-- `5` `ERROR` — download or extract failed; target unchanged
+- `2` `USAGE` —— 缺参数,或 pack 不在白名单里(`main` 是 upstream 的文档分支,永远
+  不是 pack)
+- `4` `OCCUPIED` —— 目标已经有 `swarm` 或 `swarmforge/`;零写入
+- `5` `ERROR` —— 下载或解压失败;目标未被改动
 
-The pack comes from `arlishansenn/swarm-forge`, and the extracted archive is
-**immutable input** (issue #38, ADR-0002). Each fork Pack branch already ships
-its final config and a launcher pointing at this fork's `main`, so there is no
-post-install patch step any more. That step is what used to destroy the
-launcher's executable mode (issue #33): not touching the file is what keeps its
-bytes and mode intact, not a more careful way of writing it back. `update
-SwarmForge scripts` keeps its own separate ARCHIVE_URL rewrite as a
-legacy-repair path for projects onboarded before this change.
+pack 来自 `arlishansenn/swarm-forge`,解出来的 archive 是**不可变输入**(issue #38、
+ADR-0002)。fork 的每条 Pack 分支已经自带最终 config 和一个指向本 fork `main` 的
+launcher,所以装完之后不再有打补丁那一步。正是那一步曾经毁掉 launcher 的可执行位
+(issue #33):保住它的字节和权限位靠的是根本不碰这个文件,而不是换一种更小心的
+写回方式。`update SwarmForge scripts` 保留了它自己那份独立的 ARCHIVE_URL 改写,作为
+给这次改动之前 onboard 的 project 用的历史修复路径。
 
-### The `.gitignore` block, and the two files the archive may not clobber
+### `.gitignore` 块,以及 archive 不许覆盖的两个文件
 
-Everything this verb installs arrives **untracked** in the managed project.
-`stop swarm`'s preflight cannot tell "SwarmForge installed this" from "you
-forgot to commit this", so it reported `DIRTY` on every single run and
-`--force` became the only way to stop anything — seen live on podsum: 7
-untracked paths at the root plus 2 in each role worktree, forever. A gate that
-fires every time is a gate nobody reads. **The verb that installs the files
-owns making them quiet** (issue #87), so it appends one block to
-`$ROOT/.gitignore`:
+这个 verb 装进被管 project 的所有东西都是**未跟踪**的。`stop swarm` 的 preflight
+分不清「这是 SwarmForge 装的」和「这是你忘了提交的」,于是它每一次运行都报 `DIRTY`,
+`--force` 成了停任何东西的唯一办法 —— podsum 上实测:根目录 7 个未跟踪路径,外加
+每个角色 worktree 里 2 个,永远如此。每次都触发的闸门等于没人看的闸门。**装文件的
+那个 verb 有责任让它们安静下来**(issue #87),所以它往 `$ROOT/.gitignore` 追加
+一个块:
 
 ```
 # >>> SwarmForge installed files >>>
@@ -136,98 +124,82 @@ owns making them quiet** (issue #87), so it appends one block to
 # <<< SwarmForge installed files <<<
 ```
 
-The entries are **derived from the archive that was just installed**, never
-hardcoded — the artifact is the only thing that knows what it put there, and a
-hand-kept list drifts the first time a Pack branch gains a top-level file.
-`.gitignore` and `README.md` are excluded because they belong to the managed
-project; `.swarmforge/` and `.worktrees/` are added because the swarm creates
-them later, at run time.
+这些条目是**从刚装进去的那份 archive 推导出来的**,绝不硬编码 —— 只有 artifact
+自己知道它放了什么进去,手工维护的清单在某条 Pack 分支新增一个顶层文件的那一刻就
+会漂移。`.gitignore` 和 `README.md` 被排除在外,因为它们属于被管 project;
+`.swarmforge/` 和 `.worktrees/` 被加进去,因为 swarm 会在之后运行时创建它们。
 
-The block is appended, never substituted, and the opening marker is the whole
-idempotence test: a second install, or a human who has since trimmed the
-entries, gets no duplicate block and no re-added lines.
+这个块是追加,绝不替换,而起始标记本身就是完整的幂等判据:装第二次,或者有人事后
+删掉了其中几条,都不会得到重复的块,也不会把删掉的行加回来。
 
-`.gitignore` is the only project-owned file this verb writes. It will show up
-in `git status` once, until a human commits it — that is a self-clearing
-condition, which is exactly what the DIRTY gate is for, unlike the permanent
-one it replaces.
+`.gitignore` 是这个 verb 唯一会写的、属于 project 的文件。它会在 `git status` 里
+出现一次,直到有人提交它为止 —— 这是一个会自行消失的状态,正是 DIRTY 闸门存在的
+意义,不像它取代的那个永久状态。
 
-**The archive also ships its own `.gitignore` and `README.md`**, and `tar`
-would write them straight over the project's. Both are saved before extraction
-and put back after. Same rule as the launcher in issue #33, pointed the other
-way: there, not touching the archive's file is what preserved it; here, not
-letting the archive touch the project's file is.
+**archive 自己也带 `.gitignore` 和 `README.md`**,`tar` 会直接盖掉 project 的那两个。
+这两个文件在解压前被保存、解压后被放回。跟 issue #33 里那个 launcher 是同一条规则,
+只是方向相反:那边是不碰 archive 的文件才保住了它;这边是不让 archive 碰 project
+的文件。
 
-### Already-onboarded projects
+### 已经 onboard 过的 project
 
-The block only lands on projects onboarded from this change onward. For a
-project that already has SwarmForge installed, paste the same block into its
-`.gitignore` by hand once, then commit it. Read the actual entries off the
-project rather than copying the example above — a different Pack ships a
-different top-level set:
+这个块只落在从这次改动之后 onboard 的 project 上。对于已经装了 SwarmForge 的
+project,手工把同样的块粘进它的 `.gitignore` 一次,然后提交。条目要从那个 project
+上实际读出来,不要照抄上面的例子 —— 不同的 Pack 顶层文件集合不一样:
 
 ```sh
 ssh -n -i <key> <target> "cd <root> && git status --porcelain | awk '\$1==\"??\"{print \"/\" \$2}'"
 ```
 
-**Boundary:** do not run `./swarm` for the user after onboarding. The three
-hard prohibitions stand unchanged: never start, never clean up, never decide
-the start time for the user. Beyond the `.gitignore` block above, the script
-never touches the target project's git state — `git init` is the swarm
-launcher's own first-run behavior, and this verb still never runs git.
+**边界:** onboard 完不要替用户跑 `./swarm`。三条硬禁令原样不变:绝不启动、绝不
+清理、绝不替用户决定启动时机。除了上面那个 `.gitignore` 块之外,脚本从不碰目标
+project 的 git 状态 —— `git init` 是 swarm launcher 自己首次运行的行为,这个 verb
+仍然从不跑 git。
 
 ## Verb: `open swarm`
 
-Run the bundled script from this skill's directory; it owns all cmux mechanics
-(settle, output parsing, workspace reuse, attach verification):
+从本 skill 的目录跑随包的脚本;所有 cmux 机制都归它管(settle、输出解析、workspace
+复用、attach 验证):
 
 ```sh
 scripts/open-swarm.sh --root <project-root> [--window <ref>] \
   [--target user@host] [--key <path>] [--local]
 ```
 
-It reads the runtime files, gates on a live tmux socket, pairs adjacent
-sessions from `sessions.tsv` into `<Display 1> + <Display 2>` workspaces (an
-odd tail becomes a single-pane workspace), reuses an existing workspace set
-matched by description `swarmforge:<basename>@<host>`, re-sends attach to
-stale surfaces once, then verifies every surface shows its session.
+它读 runtime 文件,以 tmux socket 活着为前置闸门,把 `sessions.tsv` 里相邻的
+session 两两配成 `<Display 1> + <Display 2>` 的 workspace(落单的尾巴变成单 pane 的
+workspace),复用按描述 `swarmforge:<basename>@<host>` 匹配到的既有 workspace 集合,
+对失效的 surface 重发一次 attach,最后逐个验证每个 surface 都显示着自己的 session。
 
-Read the result from its output and exit code:
+从它的输出和退出码读结果:
 
-- `0` `STATUS=OPENED|REUSED` — report `WORKSPACES`, `ATTACHED`, `REPAIRED`,
-  `MASTER_DISPLAY`/`MASTER_WS` to the user. The script leaves the user's
-  focus untouched; name where the master lives instead of focusing it.
-- `3` `STOPPED` — the swarm is not running. Report the reason and stop. When
-  the message names the window watchdog, a human must fix the terminal
-  backend before restarting — relaunching as-is repeats the same kill.
-- `4` `DRIFT` — cmux state disagrees with runtime files (half-finished run or
-  changed topology). Ask the user before closing or re-creating anything.
-- `5` `ERROR` — show the message; check cmux state before retrying. Never
-  "probe" by re-running a create that may have succeeded.
+- `0` `STATUS=OPENED|REUSED` —— 把 `WORKSPACES`、`ATTACHED`、`REPAIRED`、
+  `MASTER_DISPLAY`/`MASTER_WS` 报给用户。脚本不动用户的焦点;说清 master 在哪,
+  而不是把焦点切过去。
+- `3` `STOPPED` —— swarm 没在跑。报出原因然后停下。当消息点名 window watchdog 时,
+  必须由人先修好 terminal backend 再重启 —— 原样重启只会重现同一次击杀。
+- `4` `DRIFT` —— cmux 状态与 runtime 文件不一致(跑了一半,或 topology 变了)。关闭
+  或重建任何东西之前先问用户。
+- `5` `ERROR` —— 把消息显示出来;重试前先检查 cmux 状态。绝不用「再跑一次可能已经
+  成功的 create」去试探。
 
-Hard rules for this verb:
+这个 verb 的硬规则:
 
-- **Never start a stopped swarm.** No `./swarm`, no restart, no matter how
-  likely the user "meant" it. Starting is a human decision; `open` only
-  connects to what already runs.
-- **No macOS window by default.** The script targets the caller's current
-  window. Only when the user explicitly asks for a new window, create it
-  yourself per the cmux skill and pass `--window <ref>`.
-- **No destructive cleanup without explicit user approval** — the script
-  closes nothing, and neither should you.
+- **绝不启动一个停着的 swarm。** 不跑 `./swarm`,不重启,无论用户看起来多像是那个
+  意思。启动是人的决定;`open` 只连接已经在跑的东西。
+- **默认不开 macOS window。** 脚本作用在调用者当前的 window 上。只有用户明确要求
+  新开 window 时,才按 cmux skill 自己创建,并传 `--window <ref>`。
+- **没有用户明确批准就不做破坏性清理** —— 脚本什么都不关,你也不要关。
 
 ## Verb: `start swarm`
 
-Run the bundled script; it starts a stopped swarm the deliberate way (issue
-#26), the counterpart to `open swarm` refusing to do it automatically
-(issue #10). Today's only alternative is a manual `ssh` + `nohup ./swarm &`,
-and the exact detail that manual path leaves to memory — the terminal
-backend `./swarm` will otherwise auto-detect — is the root cause of the #10
-incident: launched from a real terminal-less ssh session, `osascript`
-existing was enough for `detect-terminal-backend` to pick `terminal-app`
-with no real window behind it, and the window watchdog tore the whole swarm
-down within seconds once it couldn't find that window. That failure mode
-has reproduced twice under manual operation.
+跑随包的脚本;它用「刻意」的方式启动一个停着的 swarm(issue #26),与 `open swarm`
+拒绝自动启动(issue #10)是一体两面。今天唯一的替代路径是手工 `ssh` 加
+`nohup ./swarm &`,而手工路径留给记忆的那个细节 —— 不指定的话 `./swarm` 会自动
+探测的 terminal backend —— 正是 #10 那次事故的根因:从一个没有真实终端的 ssh 会话
+里启动,`osascript` 存在这一点就足以让 `detect-terminal-backend` 选中
+`terminal-app`,而背后根本没有真实 window,于是 window watchdog 找不到那个 window,
+几秒之内就把整个 swarm 拆了。这种失效模式在手工操作下已经复现过两次。
 
 ```sh
 scripts/start-swarm.sh --root <project-root> --terminal <value> \
@@ -235,143 +207,112 @@ scripts/start-swarm.sh --root <project-root> --terminal <value> \
   [--dashboard-port <N>]
 ```
 
-`--terminal` is **required**, not an optional env passthrough — unlike
-`stop swarm`'s `--force`, which waives a state check a human can knowingly
-override, `--terminal` is a required choice like `--root` itself: this is
-exactly the choice the #10/#26 incident shows must never be silently
-skipped. Accepted values are `ghostty`, `iterm2`, `none`, `terminal-app`,
-`windows-terminal` (the same canonical backends `SWARMFORGE_TERMINAL`
-accepts — one per file in `swarmforge/scripts/terminal-adapters/*.sh`) plus
-`auto`: "I know automatic detection exists and I am explicitly choosing it."
-`auto` is never forwarded to `SWARMFORGE_TERMINAL` literally — the script
-simply does not export that variable at all when `auto` is chosen, letting
-`detect-terminal-backend`'s own fallback chain run exactly as it does today.
-Any other value is `2` `USAGE`, same as a missing `--root`.
+`--terminal` 是**必传的**,不是可选的环境变量透传 —— 跟 `stop swarm` 的 `--force`
+不同,那个是人在知情的前提下豁免一次状态检查;`--terminal` 是跟 `--root` 一样的
+必选项:#10/#26 那次事故说明的正是这个选择永远不能被悄悄跳过。可接受的值是
+`ghostty`、`iterm2`、`none`、`terminal-app`、`windows-terminal`(与
+`SWARMFORGE_TERMINAL` 接受的规范 backend 同一套 ——
+`swarmforge/scripts/terminal-adapters/*.sh` 下一个文件一个),外加 `auto`:「我知道有自动探测这回事,
+我明确选择用它。」`auto` 永远不会被原样转发给 `SWARMFORGE_TERMINAL` —— 选了 `auto`
+时脚本干脆完全不导出那个变量,让 `detect-terminal-backend` 自己的 fallback 链原封
+不动地跑。其它任何值都是 `2` `USAGE`,跟缺 `--root` 一样。
 
-**A project that owns its own snapshot is not drift-checked** (issue #88).
-The three states this verb told apart — FRESH, MANAGED, INCOMPLETE — all
-assume the operator installed `swarmforge/scripts`, so the manifest describes
-it. When the managed project version-controls that tree itself, there is
-nothing for the manifest to be right about: rolling back to the project's own
-committed version made every launch report `4` `DRIFT`, and `--force` became
-the routine way to start it. The state is derived from `git ls-files`, the
-same predicate `update SwarmForge scripts` refuses on, so the two verbs cannot
-disagree about who owns the tree. The report says which world it was in:
-`SNAPSHOT=project-owned` or `SNAPSHOT=operator-managed`.
+**自己拥有 snapshot 的 project 不做 drift 检查**(issue #88)。这个 verb 原本区分的
+三种状态 —— FRESH、MANAGED、INCOMPLETE —— 都假设 `swarmforge/scripts` 是 operator
+装的,所以 manifest 描述的就是它。当被管 project 自己把那棵树纳入版本控制时,
+manifest 就没有什么可「说对」的了:回滚到 project 自己提交的版本会让每一次启动都
+报 `4` `DRIFT`,`--force` 于是成了启动的常规做法。状态改由 `git ls-files` 推导,
+与 `update SwarmForge scripts` 拒绝时用的是同一个判据,所以两个 verb 不可能对
+「这棵树归谁」产生分歧。报文会说明它处在哪个世界:`SNAPSHOT=project-owned` 或
+`SNAPSHOT=operator-managed`。
 
-`--dashboard-port <N>` (issue #78) is forwarded as `SWARMFORGE_DASHBOARD_PORT`,
-which `pack_web` binds instead of asking the kernel for a random one. Omit it
-and nothing is exported — `pack_web` keeps the random port it has always
-picked, byte for byte. A fixed port is what `dashboard --tailnet` needs: a
-random one cannot be published on a tailnet, because there is no stable URL
-to publish. Only the shape is validated (digits, `2` `USAGE` otherwise);
-which ports a host hands out is that host's own convention, not something
-SwarmForge has an opinion about. `--terminal` and `--dashboard-port`
-accumulate into one `env` prefix, so both reach the launcher together.
+`--dashboard-port <N>`(issue #78)会被转发成 `SWARMFORGE_DASHBOARD_PORT`,
+`pack_web` 于是绑这个端口,而不是向内核要一个随机的。不传就什么都不导出 ——
+`pack_web` 一字不变地保持它一直以来随机挑的端口。`dashboard --tailnet` 需要的正是
+固定端口:随机端口没法发布到 tailnet 上,因为根本没有稳定的 URL 可发布。只校验形状
+(是数字,否则 `2` `USAGE`);一台主机怎么分配端口是那台主机自己的约定,SwarmForge
+对此没有意见。`--terminal` 与 `--dashboard-port` 累积进同一个 `env` 前缀,所以两者
+一起到达 launcher。
 
-Before touching anything, it checks whether the swarm is already running —
-the same socket-liveness read `stop-swarm.sh`/`open-swarm.sh` use, inverted:
-a socket that answers means starting again would spin up a second daemon
-and a colliding second tmux session, so it refuses. A stale `tmux-socket`
-file with no live server behind it (the watchdog-kill aftermath `open
-swarm` already knows how to name) is the stopped state this verb exists to
-recover from, not "already running" — it proceeds to launch.
+动手之前,它先检查 swarm 是不是已经在跑 —— 与 `stop-swarm.sh`/`open-swarm.sh` 用的
+是同一次 socket 探活读取,只是判断反过来:socket 有应答就意味着再启动一次会拉起
+第二个 daemon 和一个撞名的第二个 tmux session,所以它拒绝。一个背后没有活 server
+的陈旧 `tmux-socket` 文件(`open swarm` 已经会点名的那种 watchdog 击杀残留)才是
+这个 verb 存在意义上要恢复的「停机」状态,不是「已在跑」—— 它会继续启动。
 
-Next, it acquires a project-scoped lock (issue #29) at
-`$ROOT/.swarmforge/update-lock`, excluding a concurrent `update SwarmForge
-scripts` on the same managed project — a lock already held by that verb is
-`6` `UNSAFE`, naming the holder. Then, unless `--force` is given, it
-recomputes a deterministic digest of the managed project's installed
-`swarmforge/scripts/` and compares it against `$ROOT/.swarmforge/
-scripts-manifest`. Which of the two identity artifacts exist decides what
-happens (issue #35):
+接着,它取一把 project 范围的锁(issue #29),位置在
+`$ROOT/.swarmforge/update-lock`,用来排斥同一个被管 project 上并发的
+`update SwarmForge scripts` —— 锁已经被那个 verb 持有就是 `6` `UNSAFE`,并点名持有
+者。然后,除非传了 `--force`,它会重算被管 project 已装的 `swarmforge/scripts/` 的
+确定性 digest,与 `$ROOT/.swarmforge/scripts-manifest` 比对。两个身份 artifact 中
+哪些存在,决定接下来发生什么(issue #35):
 
-- **Fresh** — snapshot and manifest both absent. This is a project that was
-  onboarded and left stopped, and the Pack's own launcher owns first-run
-  bootstrap, so `start swarm` hands off to it rather than refusing. Fresh does
-  not mean "ignore a mismatch": it is the single exact state where both are
-  absent.
-- **Managed** — both present. The digest is verified before launch, and so
-  before any role-worktree mirroring can propagate the top-level tree. Issue
-  #29's per-role fidelity check only proves a role's copy matches its source,
-  so a corrupt top-level tree has to be caught here or not at all.
-- **Incomplete** — exactly one present. A torn install; `4` `DRIFT`, never a
-  guess about which side is right.
+- **Fresh** —— snapshot 和 manifest 都不存在。这是一个 onboard 完就停在那里的
+  project,首次运行的 bootstrap 归 Pack 自己的 launcher 管,所以 `start swarm` 交接
+  给它,而不是拒绝。Fresh 不等于「忽略不一致」:它就是「两者都不存在」这一个精确
+  状态。
+- **Managed** —— 两者都在。digest 在启动前验证,因此也在任何角色 worktree 镜像有
+  机会传播顶层树之前。issue #29 的逐角色保真检查只能证明某个角色的副本与它的来源
+  一致,所以一棵损坏的顶层树要么在这里被抓住,要么根本抓不住。
+- **Incomplete** —— 恰好只有一个在。装到一半;`4` `DRIFT`,绝不猜哪边是对的。
 
-A digest mismatch is likewise `4` `DRIFT`, and the launcher is never invoked —
-this is exactly the failure mode that let a running swarm reach handoff with
-scripts its own launcher didn't recognize as required. `--force` overrides both
-the lock contention and the drift check (never the already-running check above,
-which has no override): it steals a held lock and skips the digest comparison
-entirely. The lock is held through the rest of this script, including launch
-and the readiness poll, and is released on every exit path — **except one**: a
-readiness timeout on the fresh-bootstrap path leaves it deliberately held. The
-readiness budget is sized for launching an already-installed snapshot, while a
-first run also downloads one, which is unbounded; timing out there does not
-prove the launcher stopped, and releasing would let a retry or a concurrent
-`update SwarmForge scripts` become a second writer against an install still in
-progress. Clearing it is then an explicit `--force`.
+digest 不匹配同样是 `4` `DRIFT`,而且绝不调用 launcher —— 正是这种失效模式让一个
+跑起来的 swarm 带着自家 launcher 不认识的必需脚本走到了 handoff。`--force` 同时
+越过锁竞争和 drift 检查(但越不过上面那条「已在跑」,那条没有 override):它抢走
+被持有的锁,并完全跳过 digest 比对。这把锁在脚本余下的部分里一直持有,包括启动和
+就绪轮询,并在每一条退出路径上释放 —— **只有一个例外**:fresh-bootstrap 路径上的
+就绪超时会刻意继续持有它。就绪预算是按「启动一份已装好的 snapshot」估的,而首次
+运行还要下载一份,那是无界的;在那里超时并不能证明 launcher 停了,而释放锁会让一次
+重试或一个并发的 `update SwarmForge scripts` 变成针对一份仍在进行中的安装的第二个
+写者。之后要清掉它,就得显式地用 `--force`。
 
-The launch itself runs detached, local or remote: `SWARMFORGE_TERMINAL=
-<value> nohup ./swarm >log 2>&1 &` (or without the env var, for `auto`),
-never a bare foreground `./swarm` — a bare launch is exactly what does not
-survive the ssh session (or local shell) that started it closing, which is
-the other half of how the #10 incident happened. It then polls the same
-runtime files every other verb trusts (`tmux-socket`, then `tmux -S "$SOCK"
-list-sessions`) until they confirm the swarm actually came up, rather than
-reporting success just because the launch command was issued.
+启动本身是脱离终端跑的,本地远端都一样:`SWARMFORGE_TERMINAL=<value> nohup ./swarm
+>log 2>&1 &`(选 `auto` 时不带那个环境变量),绝不是裸的前台 `./swarm` —— 裸启动
+恰恰活不过启动它的那个 ssh 会话(或本地 shell)关闭,而这是 #10 事故成因的另一半。
+然后它轮询其它每个 verb 都信任的那些 runtime 文件(先 `tmux-socket`,再
+`tmux -S "$SOCK" list-sessions`),直到它们确认 swarm 真的起来了,而不是因为启动
+命令发出去了就报成功。
 
-Exit codes / STATUS line:
+退出码 / STATUS 行:
 
-- `0` `STARTED` — the swarm came up; `SOCK`/`TERMINAL` are reported.
-- `2` `USAGE` — missing `--root`, missing `--terminal`, `--terminal` not one
-  of the accepted values, or a non-numeric `--dashboard-port`. Nothing is
-  attempted.
-- `4` `DRIFT` — installed `swarmforge/scripts/` do not match
-  `$ROOT/.swarmforge/scripts-manifest`, or it's missing (issue #29). The
-  launcher is never invoked; re-run `update SwarmForge scripts` first, or
-  pass `--force` to launch anyway.
-- `5` `ERROR` — the runtime files never confirmed readiness within budget.
-  This covers both `./swarm` exiting non-zero and it simply never becoming
-  ready: the launch is intentionally detached (see above), so this script
-  never inspects the launcher's own exit code, only the runtime files it
-  should eventually produce — check the launch log named in the message.
-- `6` `UNSAFE` — the swarm is already running; refuses to start a second
-  daemon. Nothing was changed. This also now covers the project lock being
-  held by a concurrent `update SwarmForge scripts` (issue #29), naming the
-  holder — unlike the already-running case, `--force` clears a held lock.
+- `0` `STARTED` —— swarm 起来了;报出 `SOCK`/`TERMINAL`。
+- `2` `USAGE` —— 缺 `--root`、缺 `--terminal`、`--terminal` 不在可接受值里,或者
+  `--dashboard-port` 不是数字。什么都不会尝试。
+- `4` `DRIFT` —— 已装的 `swarmforge/scripts/` 与 `$ROOT/.swarmforge/
+  scripts-manifest` 不匹配,或者后者缺失(issue #29)。launcher 绝不会被调用;先重跑
+  `update SwarmForge scripts`,或者传 `--force` 强行启动。
+- `5` `ERROR` —— runtime 文件在预算内始终没有确认就绪。这同时覆盖 `./swarm` 非零
+  退出和它单纯没能就绪两种情况:启动是刻意脱离终端的(见上),所以这个脚本从不检查
+  launcher 自己的退出码,只看它最终应该产出的 runtime 文件 —— 去看消息里点名的那份
+  启动日志。
+- `6` `UNSAFE` —— swarm 已经在跑;拒绝启动第二个 daemon。什么都没改。现在这条也覆盖
+  project 锁被并发的 `update SwarmForge scripts` 持有的情况(issue #29),并点名持有
+  者 —— 与「已在跑」不同,`--force` 能清掉被持有的锁。
 
-**Boundary:** this verb only covers "from zero to one." Whether to `--force`
-a restart over an already-running swarm, or wait out one that is still
-tearing down, are `stop swarm`'s and `open swarm`'s territory, not this
-one's. It also does not fix the window watchdog's own empty-window-ID
-misjudgment (a launcher/watchdog-side defect) — it only keeps an operator
-from accidentally walking into it via this verb. The lock and drift
-preflight added by issue #29 guard entry into that same "zero to one" step;
-they do not extend what this verb otherwise does. Once the launcher itself
-takes over, it independently mirrors — deletes and recreates, not overlays —
-and verifies each role worktree's `swarmforge/scripts/` against the
-installed source before that role starts, so a stale per-role copy can't
-outlive this verb's own project-level check.
+**边界:** 这个 verb 只管「从零到一」。要不要 `--force` 覆盖一个已经在跑的 swarm 去
+重启、还是等一个正在拆除的跑完,是 `stop swarm` 和 `open swarm` 的地盘,不是它的。
+它也不修 window watchdog 自己那个空 window-ID 的误判(那是 launcher/watchdog 侧的
+缺陷)—— 它只是让 operator 不至于经由这个 verb 意外撞上去。issue #29 加的锁与 drift
+preflight 守的是进入同一个「从零到一」步骤的入口;它们没有扩大这个 verb 本来做的事。
+一旦 launcher 自己接手,它会独立地做镜像(删掉重建,不是覆盖写),并在每个角色启动
+前校验该角色的 `swarmforge/scripts/` 与已装的来源一致,所以一份陈旧的逐角色副本不
+可能比这个 verb 自己的 project 级检查活得更久。
 
 ## Verb: `update SwarmForge scripts`
 
-### When the project owns its own `swarmforge/` (issue #88)
+### 当 project 自己拥有 `swarmforge/` 时(issue #88)
 
-Some managed projects **commit** `swarm` and `swarmforge/` instead of letting
-this verb install them. pi-governance does, with its own constitution
-articles. Installing over that is not an update, it is a takeover — and it
-used to happen in silence: one run rewrote 31 tracked files, added 5, and
-rewrote `swarm`'s `ARCHIVE_URL`, in **six** places (the root plus five role
-worktrees, which `sync-worktree-scripts!` mirrors into at the next launch).
-The verb reported `UPDATED` and exited `0`. `start swarm` then compared the
-installed tree with the manifest and found them in agreement, because by then
-both described the fork's version. The root branch was a PR head, so one
-`git add -A` from a role would have committed 38 SwarmForge files into an
-unrelated PR.
+有些被管 project 把 `swarm` 和 `swarmforge/` **提交进了版本库**,而不是让这个 verb
+去装。pi-governance 就是这样,还带着它自己的 constitution articles。装到那上面不是
+update,是接管 —— 而且它过去是悄无声息发生的:一次运行重写了 31 个被跟踪文件、
+新增 5 个,并在**六个**位置重写了 `swarm` 的 `ARCHIVE_URL`(根目录加五个角色
+worktree,`sync-worktree-scripts!` 会在下次启动时镜像进去)。verb 报了 `UPDATED`
+并以 `0` 退出。`start swarm` 随后把已装的树和 manifest 一比,发现两者一致,因为那时
+两边描述的都已经是 fork 的版本。根目录那个分支是某个 PR 的 head,所以任何一个角色
+的一次 `git add -A` 都会把 38 个 SwarmForge 文件提交进一个毫不相干的 PR。
 
-The verb now asks `git ls-files` first and refuses with `8` `OWNED`, listing
-every checkout that would be written:
+这个 verb 现在先问 `git ls-files`,并以 `8` `OWNED` 拒绝,列出每一处会被写的
+checkout:
 
 ```
 STATUS=OWNED
@@ -381,128 +322,107 @@ OWNS=/home/msb/project/pi-governance/.worktrees/coder (31 tracked files under sw
 ...
 ```
 
-`--overwrite-tracked` is the deliberate "this fork's version wins here". It is
-a separate flag from `--force` on purpose: `--force` is about a stale lock,
-and one flag meaning "ignore whatever is in the way" is a flag nobody reads.
+`--overwrite-tracked` 才是那句刻意的「这里由本 fork 的版本说了算」。它跟 `--force`
+分成两个 flag 是有意为之:`--force` 管的是陈旧的锁,而一个意思是「挡路的东西一概
+忽略」的 flag 是没人会看的 flag。
 
-A successful run also reports `WROTE=` (the one tree it changed) and
-`MIRRORS=` (how many role worktrees receive it at the next `start swarm` —
-not now).
+成功的运行还会报 `WROTE=`(它实际改动的那一棵树)和 `MIRRORS=`(有几个角色 worktree
+会在下一次 `start swarm` 时收到它 —— 不是现在)。
 
-Run the bundled script; it installs THIS repo's own `swarmforge/scripts/`
-into a managed project's `swarmforge/scripts/`, the counterpart to `start
-swarm`'s drift check (issue #29): a project onboarded from an upstream pack
-(whose scripts came from wherever that pack's `./swarm` first-run
-`ARCHIVE_URL` pointed) can drift onto scripts this fork's own launcher
-doesn't recognize as required — exactly podsum's real incident, a legacy
-`./swarm` whose `ARCHIVE_URL` line was never repointed and a
-`swarmforge/scripts/` tree missing files the current launcher expects. This
-verb is the WRITER for the identity manifest `start swarm`'s preflight
-reads; the two never disagree about what "this project's scripts came from
-here" means, because one writes the format the other reads, byte for byte.
+跑随包的脚本;它把**本仓库自己的** `swarmforge/scripts/` 装进被管 project 的
+`swarmforge/scripts/`,与 `start swarm` 的 drift 检查是一体两面(issue #29):一个
+从 upstream pack onboard 出来的 project(它的脚本来自那个 pack 的 `./swarm` 首次
+运行时 `ARCHIVE_URL` 指向的任何地方)可能漂移到本 fork 自己的 launcher 不认作必需
+的一组脚本上 —— 正是 podsum 那次真实事故:一个 `ARCHIVE_URL` 那行从没被重新指向过
+的历史 `./swarm`,加上一棵缺了当前 launcher 期望的文件的 `swarmforge/scripts/` 树。
+这个 verb 是 `start swarm` preflight 所读的那份身份 manifest 的写者;两者永远不会
+对「这个 project 的脚本是从哪来的」产生分歧,因为一个写的格式就是另一个读的格式,
+逐字节相同。
 
 ```sh
 scripts/update-swarmforge-scripts.sh --root <project-root> \
   [--target user@host] [--key <path>] [--local] [--force]
 ```
 
-It stages the operator's own source checkout into a fresh temp copy
-first, validates that STAGED copy against the same required-helpers and
-terminal-adapters lists `swarmforge.bb`'s own `check-helper-scripts!`
-enforces, and only then replaces the managed project's scripts tree,
-manifest, and (if present) legacy `./swarm` launcher — all three
-atomically, with rollback on any failure from the swap onward. Nothing at
-`$ROOT` is touched until staging and validation both pass.
+它先把 operator 自己的 source checkout 落地到一份全新的临时副本里,拿这份 STAGED
+副本去过 `swarmforge.bb` 自己的 `check-helper-scripts!` 所强制的同一份
+required-helpers 与 terminal-adapters 清单,通过之后才替换被管 project 的脚本树、
+manifest 以及(若存在)历史的 `./swarm` launcher —— 三者原子替换,从换入那一步起
+任何一步失败就整体回滚。staging 与校验双双通过之前,`$ROOT` 下不会被碰一下。
 
-Preflight order deliberately mirrors `start swarm`'s (issue #29): 1)
-refuse if the swarm is already running, no override, zero side effects, the
-project lock never touched; 2) acquire the same project-scoped lock
-`start swarm` uses, excluding a concurrent launch — `--force` steals a
-held lock; 3) everything else runs with the lock held. The source checkout
-this verb installs FROM is always resolved from where the operator script
-itself lives, on the operator's own machine, regardless of whether `$ROOT`
-is local or remote — a dirty (uncommitted) source checkout under
-`swarmforge/scripts/` is refused with **no override, ever**: unlike the
-lock, `--force` has no effect on this check, because an uncommitted source
-checkout is never safe to ship. `--force` here does exactly one thing —
-steal a held lock — and nothing more.
+preflight 的顺序刻意与 `start swarm` 一致(issue #29):1)swarm 已经在跑就拒绝,
+没有 override,零副作用,project 锁碰都不碰;2)取 `start swarm` 用的那把同一个
+project 范围的锁,排斥并发的启动 —— `--force` 抢走被持有的锁;3)其余一切都在持锁
+状态下进行。这个 verb 安装的来源 checkout,永远是从 operator 脚本自己所在的位置
+解析出来的,在 operator 自己的机器上,与 `$ROOT` 是本地还是远端无关 —— 如果
+`swarmforge/scripts/` 下的来源 checkout 是脏的(有未提交改动),就拒绝,而且**永远
+没有 override**:与锁不同,`--force` 对这项检查毫无作用,因为一份未提交的来源
+checkout 永远不安全到可以发出去。`--force` 在这里只干一件事 —— 抢走被持有的锁 ——
+再无其它。
 
-Exit codes / STATUS line:
+退出码 / STATUS 行:
 
-- `0` `UPDATED` — the scripts tree, manifest, and legacy launcher (if
-  present) were replaced; `ROOT`/`DIGEST`/`SOURCE_COMMIT` are reported.
-- `2` `USAGE` — missing `--root`.
-- `5` `ERROR` — the source checkout is dirty under `swarmforge/scripts/`
-  (no override); the staged copy is missing a required helper or terminal
-  adapter (names the file, `$ROOT` untouched); the manifest write failed
-  (rolled back to the previous scripts tree); or a legacy `$ROOT/swarm`
-  launcher's `ARCHIVE_URL` line didn't match the expected pattern after
-  rewrite (names `$ROOT/swarm`, rolls back the scripts swap and manifest
-  write too — the whole point of this verb existing).
-- `6` `UNSAFE` — the swarm is already running (no override), or the
-  project lock is held by a concurrent `start swarm` (names the holder;
-  `--force` steals it).
+- `0` `UPDATED` —— 脚本树、manifest 与历史 launcher(若存在)都已替换;报出
+  `ROOT`/`DIGEST`/`SOURCE_COMMIT`。
+- `2` `USAGE` —— 缺 `--root`。
+- `5` `ERROR` —— 来源 checkout 在 `swarmforge/scripts/` 下是脏的(无 override);
+  staged 副本缺一个必需 helper 或 terminal adapter(点名那个文件,`$ROOT` 未被碰);
+  manifest 写入失败(已回滚到之前的脚本树);或者历史 `$ROOT/swarm` launcher 的
+  `ARCHIVE_URL` 那行改写后不符合预期模式(点名 `$ROOT/swarm`,连脚本换入和 manifest
+  写入一起回滚 —— 这正是这个 verb 存在的全部意义)。
+- `6` `UNSAFE` —— swarm 已经在跑(无 override),或者 project 锁被并发的
+  `start swarm` 持有(点名持有者;`--force` 抢走它)。
 
-**Boundary:** this verb only ever installs the operator's own current
-source checkout; it never fetches, never targets a different commit or
-branch, and never starts or stops anything. A managed project with no
-`$ROOT/swarm` file at all is not an error — the launcher-rewrite step is
-simply skipped, since not every managed project necessarily has that
-legacy file. It also never repairs a running swarm's already-loaded
-process state: a `DRIFT` reported by `start swarm` means "update, then
-start" — this verb is the "update" half, never the "start" half.
+**边界:** 这个 verb 永远只安装 operator 自己当前的 source checkout;它从不 fetch,
+从不指向别的 commit 或分支,也从不启动或停止任何东西。被管 project 根本没有
+`$ROOT/swarm` 文件不算错误 —— launcher 改写那一步直接跳过,毕竟不是每个被管
+project 都一定有那个历史文件。它也从不修复一个运行中 swarm 已经加载进内存的进程
+状态:`start swarm` 报的 `DRIFT` 意思是「先 update,再 start」—— 这个 verb 是
+「update」那一半,永远不是「start」那一半。
 
 ## Verb: `dashboard`
 
-Run the bundled script; it opens the pack_web dashboard page as a cmux
-browser workspace:
+跑随包的脚本;它把 pack_web 的 dashboard 页面开成一个 cmux browser workspace:
 
 ```sh
 scripts/open-dashboard.sh --root "$ROOT" [--window <ref>] \
   [--target admin@host] [--key ~/.ssh/key] [--local] [--tailnet]
 ```
 
-It asks four questions in this order, and stops at the first `no` (issue #100):
-**is the swarm running** (read `tmux-socket`, probe `list-sessions` — the same
-judgment `open`/`start`/`stop`/`read swarm`, `wake`/`talk role` and `update
-SwarmForge scripts` all use), **is there a dashboard-url**, **is that port owned
-by this project's own `pack_web`**, and only then **can I reach it** (tunnel or
-tailnet). Then it opens or reuses one workspace named `Dashboard · <basename>`
-with a browser surface on the resulting URL.
+它按这个顺序问四个问题,在第一个 `no` 处停下(issue #100):**swarm 在跑吗**
+(读 `tmux-socket`,探 `list-sessions` —— 与 `open`/`start`/`stop`/`read swarm`、
+`wake`/`talk role` 和 `update SwarmForge scripts` 用的是同一个判断)、**有
+dashboard-url 吗**、**那个端口是不是本 project 自己的 `pack_web` 占的**,通过之后才
+问**我够得着它吗**(隧道或 tailnet)。然后它按得到的 URL 打开或复用一个叫
+`Dashboard · <basename>` 的 workspace,里面有一个 browser surface。
 
-**A reused surface is checked, not assumed** (issue #99). Existing is not the
-same as correct: the surface picker matches on type and never looked at the url,
-and the reuse path only repaired a *missing* surface — so the report printed this
-run's URL while the screen stayed on the previous, dead port. That is the normal
-case, not a rare one: `pack_web` binds a fresh port on every start unless the
-project passes `--dashboard-port`, so after one restart the reused surface is
-always stale. The verb now reads where the surface actually points
-(`cmux browser --surface <ref> get-url`) and navigates it when that is not this
-run's URL; when it already matches, no cmux mutation is made at all. `URL=` in
-the report is the address the surface points at, or the verb does not report
-success — the earlier questions prove the *server* is right, this one proves the
-*screen* is.
+**被复用的 surface 是要校验的,不是假定的**(issue #99)。存在不等于正确:surface
+选取器只按类型匹配,从不看 url,而复用路径只修复*缺失*的 surface —— 于是报文打印
+的是本次运行的 URL,屏幕却停在上一个已经死掉的端口上。这不是罕见情况而是常态:
+除非 project 传了 `--dashboard-port`,`pack_web` 每次启动都绑一个新端口,所以只要
+重启过一次,被复用的 surface 就一定是陈旧的。这个 verb 现在会读 surface 实际指向
+哪里(`cmux browser --surface <ref> get-url`),不是本次运行的 URL 就导航过去;
+已经一致时则完全不做任何 cmux 变更。报文里的 `URL=` 就是 surface 指向的地址,否则
+这个 verb 不报成功 —— 前面几个问题证明*服务端*是对的,这一个证明*屏幕*是对的。
 
-The order matters and used to be wrong. `stop swarm` deletes `pack_web.pid` but
-**nothing deletes `dashboard-url`**, so after a stop those two disagree — and
-with reachability checked first, a stopped project died `5` `ERROR`
-("the tunnel is broken") instead of `3` `STOPPED`. On the `--tailnet` path it
-went further and told the operator to run a `tailscale serve` command they had
-already run. A swarm that is not running has no port to reach, no owner to
-identify and no workspace to open, so that question is asked first now.
+顺序是要紧的,而且过去是错的。`stop swarm` 会删 `pack_web.pid`,但**没有任何东西
+会删 `dashboard-url`**,所以停机之后这两者互相矛盾 —— 而当可达性被最先检查时,一个
+停着的 project 死于 `5` `ERROR`(「隧道坏了」)而不是 `3` `STOPPED`。在 `--tailnet`
+路径上它还更进一步,叫 operator 去跑一条他们已经跑过的 `tailscale serve` 命令。一个
+没在跑的 swarm 既没有端口可达、没有所有者可辨认、也没有 workspace 可打开,所以现在
+这个问题最先问。
 
-**One deliberate consequence:** a project whose swarm is stopped but whose
-`pack_web` is somehow still up is now refused with `3`. This verb opens *a
-swarm's* Dashboard; with no swarm there is nothing to look at. Since issue #82
-`stop swarm` stops `pack_web` too, so that state only arises when something
-stopped the swarm without going through the verb. `TUNNEL=` in the report says
-which path was taken: `created`, `reused`, `tailnet`, or `local`.
+**一个刻意的后果:** 一个 swarm 停着、但 `pack_web` 不知怎么还活着的 project,现在
+会被 `3` 拒绝。这个 verb 打开的是*某个 swarm 的* Dashboard;没有 swarm 就没什么可看
+的。自 issue #82 起 `stop swarm` 会连 `pack_web` 一起停,所以这种状态只在有东西绕过
+这个 verb 停掉 swarm 时才出现。报文里的 `TUNNEL=` 说明走了哪条路:`created`、
+`reused`、`tailnet` 或 `local`。
 
-### How to run it
+### 怎么跑它
 
-Set these once, then run the steps in order. `SF` is this skill's `scripts/`
-directory. For a dashboard on the machine you are already on, follow the
-`# local:` comments: `REMOTE=(--local)`, and read the file without `ssh`.
+下面这几个设一次,然后按顺序跑各步骤。`SF` 是本 skill 的 `scripts/` 目录。如果
+dashboard 就在你所在的这台机器上,照着 `# local:` 注释走:`REMOTE=(--local)`,
+读文件时不走 `ssh`。
 
 ```sh
 SF=.agents/skills/swarmforge-operator/scripts
@@ -512,7 +432,7 @@ KEY=~/.ssh/tailscale_key                  # omit for a local root
 REMOTE=(--target "$TARGET" --key "$KEY")  # local: REMOTE=(--local)
 ```
 
-**Step 1 — read the port.**
+**第 1 步 —— 读端口。**
 
 ```sh
 PORT=$(ssh -n -i "$KEY" "$TARGET" "cat $ROOT/.swarmforge/dashboard-url" | sed 's#.*:##; s#/##')
@@ -520,7 +440,7 @@ PORT=$(ssh -n -i "$KEY" "$TARGET" "cat $ROOT/.swarmforge/dashboard-url" | sed 's
 echo "$PORT"
 ```
 
-**Step 2 — branch on it.**
+**第 2 步 —— 按它分支。**
 
 ```sh
 case $PORT in
@@ -529,29 +449,29 @@ case $PORT in
 esac
 ```
 
-**Step 3 — fixed port: open it over the tailnet.**
+**第 3 步 —— 固定端口:走 tailnet 打开它。**
 
 ```sh
 "$SF"/open-dashboard.sh --root "$ROOT" "${REMOTE[@]}" --tailnet
 ```
 
-Expect `TUNNEL=tailnet`. On `5` `ERROR` naming an unpublished port, run step 6a
-once and repeat this step. Then go to step 4.
+预期 `TUNNEL=tailnet`。如果得到 `5` `ERROR` 并点名某个未发布的端口,跑一次第 6a 步
+再重复这一步。然后去第 4 步。
 
-**Step 4 — done. Print the report's `URL=` line in your reply.** Not "opened
-it" — the address itself, because that is what opens on the user's phone.
+**第 4 步 —— 完成。把报文里的 `URL=` 那行打在你的回复里。** 不是「已经打开了」——
+要地址本身,因为那才是用户在手机上能打开的东西。
 
-**Step 5 — random port: open it over the ssh tunnel, then stop.**
+**第 5 步 —— 随机端口:走 ssh 隧道打开它,然后停。**
 
 ```sh
 "$SF"/open-dashboard.sh --root "$ROOT" "${REMOTE[@]}"
 ```
 
-Expect `TUNNEL=created` or `reused`. Print the `URL=` line **and** say it works
-only on this machine and dies when the laptop sleeps. Offer step 6; do not run
-it. Step 6b interrupts running work, so it is the user's call.
+预期 `TUNNEL=created` 或 `reused`。把 `URL=` 那行打出来,**并且**说明它只在这台机器
+上有效、笔记本一睡就断。把第 6 步作为选项提出来,不要动手跑。第 6b 步会打断正在进行
+的工作,所以那是用户的决定。
 
-**Step 6 — switch this project to a fixed port. Only after the user agrees.**
+**第 6 步 —— 把这个 project 切到固定端口。只在用户同意之后做。**
 
 ```sh
 # 6a. publish the range — ONE-TIME PER HOST; skip if `serve status` lists it.
@@ -571,22 +491,21 @@ ssh -i "$KEY" "$TARGET" 'tailscale serve status'
 # 6d. go back to step 3
 ```
 
-`start swarm` refuses an already-running swarm with `6` `UNSAFE` and has no
-override, so 6b cannot be skipped. `tailscale serve --bg` survives reboots and
-`tailscale down`/`up`, and `--tcp` takes one port (no range syntax), which is
-why 6a is a loop run once per host.
+`start swarm` 会以 `6` `UNSAFE` 拒绝一个已经在跑的 swarm,而且没有 override,所以
+第 6b 步跳不过去。`tailscale serve --bg` 能扛过重启和 `tailscale down`/`up`,而
+`--tcp` 一次只吃一个端口(没有范围语法),这就是 6a 要写成一个每台主机跑一次的循环
+的原因。
 
-**Never expose the dashboard any other way.** 6a is the only sanctioned path.
-Do not write a port forwarder or a proxy, do not add an `ssh -L` of your own,
-do not change what `pack_web` binds to. It binds `127.0.0.1` on purpose, so a
-host without tailscale behaves exactly as before; anything in front of that
-publishes a Teardown button to everyone who can reach it. If these steps do
-not get there, say so and stop — do not improvise a route.
+**绝不用任何其它方式把 dashboard 暴露出去。** 6a 是唯一获准的路径。不要写端口转发
+或代理,不要自己加 `ssh -L`,不要改 `pack_web` 绑什么。它绑 `127.0.0.1` 是有意的,
+这样一台没有 tailscale 的主机行为跟以前完全一样;在这之前加任何东西,都等于把一个
+Teardown 按钮发布给所有够得着它的人。如果这些步骤走不到,就说出来然后停下 —— 不要
+临时发明一条路线。
 
-### Dashboard port allocation
+### Dashboard 端口分配
 
-`7780`-`7789` is reserved for dashboards, one number per project, so that the
-URL itself says which project you are looking at:
+`7780`-`7789` 留给 dashboard,一个 project 一个号,这样光看 URL 就知道你在看哪个
+project:
 
 | project | port |
 |---|---|
@@ -594,48 +513,40 @@ URL itself says which project you are looking at:
 | pi-governance (coder2) | `7781` |
 | unassigned | `7782`-`7789` |
 
-Ports do not actually collide across hosts — this table exists so a human
-reading a URL knows what it is. It is a convention this fork's operator keeps
-by hand: nothing derives it, nothing enforces it, and `--dashboard-port` does
-not range-check against it. Give a new project the next free number and add a
-row here.
+端口跨主机其实不会真的冲突 —— 这张表存在的意义是让读 URL 的人知道那是什么。它是
+本 fork 的 operator 手工维持的一条约定:没有任何东西推导它,没有任何东西强制它,
+`--dashboard-port` 也不会拿它做范围校验。给新 project 分配下一个空号,并在这里加
+一行。
 
-### Why `--tailnet` exists
+### `--tailnet` 为什么存在
 
-Without the flag the script builds an SSH local-forward to the port. That
-tunnel lives on the operator's laptop: **it dies when the laptop sleeps**, and
-no other device can use it. `--tailnet` skips it, takes the target's tailscale
-IP straight out of `--target`, checks `http://<ip>:<port>/` answers 200, and
-points the browser surface there.
+不带这个 flag 时,脚本建一条到该端口的 SSH local-forward。那条隧道活在 operator 的
+笔记本上:**笔记本一睡它就死**,而且别的设备用不了。`--tailnet` 跳过隧道,直接从
+`--target` 里取目标机的 tailscale IP,确认 `http://<ip>:<port>/` 返回 200,然后把
+browser surface 指过去。
 
-The verb runs **no `tailscale` command** — it only observes over HTTP, and on a
-port that does not answer it exits `5` `ERROR` with the command to run, having
-created no workspace and no tunnel. `--tailnet` with `--local` is `2` `USAGE`:
-there is no target host to reach over the tailnet. It is not the default; the
-ssh path is unchanged.
+这个 verb **不跑任何 `tailscale` 命令** —— 它只通过 HTTP 观察;端口没有应答时它以
+`5` `ERROR` 退出并给出该跑的命令,同时既没建 workspace 也没建隧道。`--tailnet` 与
+`--local` 同时用是 `2` `USAGE`:没有目标主机可以在 tailnet 上够。它不是默认行为;
+ssh 那条路径原样不变。
 
-Port ownership: HTTP 200 only proves something answers on the port, not
-that it is this project's dashboard — on a host running several managed
-projects with dynamic port allocation, a stale `dashboard-url` can collide
-with another project's `pack_web`. The script reads
-`$ROOT/.swarmforge/pack_web.pid` and confirms the process's `--serve`
-argument equals `$ROOT`, running that check against `$TARGET`/local
-directly (the tunnel carries HTTP only, no process identity). Same hard
-rules and exit codes as `open swarm`: exit 3 STOPPED means dashboard-url is
-missing, or `pack_web.pid` is missing/its process is dead — never start
-`pack_web.sh --serve` yourself; exit 4 DRIFT means either multiple matching
-workspaces, or the port is owned by another project's `pack_web` — in the
-ownership case, someone else's dashboard is squatting the recorded port and
-a human decides, the script never auto-repairs it; exit 5 ERROR. `--local`
-expects the dashboard to already listen on this machine and runs the same
-ownership check locally; no tunnel is created. The ownership check runs on
-the `--tailnet` path too, and matters more there: a fixed port is a far
-likelier collision target than a random one was.
+端口归属:HTTP 200 只能证明那个端口上有东西应答,不能证明那是本 project 的
+dashboard —— 在一台跑着多个被管 project 且端口动态分配的主机上,一个陈旧的
+`dashboard-url` 可能撞上另一个 project 的 `pack_web`。脚本读
+`$ROOT/.swarmforge/pack_web.pid`,确认那个进程的 `--serve` 参数等于 `$ROOT`,并且
+是直接对着 `$TARGET`/本地跑这项检查的(隧道只承载 HTTP,不带进程身份)。硬规则和
+退出码与 `open swarm` 相同:退出 3 STOPPED 意味着 dashboard-url 缺失,或者
+`pack_web.pid` 缺失/它的进程死了 —— 绝不要自己去跑 `pack_web.sh --serve`;退出 4
+DRIFT 意味着要么匹配到多个 workspace,要么那个端口被另一个 project 的 `pack_web`
+占着 —— 在归属这种情况下,是别人的 dashboard 蹲在记录的端口上,由人来决定,脚本
+永远不自动修;退出 5 ERROR。`--local` 期望 dashboard 已经在这台机器上监听,并在本地
+跑同样的归属检查;不建隧道。归属检查在 `--tailnet` 路径上同样跑,而且在那里更要紧:
+固定端口比过去的随机端口更容易成为撞车目标。
 
 ## Verb: `attach role`
 
-Find the role in `sessions.tsv` and use its recorded session; do not construct
-a session from a hardcoded role list:
+在 `sessions.tsv` 里找到这个角色,用它记录的 session;不要拿一份硬编码的角色列表去
+拼 session 名:
 
 ```sh
 ssh -tt -i "$KEY" "$TARGET" "tmux -S '$SOCK' attach -t '$SESSION'"
@@ -643,17 +554,16 @@ ssh -tt -i "$KEY" "$TARGET" "tmux -S '$SOCK' attach -t '$SESSION'"
 
 ## Verb: `read swarm`
 
-Run the bundled script; it iterates `sessions.tsv` in config order, captures
-each recorded session's pane, and classifies it three ways instead of the old
-two-state guess:
+跑随包的脚本;它按 config 顺序遍历 `sessions.tsv`,截取每个记录在案的 session 的
+pane,并分成三态,而不是老的两态猜测:
 
 ```sh
 scripts/read-swarm.sh --root <project-root> \
   [--target user@host] [--key <path>] [--local]
 ```
 
-Output is one line per role: `STATUS=READ` first, then `<role> <STATE> |
-<pane text>` for every row in `sessions.tsv`, in config order:
+输出是每个角色一行:先 `STATUS=READ`,然后按 config 顺序,`sessions.tsv` 里每一行
+输出一条 `<role> <STATE> | <pane text>`:
 
 ```
 STATUS=READ
@@ -661,261 +571,213 @@ coder    BUSY     | Working (esc to interrupt)
 cleaner  UNKNOWN  | ⚠ rate limit reached, retrying in 43s
 ```
 
-Exit codes / STATUS line:
+退出码 / STATUS 行:
 
-- `0` `READ` — the verb did its work. This includes runs where some or every
-  role reads `UNKNOWN`: reporting `UNKNOWN` accurately is success, not
-  failure, for a verb whose job is to report accurately.
-- `2` `USAGE` — missing `--root`.
-- `3` `STOPPED` — `sessions.tsv`/`tmux-socket` missing, or the socket has no
-  tmux server; the swarm is not running, never start it.
-- `5` `ERROR` — the verb itself failed to run (not "some role is UNKNOWN").
+- `0` `READ` —— verb 干完了它的活。这包括某些角色甚至全部角色读成 `UNKNOWN` 的运行:
+  对一个职责是如实报告的 verb 来说,准确地报出 `UNKNOWN` 是成功,不是失败。
+- `2` `USAGE` —— 缺 `--root`。
+- `3` `STOPPED` —— `sessions.tsv`/`tmux-socket` 缺失,或者 socket 上没有 tmux
+  server;swarm 没在跑,绝不要启动它。
+- `5` `ERROR` —— verb 自己跑失败了(不是「某个角色是 UNKNOWN」)。
 
-`STATE` is one of:
+`STATE` 是下面三者之一:
 
-The judgment reads the last couple of non-empty lines, after dropping any
-trailing static footer (issue #58). Grok draws one below the prompt — `Grok
-4.6 (high) · always-approve · 93K / 500K · ctrl+o transcript` — that carries
-no state and never changes, so stopping at the pane's physically last line
-reported `UNKNOWN` for every Grok role. `BUSY` wins over `IDLE` anywhere in
-that window, because a busy pane still shows its empty prompt below the
-spinner.
+这个判断读最后那么一两行非空行,并且先丢掉尾部任何静态 footer(issue #58)。Grok 会
+在提示符下面画一条 —— `Grok 4.6 (high) · always-approve · 93K / 500K · ctrl+o
+transcript` —— 它不携带状态也从不变化,所以停在 pane 物理意义上的最后一行会让每个
+Grok 角色都读成 `UNKNOWN`。在那个窗口里只要任何位置出现 `BUSY`,`BUSY` 就压过
+`IDLE`,因为一个忙着的 pane 在 spinner 下面照样显示它的空提示符。
 
-- `IDLE` — a line there confidently matches a known idle prompt (a bare
-  `❯`/`>` with nothing after it, or a literal "ask me anything" placeholder),
-  and no busy marker is present.
-- `BUSY` — a line there confidently matches a known busy marker (a codex-style
-  "esc to interrupt" banner, a claude-style "participle + for Ns" spinner, or
-  Grok's "Waiting for response").
-- `UNKNOWN` — neither. This also covers a **blank pane** (no non-empty line
-  in the captured scrollback at all) — blank does not mean idle, since a role
-  stuck on an error, a rate limit, or a confirmation prompt can leave an
-  empty-looking last line too. `UNKNOWN` is the safe default, not a fallback
-  to guess away.
+- `IDLE` —— 那里有一行确定地匹配上了已知的 idle 提示符(一个后面什么都没有的裸
+  `❯`/`>`,或者字面的 "ask me anything" 占位符),并且没有 busy 标记。
+- `BUSY` —— 那里有一行确定地匹配上了已知的 busy 标记(codex 风格的 "esc to
+  interrupt" 横幅、claude 风格的「分词 + for Ns」spinner,或者 Grok 的 "Waiting for
+  response")。
+- `UNKNOWN` —— 两者皆非。这也覆盖**空白 pane**(截到的 scrollback 里根本没有非空
+  行)—— 空白不等于 idle,因为一个卡在报错、限流或确认提示上的角色同样可以留下一个
+  看起来是空的最后一行。`UNKNOWN` 是安全的默认值,不是拿来猜掉的兜底。
 
-**Boundary:** this verb does not try to enumerate every backend's error
-states — `codex`, `grok`, and `claude` each render differently and drift
-across versions, and chasing that is a losing race. Unrecognized output is
-`UNKNOWN` by design; every role's raw pane text is always attached (`IDLE` and
-`BUSY` included) so a human can check the read against the evidence. This is a
-report verb (`CONTEXT.md` "## Operator verbs"): it never calls `send-keys` or
-anything else that mutates tmux state, only `list-sessions` and
-`capture-pane`. A visible handoff-mail notice on an `IDLE` role means it needs
-`wake role` — that judgment is still the human's to make from the attached
-text, not something this verb classifies.
+**边界:** 这个 verb 不试图穷举每个 backend 的错误状态 —— `codex`、`grok` 和
+`claude` 各画各的,还会随版本漂移,追这个是一场必输的赛跑。认不出来的输出按设计就是
+`UNKNOWN`;每个角色的原始 pane 文本永远附上(`IDLE` 和 `BUSY` 也一样),这样人可以
+拿证据核对这次判读。这是一个 report verb(`CONTEXT.md` 的 "## Operator verbs"):
+它从不调用 `send-keys` 或任何别的会改动 tmux 状态的东西,只用 `list-sessions` 和
+`capture-pane`。一个 `IDLE` 角色上出现可见的 handoff 邮件提示,意味着它需要
+`wake role` —— 那个判断仍然要由人从附上的文本里做出,不是这个 verb 分类的事。
 
 ## Verb: `wake role`
 
-Run the bundled script; it resolves session and backend from `sessions.tsv`
-itself and verifies the wake actually landed instead of trusting a stale
-guess:
+跑随包的脚本;它自己从 `sessions.tsv` 解析出 session 和 backend,并验证唤醒真的落
+到了,而不是信任一个陈旧的猜测:
 
 ```sh
 scripts/wake-role.sh --root <project-root> --role <name> \
   [--target user@host] [--key <path>] [--local]
 ```
 
-It types `ready_for_next.sh`, confirms the text reached the input line, submits
-with the backend's own key encoding (CSI-u Enter for `claude`, raw carriage
-return for every other backend — see submit-keys in `handoffd.bb`; a symbolic
-key name such as `C-m`/`C-j` is never used, since a TUI that negotiated
-extended keys does not receive a literal Enter through tmux's key-encoding
-layer), then confirms the input line no longer holds it.
+它键入 `ready_for_next.sh`,确认文本到达了输入行,用该 backend 自己的按键编码提交
+(`claude` 用 CSI-u Enter,其它所有 backend 用裸回车 —— 见 `handoffd.bb` 里的
+submit-keys;绝不用 `C-m`/`C-j` 这类符号键名,因为一个协商过 extended keys 的 TUI
+不会通过 tmux 的按键编码层收到一个字面 Enter),然后确认输入行里不再有它。
 
-Exit codes / STATUS line:
+退出码 / STATUS 行:
 
 - `0` `WOKEN`
-- `2` `USAGE` — missing `--root` or `--role`
-- `3` — `sessions.tsv`/`tmux-socket` missing, or the socket has no tmux
-  server; the swarm is not running, never start it
-- `5` `ERROR` — the role is not in `sessions.tsv`, the text never reached the
-  input line, or it reached but was never submitted (the failure sentence
-  names the recorded backend — check it against the agent actually running
-  in that session, per issue #14)
+- `2` `USAGE` —— 缺 `--root` 或 `--role`
+- `3` —— `sessions.tsv`/`tmux-socket` 缺失,或者 socket 上没有 tmux server;swarm
+  没在跑,绝不要启动它
+- `5` `ERROR` —— 这个角色不在 `sessions.tsv` 里、文本始终没到达输入行,或者到了但
+  从未被提交(失败那句话会点名记录在案的 backend —— 拿它跟那个 session 里实际在跑的
+  agent 对一下,见 issue #14)
 
-**Boundary:** `--role` never accepts a `--backend` override; the recorded
-backend in `sessions.tsv` is the only source, because a caller-supplied guess
-is exactly the silent-failure mode this script exists to catch.
+**边界:** `--role` 永远不接受 `--backend` 覆盖;`sessions.tsv` 里记录的 backend 是
+唯一来源,因为调用方给的猜测正是这个脚本存在要抓的那种静默失败。
 
 ## Verb: `talk role`
 
-Run the bundled script; same send-then-verify contract as `wake role`, sending
-one behavior slice instead of `ready_for_next.sh`:
+跑随包的脚本;与 `wake role` 是同一套「发出去再验证」的契约,只是发的是一条行为切片
+而不是 `ready_for_next.sh`:
 
 ```sh
 scripts/talk-role.sh --root <project-root> --role <name> --message <text> \
   [--target user@host] [--key <path>] [--local]
 ```
 
-Exit codes / STATUS line: same table as `wake role` (`0` `SENT`, `2` `USAGE`,
-`3`, `5` `ERROR`), with the same "text arrived but was never submitted" ERROR
-naming the backend for a mismatch.
+退出码 / STATUS 行:与 `wake role` 同一张表(`0` `SENT`、`2` `USAGE`、`3`、
+`5` `ERROR`),同样有那条「文本到了但从未被提交」的 ERROR,并在不匹配时点名 backend。
 
-**Boundary:** a lost `talk role` message is a lost dispatch, not just a missed
-poke — the verified-submit step matters more here than for `wake role`. That
-step judges the input line, which is the last non-empty line **after** any
-trailing static footer is dropped. Reading the physically last line instead is
-what made every Grok dispatch report `STATUS=SENT` without confirming the
-submit key had landed (issue #58); reading further up the pane instead brings
-back issue #28, where text parked in transcript history reads as unsent. It is
-that one line, and the footer is the only thing skipped. New
-work enters through the `master` row from `roles.tsv`; no role name such as
-`specifier` or `coder` is universally the intake role. Normal task intake is
-Dashboard New Task, not `talk role`: New Task creates the Board card and
-carries the stable task name all the way to the terminal handoff `accept
-work` reports (issue #39). `talk role` sends a behavior message to a running
-role — it never creates a Board task, and is not a substitute for New Task.
+**边界:** 一条丢掉的 `talk role` 消息是一次丢掉的派发,不只是一次没戳到 —— 验证提交
+那一步在这里比在 `wake role` 里更要紧。那一步判断的是输入行,也就是丢掉尾部任何静态
+footer **之后**的最后一行非空行。改读物理意义上的最后一行,正是让每一次 Grok 派发都
+报 `STATUS=SENT` 却没确认提交键落地的原因(issue #58);而往 pane 更上面读又会把
+issue #28 带回来,那次是停在 transcript 历史里的文本被读成了未发送。就是那一行,而
+footer 是唯一被跳过的东西。新活从 `roles.tsv` 的 `master` 行进入;没有哪个角色名
+(比如 `specifier` 或 `coder`)是普适的 intake role。常规的任务进入方式是 Dashboard
+的 New Task,不是 `talk role`:New Task 会创建 Board 卡片,并把稳定的任务名一路带到
+`accept work` 报告的那个终端 handoff(issue #39)。`talk role` 是给一个运行中的角色
+发一条行为消息 —— 它从不创建 Board 任务,也不是 New Task 的替代品。
 
 ## Verb: `accept work`
 
-Human acceptance after the swarm finishes a task. The chain ends when it
-returns to the **master** Role; the file in the master worktree's own
-`inbox/completed/` is the delivery record, and it is the only one (issue
-#39). Every other worktree's `completed/` holds intermediate hops of the same
-task — a chain passing through `cleaner` on its way back leaves a completed
-file there too, and reporting that one as the result named the wrong
-`commit:`. The script resolves master from `.swarmforge/roles.tsv` by
-**worktree-name (column 2) `== master`**, never by role name: which role sits
-on master differs per pack (`coder` in two-pack, `specifier` in four-pack).
-It requires exactly one such row and refuses to guess.
+swarm 干完一个任务之后由人来验收。链条在回到 **master** Role 时结束;master
+worktree 自己的 `inbox/completed/` 里那个文件就是交付记录,而且是唯一的一份
+(issue #39)。其它每个 worktree 的 `completed/` 里放的是同一个任务的中间跳 —— 一条
+在返程中经过 `cleaner` 的链条也会在那里留下一个 completed 文件,把它当结果报出来
+就会报错 `commit:`。脚本从 `.swarmforge/roles.tsv` 里按 **worktree 名(第 2 列)
+`== master`** 定位 master,绝不按角色名:哪个角色坐在 master 上因 pack 而异
+(two-pack 里是 `coder`,four-pack 里是 `specifier`)。它要求恰好一行这样的记录,
+并拒绝去猜。
 
-Being in master's `completed/` is necessary but not sufficient. The master also
-completes **non-terminal** inbound handoffs — an intermediate hop it merged and
-closed carries `task`/`commit`/`completed_at` too, and sits in the same
-directory. Terminal is a property of the sending event, and the script accepts
-either signal:
+在 master 的 `completed/` 里是必要条件,不是充分条件。master 也会完成**非终端的**
+入站 handoff —— 一个它合并并关闭掉的中间跳同样带着 `task`/`commit`/`completed_at`,
+而且就躺在同一个目录里。终端性是发送事件的属性,脚本接受两种信号中的任意一种:
 
-- `non-forwarding: true` — stamped by `swarm_handoff.bb` when the sender is the
-  pack's last role, and enforced there too: holding a stamped inbound handoff
-  makes `swarm_handoff.sh` refuse to send another `git_handoff`.
-- the `to:` recipient **set** equals every role but the sender — the
-  compatibility path for records written before the stamp existed.
+- `non-forwarding: true` —— 当发送方是 pack 的最后一个角色时由 `swarm_handoff.bb`
+  盖上,而且那边也强制它:持有一个盖了章的入站 handoff 会让 `swarm_handoff.sh` 拒绝
+  再发一个 `git_handoff`。
+- `to:` 收件人**集合**等于除发送方之外的所有角色 —— 这是给盖章机制出现之前写下的
+  记录用的兼容路径。
 
-That second one is set equality, not a recipient count. A two-pack's terminal
-`cleaner → coder` return has exactly one recipient, because "every role except
-cleaner" is just `coder`; counting recipients misses it.
+第二条是集合相等,不是收件人计数。two-pack 的终端返程 `cleaner → coder` 恰好只有
+一个收件人,因为「除 cleaner 之外的所有角色」就是 `coder`;数收件人个数会漏掉它。
 
-The Board is cross-checked but never decides. `handoffd` moves a card to `done`
-when it **delivers** a terminal-shaped handoff, before any recipient has
-processed it, so a lane disagreement is reported as a `WARN=` and the record is
-still printed. With no Board at all the report says so and falls back to the
-handoffs alone.
+Board 会被交叉核对,但从不由它拍板。`handoffd` 是在它**投递**一个终端形状的 handoff
+时把卡片挪到 `done` 的,那时还没有任何收件人处理过它,所以 lane 不一致会作为一条
+`WARN=` 报出来,记录照样打印。完全没有 Board 时,报文会说明这一点,并退回到只看
+handoff。
 
-Run the bundled script; it reports the terminal handoff per task from the
-master worktree, and also closes a real gap (issue #17): a handoff stuck
-in `inbox/new` — delivered but never claimed, the chain is broken — used to
-read identically to "no work finished yet," because the old manual command
-only ever looked at `inbox/completed`. Those two situations call for opposite
-human responses (keep waiting vs. go find out why nothing picked it up), so
-the script now WARNs about both `inbox/new` and `inbox/in_process` backlogs
-old enough to be a stuck chain rather than normal in-transit delay:
+跑随包的脚本;它从 master worktree 逐任务报出终端 handoff,同时也堵上一个真实的缺口
+(issue #17):一个卡在 `inbox/new` 的 handoff —— 已投递但从未被认领,链条断了 ——
+过去跟「还没有活干完」读起来一模一样,因为老的手工命令只看 `inbox/completed`。这两种
+情况需要的人类反应是相反的(继续等 vs 去查为什么没人接),所以脚本现在会对
+`inbox/new` 和 `inbox/in_process` 里积压到「不像正常在途延迟、像链条卡住」的量发出
+WARN:
 
 ```sh
 scripts/accept-work.sh --root <project-root> \
   [--target user@host] [--key <path>] [--local]
 ```
 
-Report body, per not-yet-shipped task:
+报文主体,每个尚未交付的任务一段:
 
-- `task:` — the stable task name the chain carried (maps to the issue when the
-  intake named it, e.g. `issue-50-brief-quality` → `Closes #50`).
-- `commit:` — the final committed state; this is what the human PR should
-  carry.
-- `completed_at:` — when the chain finished.
+- `task:` —— 链条携带的稳定任务名(intake 命名得当时可以映射到 issue,例如
+  `issue-50-brief-quality` → `Closes #50`)。
+- `commit:` —— 最终提交的状态;这就是人开 PR 时应该带上的东西。
+- `completed_at:` —— 链条完成的时间。
 
-Exit codes / STATUS line:
+退出码 / STATUS 行:
 
-- `0` `REPORTED` — the verb did its work. This includes runs that print one or
-  more `WARN=` lines: a stuck chain is information this verb successfully
-  reported, not a verb failure.
-- `2` `USAGE` — missing `--root`.
-- `5` `ERROR` — `$ROOT/.swarmforge/handoffs` could not be found (wrong
-  `--root`/`--target`/`--local`, or the target is unreachable); or
-  `$ROOT/.swarmforge/roles.tsv` is missing or does not have exactly one
-  `master` worktree row (the message carries the actual match count).
+- `0` `REPORTED` —— verb 干完了它的活。这包括打印了一条或多条 `WARN=` 的运行:一条
+  卡住的链条是这个 verb 成功报出来的信息,不是 verb 的失败。
+- `2` `USAGE` —— 缺 `--root`。
+- `5` `ERROR` —— 找不到 `$ROOT/.swarmforge/handoffs`(`--root`/`--target`/`--local`
+  给错了,或者目标不可达);或者 `$ROOT/.swarmforge/roles.tsv` 缺失、或者它没有恰好
+  一行 `master` worktree 记录(消息里带上实际匹配到的条数)。
 
-**`WARN=` lines** come from two independent scans, and neither changes the
-exit code.
+**`WARN=` 行**来自两次互相独立的扫描,两者都不改变退出码。
 
-A **stuck backlog**, one line per affected worktree — long enough that it is
-not just normal in-transit delay (issue #17; this scan still covers *every*
-worktree, unaffected by the master-only rule above, since a chain can stall
-at any hop):
+**积压卡住**,每个受影响的 worktree 一行 —— 时间长到不像只是正常的在途延迟
+(issue #17;这次扫描仍然覆盖*每一个* worktree,不受上面那条只看 master 的规则影响,
+因为链条可能卡在任何一跳):
 
 ```
 WARN=3 handoffs are stuck in inbox/new in cleaner — the chain is not moving
 WARN=1 handoffs are stuck in inbox/in_process in coder — claimed but not finishing
 ```
 
-A **malformed completed record** in the master worktree — a delivery record
-must be `type: git_handoff` with non-empty `task`, `commit` and
-`completed_at`. A record short of that is named, not silently dropped (same
-"uncertain, so say so" rule the already-shipped check follows):
+**master worktree 里格式不对的 completed 记录** —— 一份交付记录必须是
+`type: git_handoff`,并且 `task`、`commit`、`completed_at` 都非空。达不到这个标准的
+记录会被点名,而不是被静默丢弃(与已交付检查遵循的是同一条「不确定就说出来」规则):
 
 ```
 WARN=<file> missing commit — not reported as a delivery record
 ```
 
-Staleness is judged by each handoff's own header timestamp
-(`enqueued_at`/`dequeued_at`), never filesystem mtime — the same source of
-truth `handoffd.bb`'s own retry ladder uses. Presence alone is not stuck: a
-healthy chain routinely has a file sit briefly between delivery and pickup
-(the daemon's own reconciliation doesn't send its first retry wake until 5s
-have passed), so `inbox/new` only WARNs past 5 minutes — long enough to have
-outlasted the daemon's fast retry rungs. `inbox/in_process` uses a longer,
-30-minute threshold, since a role can legitimately work a real task for many
-minutes; warning at the same 5-minute mark would fire on healthy in-progress
-work, not a stuck chain.
+陈旧与否是按每个 handoff 自己的头部时间戳判断的(`enqueued_at`/`dequeued_at`),绝不
+用文件系统 mtime —— 与 `handoffd.bb` 自己的重试阶梯用的是同一个事实来源。光是存在
+不算卡住:一条健康的链条经常会有文件在投递与取件之间短暂停留(daemon 自己的对账在
+5 秒过去之前不会发出第一次重试唤醒),所以 `inbox/new` 只在超过 5 分钟时才 WARN ——
+足够长到已经熬过了 daemon 的快速重试档位。`inbox/in_process` 用更长的 30 分钟阈值,
+因为一个角色确实可以正当地干上好几分钟的真活;在同样的 5 分钟处告警会打在健康的
+进行中工作上,而不是卡住的链条上。
 
-Rules (unchanged from the manual command this replaces):
+规则(与它取代的那条手工命令相同,未变):
 
-- **Exclude already-shipped tasks.** A completed handoff whose `commit:` is
-  already on `origin/main` (or an ancestor of `HEAD`) has been accepted and
-  merged; it must not be reported again. This runs `git merge-base
-  --is-ancestor <commit> origin/main` against the **managed project's own**
-  git repository at `$ROOT` — not swarm-forge's — the same way `stop swarm`'s
-  `git status` check runs against the project's own worktrees. A check that
-  cannot be confirmed (bad commit, no `origin/main`) is treated as "not
-  shipped," never silently dropped.
-- **One record per task, the newest one on master.** Intermediate hops are
-  already excluded by reading only the master worktree; when master itself
-  holds several terminal returns for one `task:` (a re-run, a fast
-  `cleaner → coder` loop), the newest `completed_at:` wins. Ordering compares
-  the ISO8601 UTC string with its fractional part padded to a fixed 9 digits
-  first — the producer drops the fraction entirely on an exact second
-  boundary, so `...:55Z` and `...:55.000001Z` both occur and only the padded
-  form orders them correctly. No `date` parsing is involved; `date` on macOS
-  cannot parse the fractional shape at all. The report still prints the
-  recorded `completed_at:` verbatim. Equal padded timestamps fall back to
-  filename lexical order, a declared last-resort tie-break, so the result is
-  never undefined.
-- The handoff points at the commit only. The code itself is in git; verify
-  with `git show --stat <commit>` or tests before opening the PR.
-- When opening the PR, carry the `task:` → issue mapping into the PR body
-  (`Closes #N`) so GitHub links them. The swarm never touches GitHub; linking
-  is the accepting human's job.
-- The board directory (`$ROOT/.swarmforge/board/`, when present) carries the
-  same task name in `tasks.tsv` and the intake text in `<task>.txt`; use it to
-  cross-check which issue the task came from.
+- **排除已经交付过的任务。** 一个 `commit:` 已经在 `origin/main` 上(或是 `HEAD` 的
+  祖先)的 completed handoff 已经被验收并合并过了;它不能被再报一次。这项检查是对
+  **被管 project 自己的** git 仓库、在 `$ROOT` 处跑 `git merge-base --is-ancestor
+  <commit> origin/main` —— 不是对 swarm-forge 跑 —— 跟 `stop swarm` 的 `git status`
+  检查是对 project 自己的 worktree 跑是同一个道理。无法确认的检查(commit 不对、
+  没有 `origin/main`)一律当作「未交付」,绝不静默丢弃。
+- **每个任务一条记录,取 master 上最新的那条。** 中间跳已经因为只读 master worktree
+  而被排除了;当 master 自己为同一个 `task:` 持有多条终端返程时(重跑、一次快速的
+  `cleaner → coder` 循环),`completed_at:` 最新的那条胜出。排序时先把 ISO8601 UTC
+  字符串的小数部分补齐到固定 9 位再比 —— 生产者在正好整秒时会完全省掉小数部分,所以
+  `...:55Z` 和 `...:55.000001Z` 都会出现,只有补齐后的形式才能正确排序。这里完全不
+  涉及 `date` 解析;macOS 上的 `date` 根本解析不了那个带小数的形状。报文仍然一字不差
+  地打印记录里的 `completed_at:`。补齐后仍然相等的时间戳退回到文件名字典序,这是一条
+  声明在案的最后手段式打破平局的规则,所以结果永远不会是未定义的。
+- handoff 只指向 commit。代码本身在 git 里;开 PR 之前用 `git show --stat <commit>`
+  或跑测试来核实。
+- 开 PR 时,把 `task:` → issue 的映射带进 PR body(`Closes #N`),让 GitHub 把两者
+  关联起来。swarm 从不碰 GitHub;关联是验收的人的活。
+- board 目录(`$ROOT/.swarmforge/board/`,存在时)在 `tasks.tsv` 里带着同一个任务名,
+  在 `<task>.txt` 里带着 intake 文本;用它来交叉核对这个任务是从哪个 issue 来的。
 
-**Boundary:** this is a report verb (`CONTEXT.md` "## Operator verbs") — it
-only reads. It never modifies, moves, or deletes anything under `inbox/`:
-`completed/` is an audit trail, `new/` and `in_process/` are live queue state
-owned by the daemon and the `ready_for_next`/`done_with_current` helpers, not
-by a human-facing report. It also does not try to diagnose *why* a handoff
-went unclaimed — that could be the daemon stopped, the role busy, or a failed
-wake (see issue #14) — this verb's only job is to make a stuck chain visible,
-not to explain it.
+**边界:** 这是一个 report verb(`CONTEXT.md` 的 "## Operator verbs")—— 它只读。
+它从不修改、移动或删除 `inbox/` 下的任何东西:`completed/` 是审计轨迹,`new/` 和
+`in_process/` 是活的队列状态,归 daemon 和 `ready_for_next`/`done_with_current`
+helper 所有,不归一份面向人的报告所有。它也不试图诊断一个 handoff *为什么*没被认领
+—— 可能是 daemon 停了、角色忙着,或者一次唤醒失败了(见 issue #14)—— 这个 verb 唯一
+的活是让卡住的链条可见,不是解释它。
 
 ## Verb: `run issue`
 
-Put **one** GitHub issue through the swarm and stop at a reviewable PR. Every
-step it takes was already a documented step in this file; what was missing was
-a verb that takes them in order. Skipping one raised no error, and podsum lost
-both ways it can be lost: a `git pull` was never run after a merge, so the
-managed project's `main` diverged from `origin/main` and stayed diverged; and
-a Board card named `验收 3 个 commit` produced a `task:` that mapped back to no
-issue, so the accepting human had to reverse-engineer what the PR closed.
+把**一个** GitHub issue 过一遍 swarm,停在一个可 review 的 PR 上。它走的每一步在本
+文件里本来就都是有记载的步骤;缺的是一个按顺序走完它们的 verb。漏掉一步不会报任何
+错,而 podsum 两种丢法都丢过:合并之后从没跑过 `git pull`,于是被管 project 的
+`main` 与 `origin/main` 分叉并一直分叉着;还有一张叫 `验收 3 个 commit` 的 Board
+卡片产出了一个映射不回任何 issue 的 `task:`,验收的人只好反推这个 PR 关掉的是什么。
 
 ```sh
 scripts/run-issue.sh --root <project-root> --issue <N> \
@@ -923,32 +785,28 @@ scripts/run-issue.sh --root <project-root> --issue <N> \
   [--round <N>]
 ```
 
-Six steps, in this order:
+六步,按这个顺序:
 
-1. Read `$ROOT/.swarmforge/dashboard-url`. **Every run, never cached** —
-   `pack_web` binds a fresh port on every start.
-2. `gh issue view <N>` on the target, inside `$ROOT`, so `gh` resolves the
-   *managed project's* repository from its own git remote. Its title becomes
-   the slug: `feat/issue-<N>-<slug>` for the branch, `issue-<N>-<slug>` for
-   the task name, one source for both.
-3. `BASE` = the newest open PR's `headRefName`, or `main` when there is none.
-4. Read the markers — the Board card's **lane**, the branch, and (only when the
-   lane is `done`) the PR — and answer every state: neither marker is a fresh
-   run, an active lane with its branch is a resume, the branch alone is a
-   resume that still owes a POST, an active lane alone is refused, and a `done`
-   lane is a round this verb will finish shipping but never restart. Refuse too
-   if the swarm is waiting on a human. Create the branch from `BASE` unless it
-   is already there.
-5. `POST {dashboard-url}/api/tasks` once — skipped only when the card is
-   already on the Board — then poll the Board lane until `done`.
-6. `accept work` for the commit — **retried until the delivery record is
-   actually visible**, not read once — then `git push`, ask a model for the PR
-   body, and `gh pr create --base BASE`. A body missing any of the four
-   sections is an **ERROR**, not a warning: nothing gets opened.
+1. 读 `$ROOT/.swarmforge/dashboard-url`。**每次运行都读,绝不缓存** ——
+   `pack_web` 每次启动都绑一个新端口。
+2. 在目标上、在 `$ROOT` 里跑 `gh issue view <N>`,这样 `gh` 会从*被管 project* 自己
+   的 git remote 解析出仓库。它的标题变成 slug:分支叫 `feat/issue-<N>-<slug>`,
+   任务名叫 `issue-<N>-<slug>`,两者同一个来源。
+3. `BASE` = 最新的那个开着的 PR 的 `headRefName`,没有就是 `main`。
+4. 读那几个标记 —— Board 卡片的 **lane**、分支,以及(只在 lane 是 `done` 时)PR ——
+   并回答每一种状态:两个标记都没有是全新运行,活跃 lane 加上它的分支是续跑,只有
+   分支是一次还欠着 POST 的续跑,只有活跃 lane 会被拒绝,而 `done` lane 是一个这个
+   verb 会把交付部分做完、但绝不重启的轮次。swarm 在等人时同样拒绝。除非分支已经在
+   那里,否则从 `BASE` 创建它。
+5. `POST {dashboard-url}/api/tasks` 一次 —— 只在卡片已经在 Board 上时才跳过 ——
+   然后轮询 Board lane 直到 `done`。
+6. 用 `accept work` 取 commit —— **一直重试直到交付记录真的可见**,不是只读一次 ——
+   然后 `git push`、找一个模型写 PR 正文、再 `gh pr create --base BASE`。正文里
+   一个 `## ` 小节都没有就是 **ERROR**,不是 warning:什么都不开。
 
-### Stacked branches, and why `main` is left alone
+### 堆叠分支,以及为什么不动 `main`
 
-The branch comes off the newest open PR's head, not off `main`:
+分支是从最新那个开着的 PR 的 head 上开的,不是从 `main` 上:
 
 ```
 main                      ← only ever moves when a human merges a PR
@@ -957,23 +815,20 @@ main                      ← only ever moves when a human merges a PR
        └ feat/issue-29    PR base = feat/issue-28
 ```
 
-That buys three things at once. A linear `blocked by` chain needs the previous
-issue's commits **visible** to the next issue's coder, and they are not on
-`main` until a human merges. PR diffs stay clean — every branch off `main`
-with nothing merged means each later PR carries every earlier PR's commits.
-And the swarm stops committing onto `main` directly. Once a human merges the
-lower PR, GitHub retargets the upper one to `main` by itself.
+这一下买到三样东西。一条线性的 `blocked by` 链需要上一个 issue 的 commit 对下一个
+issue 的 coder **可见**,而在有人合并之前它们不在 `main` 上。PR 的 diff 保持干净 ——
+所有分支都从 `main` 开、又一个都没合并,意味着后面每个 PR 都扛着前面每个 PR 的
+commit。而且 swarm 不再直接往 `main` 上提交。一旦有人合并了下层的 PR,GitHub 会自己
+把上层那个重新指向 `main`。
 
-No new worktree is needed for this. `merge_and_process.bb` contains exactly
-two git commands (`merge-base --is-ancestor` and `merge --no-edit`), both
-against whatever `HEAD` is; nothing in the swarm names a branch. `BASE` is
-looked up fresh from `gh pr list` on every call — **this verb keeps no state
-between calls.**
+这不需要新建 worktree。`merge_and_process.bb` 里恰好只有两条 git 命令
+(`merge-base --is-ancestor` 和 `merge --no-edit`),都是针对当前 `HEAD` 的;swarm 里
+没有任何东西点名一个分支。`BASE` 每次调用都从 `gh pr list` 重新查一遍 ——
+**这个 verb 在两次调用之间不保留任何状态。**
 
-### The PR body: the script owns the fields, a model owns the prose
+### PR 正文:字段归脚本,散文归模型
 
-Until issue #118 the body was four lines of `printf`. podsum#149 is what that
-looks like from a reviewer's seat:
+在 issue #118 之前,正文是四行 `printf`。podsum#149 就是它在 reviewer 眼里的样子:
 
 ```text
 Closes #138
@@ -983,351 +838,275 @@ commit: 8ff7c7055b
 completed_at: 2026-09-09T15:43:01.447590Z
 ```
 
-No model wrote any of that, and the title was `gh issue view --json title`
-verbatim. Changing role prompts, skill descriptions or `AGENTS.md` could not
-have fixed it: there was no model on the path to instruct.
+**没有一个字是模型写的**,标题是 `gh issue view --json title` 原样搬的。改角色 prompt、
+改 skill description、改 `AGENTS.md` 都修不了它:**那条路径上根本没有模型可以指挥。**
 
-The body is now shaped like `show-me`'s output, not like
-`github-workflow.md`'s four questions — the goal is that a reviewer sees the
-shape of the change without reading the patch line by line:
+现在的分工:
 
-| Section | What goes in it |
-|---|---|
-| `## 可读 diff` | a diff of the resulting **shape** — call tree, file tree, control flow — not the raw patch |
-| `## 伪代码` | the logic in plain language: branches and loops, no variable names or syntax |
-| `## Mermaid` | one diagram, 5–12 nodes, every edge labelled, carrying something the prose does not |
-| `## TDD 证据` | which test pins the change: path, case name, and why it goes red without the change |
-
-**The model never ran anything.** `TDD 证据` is an open invitation to invent a
-passing test run, so the prompt forbids invented command output, pass counts,
-timings and coverage outright, and restricts the section to tests that actually
-appear in the diff.
-
-The split now:
-
-| Part of the body | Written by | Why that side |
+| 正文的哪部分 | 谁写 | 为什么归那一侧 |
 |---|---|---|
-| `Closes #N`, `task:`, `commit:`, `completed_at:` | the script | something downstream parses them; a hallucinated issue number costs a human exactly the reverse-engineering this verb exists to prevent |
-| The `##` sections | the model, via `to-pr` | only something that read the diff can write them |
+| `Closes #N`、`task:`、`commit:`、`completed_at:` | 脚本 | 下游有东西要解析它们;编错一个 issue 号,代价正是这个 verb 存在的理由 |
+| 那几个 `##` 小节 | 模型,经 `to-pr` | 只有读过 diff 的东西写得出来 |
 
-**How the call is made.** The issue and the patch are assembled into a
-`mktemp` file **on the target** and handed to `pi` as an `@file`; the
-instruction that goes with them names the skill rather than restating it:
+**形状不在这里,也不在脚本里,在 `to-pr` skill 里。** 脚本**不读**那个 skill,只在指令里
+点名它,由 `pi` 自己从 `~/.agents/skills` 解析 —— 和任何一次 skill 调用一样。所以这个
+verb 手里没有形状的副本,也就无从与它漂移;改 PR 正文长什么样是 skills 仓的一次改动,
+单独 review,而人手动跑 `/to-pr` 拿到的是同一个形状。
+
+**调用怎么发出去。** issue 与 patch 在**目标机**上拼成一个 `mktemp` 文件,以 `@file` 交给
+`pi`;跟着的指令点名 skill,而不是把它重述一遍:
 
 ```sh
-pi -p --mode text --provider openai-codex --model gpt-6-astra @<material> \
-  '用 to-pr skill，为上面这次改动写 PR 描述正文。只输出正文本身…'
+pi -p --mode text --provider openai-codex --model gpt-6-astra @<材料文件> \
+  '用 to-pr skill,为上面这次改动写 PR 描述正文。只输出正文本身…'
 ```
 
-`pi` resolves `to-pr` from `~/.agents/skills` the way it resolves any skill, so
-**this verb holds no copy of the shape and cannot drift from it.** Changing what
-a PR body looks like is a skills-repo change, reviewed on its own, and a human
-who runs `/to-pr` by hand gets the same shape. The patch never passes through a
-quoted remote command string — 60 KB of diff in one is how quoting bugs ship.
+patch 不经过任何被引号包起来的远程命令串 —— 60 KB 的 diff 塞进去就是引号 bug 的产地。
 
-Overrides, all read from the environment:
+可覆盖项,都从环境读:
 
-| Variable | Default | For |
+| 变量 | 缺省 | 用途 |
 |---|---|---|
-| `SF_RUN_ISSUE_PI_PROVIDER` | `openai-codex` | a different provider |
-| `SF_RUN_ISSUE_PI_MODEL` | `gpt-6-astra` | a different model |
-| `SF_RUN_ISSUE_DIFF_BYTES` | `60000` | how much patch reaches the prompt |
-| `SF_RUN_ISSUE_PR_INSTRUCTION` | names `to-pr` | point the verb at another shape |
-| `SF_RUN_ISSUE_TO_PR_SKILL` | `~/.agents/skills/to-pr/SKILL.md` | where the presence check looks |
+| `SF_RUN_ISSUE_PI_PROVIDER` | `openai-codex` | 换 provider |
+| `SF_RUN_ISSUE_PI_MODEL` | `gpt-6-astra` | 换 model |
+| `SF_RUN_ISSUE_DIFF_BYTES` | `60000` | 进 prompt 的 patch 上限 |
+| `SF_RUN_ISSUE_PR_INSTRUCTION` | 点名 `to-pr` | 把这个 verb 指向另一种形状 |
+| `SF_RUN_ISSUE_TO_PR_SKILL` | `~/.agents/skills/to-pr/SKILL.md` | 存在性检查看哪个路径 |
 
-**What it costs you.** One model call per PR, a few seconds on the measured
-channel — negligible against a verb whose default ceiling is 7200s of polling.
-It happens **after** the "is there already an open PR for this head" check, so
-a resume never pays for a call whose answer it would discard.
+**它花你多少。** 一个 PR 一次模型调用,在实测的通道上几秒钟 —— 对一个缺省上界 7200 秒
+轮询的 verb 来说可以忽略。它排在「这个 head 上是不是已经有开着的 PR」之后,所以续跑
+绝不会为一个用不上的答案付钱。
 
-**What makes it fail, loudly.** Three things are `STATUS=ERROR` / exit 5, and
-none of them falls back to the old metadata-only body — that fallback is the
-bug, and it is worse than failing because it looks like success:
+**什么会让它大声失败。** 三件事都是 `STATUS=ERROR` / 退出 5,而且**都不回退到旧的元数据
+正文** —— 那个回退才是 bug,它比失败更坏,因为它看起来像成功:
 
-- **The skill is not installed on the target.** Checked before the call is
-  spent. This one is not paranoia: measured on a target without the skill, `pi`
-  answers anyway in its own shape (`## 改动`, `关联 #1。`) and the structure
-  check below waves it through. Presence is the only thing about the skill this
-  script can assert without holding a copy of its contents.
-- **The call fails.**
-- **The answer has no `## ` section at all** — a refusal, or a wall of prose.
+- **目标机上没装那个 skill。** 在花掉这次调用之前就查。**这条不是防御性编程**:实测过,
+  目标机没有该 skill 时 `pi` 照样作答,用它自己的形状(`## 改动`、`关联 #1。`),而下面
+  那道结构检查会放行它。存在性是这个脚本在不持有 skill 内容副本的前提下,唯一能断言的
+  关于它的事。
+- **调用失败。**
+- **答案里一个 `## ` 小节都没有** —— 拒答,或者一整段散文。
 
-**What it deliberately does NOT check** is whether the body carries the
-particular sections `to-pr` asks for. Knowing those names here would mean
-holding a second copy of the shape, which is what this indirection exists to
-remove. The cost is real and worth naming: a body with *some* structure that
-ignored the skill will open a PR. Presence plus human review is what stands
-between that and a merge.
+**它刻意不查的那件事**是正文里有没有 `to-pr` 要求的那几个具体小节。在这里知道那些名字,
+就等于持有形状的第二份副本,而这层间接正是为了消掉它。代价是真的,得说出来:一份有结构
+但没按 skill 走的正文会开出 PR。挡在它和 merge 之间的,是存在性检查加人审。
 
-### The four things it refuses to get wrong### The four things it refuses to get wrong
+### 它拒绝弄错的四件事
 
-- **It never posts the same task twice.** `pack_web`'s `create-task!` checks
-  only that the name is non-empty, so a second POST really does create a
-  second card and a second handoff note. The Board is grepped for the task
-  name *before* anything is created. An existing card does not always mean
-  "stop", though — if the matching branch is there too, the card is this verb's
-  own from an interrupted run and the second call resumes it instead (issue
-  #65, see *If the run is killed*). The converse holds as well: a branch with
-  no card is an earlier run of this verb that was killed before it posted, so
-  the POST is *owed*, not skipped (issue #76).
-- **It never reuses a finished task identity.** The card is read by its **lane
-  value**, not for its presence (issue #115). `CONTEXT.md` makes a task's lane
-  the only authority on whether that task is finished, so a `done` lane is that
-  authority speaking: the round is over. Continuing on it is not harmless —
-  `accept work` is keyed by the task name alone, so it answers with the
-  *finished* round's delivery record, and the PR then carries a commit that is
-  not on the head it names (live on podsum `#112`). Putting the same issue
-  through again is `--round N`, which suffixes the derived identity; it is
-  never a hand-edited Board.
-- **It stops when the swarm is waiting on a human.** A blocked agent does not
-  fail — it writes a clarification request or a pending approval and waits, so
-  its task never reaches `done`. `/api/state`'s `clarifications` (status
-  `pending`) and `approvals` are checked once before anything is created and
-  again on every poll round. This is the only thing in the loop that stops it
-  on purpose, and it is what makes a `for ... || break` chain safe: without
-  it, the loop moves on to the next issue and stacks the next branch on top of
-  work nobody has looked at.
-- **Only the Board lane says a task finished.** The chain is
-  `coder → cleaner → coder`, and `/api/state`'s `work_in_flight[].state` reads
-  `idle` for the coder between hops. A role-state check calls a half-finished
-  task done; the script never reads that field.
-- **A poll timeout is not a failure.** It exits `5` `ERROR` saying the task may
-  still be running, and **never re-posts** — a re-post would create a second
-  card and a second chain.
-- **Board `done` and `accept work` are two different events, not one.**
-  `handoffd` marks the card `done` the moment it *delivers* a terminal-shaped
-  handoff, while `accept work` reads only the master's `inbox/completed/`, so
-  for as long as the master is still working that file in `inbox/in_process/`
-  the task is `done` on the Board and invisible to the report. The script
-  retries `accept work` across that window (`SF_RUN_ISSUE_DELIVERY_SECONDS`,
-  default 600s) instead of reading it once. Issue #63: reading once made
-  `#60`'s live run on podsum `#30` exit `5` with nothing pushed and no PR, on
-  a run whose work had in fact completed.
+- **它绝不把同一个任务 POST 两次。** `pack_web` 的 `create-task!` 只检查名字非空,
+  所以第二次 POST 真的会造出第二张卡片和第二条 handoff 记录。任何东西被创建*之前*,
+  Board 会先按任务名 grep 一遍。不过卡片已存在并不总是意味着「停」—— 如果对应的分支
+  也在,那张卡片就是这个 verb 自己在一次被中断的运行里留下的,第二次调用会续跑它
+  (issue #65,见*运行被杀掉之后*)。反过来也成立:有分支没卡片,说明是这个 verb
+  更早的一次运行在 POST 之前被杀了,所以那次 POST 是*欠着的*,不是该跳过的
+  (issue #76)。
+- **它绝不复用一个已经完成的任务身份。** 卡片是按它的 **lane 值**读的,不是按它是否
+  存在(issue #115)。`CONTEXT.md` 规定任务的 lane 是「这个任务完没完成」的唯一权威,
+  所以 `done` lane 就是那个权威在说话:这一轮结束了。在它上面继续并非无害 ——
+  `accept work` 只按任务名做键,于是它会回答*已完成*那一轮的交付记录,PR 随后就带上
+  一个根本不在它所指 head 上的 commit(podsum `#112` 上真实发生过)。把同一个 issue
+  再过一遍要用 `--round N`,它会给推导出来的身份加后缀;绝不是手工去改 Board。
+- **swarm 在等人时它就停。** 一个被卡住的 agent 不会失败 —— 它写下一条澄清请求或一个
+  待批准项然后等着,于是它的任务永远到不了 `done`。`/api/state` 的 `clarifications`
+  (状态 `pending`)和 `approvals` 会在任何东西被创建之前检查一次,并在每一轮轮询时
+  再检查一次。这是循环里唯一一个刻意让它停下来的东西,也是 `for ... || break` 这种
+  链式写法安全的原因:没有它,循环会走向下一个 issue,并把下一个分支堆在没人看过的
+  工作上面。
+- **只有 Board lane 才说一个任务完成了。** 链条是 `coder → cleaner → coder`,而
+  `/api/state` 的 `work_in_flight[].state` 在两跳之间会把 coder 读成 `idle`。用角色
+  状态去判断会把一个只做了一半的任务算成完成;脚本从不读那个字段。
+- **轮询超时不是失败。** 它以 `5` `ERROR` 退出并说明任务可能还在跑,而且**绝不重新
+  POST** —— 重 POST 会造出第二张卡片和第二条链。
+- **Board 的 `done` 和 `accept work` 是两个不同的事件,不是一个。** `handoffd` 在它
+  *投递*一个终端形状的 handoff 的那一刻就把卡片标成 `done`,而 `accept work` 只读
+  master 的 `inbox/completed/`,所以只要 master 还在 `inbox/in_process/` 里处理那个
+  文件,任务在 Board 上就是 `done` 而在报告里不可见。脚本会在这个窗口里重试
+  `accept work`(`SF_RUN_ISSUE_DELIVERY_SECONDS`,默认 600s),而不是只读一次。
+  issue #63:只读一次让 `#60` 在 podsum `#30` 上的实跑以 `5` 退出,什么都没推、也没
+  有 PR,而那次运行的活其实早就干完了。
 
-### One issue per call
+### 一次调用一个 issue
 
-There is no `--issues 28,29,30`. A list version would need exactly one piece
-of error handling, and the caller already has it:
+没有 `--issues 28,29,30`。列表版本会需要恰好一处错误处理,而调用方本来就有:
 
 ```sh
 for n in 28 29 30; do run-issue.sh --root R --issue "$n" || break; done
 ```
 
-Exit codes / STATUS line:
+退出码 / STATUS 行:
 
-- `0` `PR_OPENED` — the report body carries `issue:`, `task:`, `branch:`,
-  `base:`, `commit:`, `resumed:` and `url:`. `resumed: yes` means this call
-  continued an earlier interrupted run rather than posting a new task.
-- `2` `USAGE` — missing `--root` or `--issue`, or `--issue` is not a number.
-  Nothing runs at all.
-- `5` `ERROR` — `dashboard-url`/`roles.tsv` missing, `gh`/`git`/`curl` failed,
-  the poll ceiling was reached (`SF_RUN_ISSUE_TIMEOUT_SECONDS`, default
-  7200s), or the Board said `done` but the delivery record stayed invisible to
-  `accept work` for the whole delivery window (`SF_RUN_ISSUE_DELIVERY_SECONDS`,
-  default 600s) — never open a PR from a branch whose commit was not confirmed.
-  Neither ceiling ever pushes, opens a PR, or re-posts the task.
-- `6` `UNSAFE` — one of three: a card in an **active** lane whose branch does
-  not exist, so it is not this verb's card; a card in lane **`done`** whose
-  round already shipped (its branch is gone, or its head's PR is `MERGED`/
-  `CLOSED`), so the identity is spent and the report names `--round N`; or a
-  pending clarification/approval is blocking. Nothing was created in any of the
-  three. A card in an active lane *with* its branch is resumed, not refused,
-  and so is a `done` card whose round has not shipped yet.
-- `7` `STILL_RUNNING` — `--max-wait` ran out. The task is posted and the swarm
-  is still working: nothing was pushed, no PR was opened, and the task was
-  **not** re-posted. The body carries `lane:` and `waiting_for:` so the caller
-  knows how far it got, and re-running the same command continues from there.
-  It is a separate code from `5` on purpose. The `for ... || break` chain
-  breaks on both, but "still working, call me again" and "something broke"
-  need different reactions from whoever reads the break — the same reason GNU
-  `timeout` exits `124` instead of reusing the exit code of the command it
-  timed out.
+- `0` `PR_OPENED` —— 报文主体带 `issue:`、`task:`、`branch:`、`base:`、`commit:`、
+  `resumed:` 和 `url:`。`resumed: yes` 意味着这次调用续的是更早那次被中断的运行,
+  而不是 POST 了一个新任务。
+- `2` `USAGE` —— 缺 `--root` 或 `--issue`,或者 `--issue` 不是数字。什么都不会跑。
+- `5` `ERROR` —— `dashboard-url`/`roles.tsv` 缺失、`gh`/`git`/`curl` 失败、撞到轮询
+  上限(`SF_RUN_ISSUE_TIMEOUT_SECONDS`,默认 7200s),或者 Board 说了 `done` 但交付
+  记录在整个交付窗口(`SF_RUN_ISSUE_DELIVERY_SECONDS`,默认 600s)里始终对
+  `accept work` 不可见 —— 绝不从一个 commit 未经确认的分支上开 PR。两种上限都不会
+  push、不会开 PR、也不会重新 POST 任务。
+- `6` `UNSAFE` —— 三种之一:一张处在**活跃** lane、但分支不存在的卡片,说明它不是这
+  个 verb 的卡片;一张处在 lane **`done`**、且那一轮已经交付过的卡片(它的分支没了,
+  或者它 head 上的 PR 是 `MERGED`/`CLOSED`),说明这个身份用完了,报文会点名
+  `--round N`;或者有待处理的澄清/批准在挡路。三种情况下什么都没被创建。处在活跃
+  lane 且分支*在*的卡片是续跑,不是拒绝;一张那一轮还没交付的 `done` 卡片也是。
+- `7` `STILL_RUNNING` —— `--max-wait` 用完了。任务已经 POST,swarm 还在干:什么都没
+  push、没开 PR,任务也**没有**被重新 POST。主体带 `lane:` 和 `waiting_for:`,让调用
+  方知道它走到了哪一步,重跑同一条命令会从那里接着往下走。它跟 `5` 是两个码,这是
+  有意的。`for ... || break` 链在两者上都会断,但「还在干,再叫我一次」和「出事了」
+  需要读到这次中断的人做出不同反应 —— 与 GNU `timeout` 用 `124` 退出、而不是复用它
+  超时掉的那条命令的退出码,是同一个道理。
 
-The PR is always opened with explicit `--title`/`--body`. **Never `--fill`:**
-it would use the swarm's own commit messages, which carry no `Closes #N` —
-exactly how a PR ended up needing a human to work out which issue it closed.
-The body carries `Closes #<N>` plus `accept work`'s `task:`/`commit:`/
-`completed_at:` verbatim, and no diff copy: the code is in git, the PR only
-needs the pointer.
+PR 永远带着显式的 `--title`/`--body` 打开。**绝不用 `--fill`:** 那会用 swarm 自己的
+commit message,而那里面没有 `Closes #N` —— 一个 PR 最后需要人来推断它关掉了哪个
+issue,正是这么来的。body 里带 `Closes #<N>`,外加一字不差的 `accept work` 的
+`task:`/`commit:`/`completed_at:`,不带 diff 副本:代码在 git 里,PR 只需要那个指针。
 
-The task body is the minimal handoff `#26`/`#27` already proved — read the
-issue, inventory before implementing, TDD, and the handoff chain, which is
-**derived from `roles.tsv`** rather than written out, because role names
-differ per pack. The issue body itself is deliberately not copied; the coder
-can read it, and a copy goes stale.
+任务主体就是 `#26`/`#27` 已经验证过的那份最小交接 —— 读 issue、动手前先盘点、TDD,
+以及那条 **从 `roles.tsv` 推导出来的**、而不是写死的 handoff 链,因为角色名因 pack
+而异。issue 正文本身刻意不复制过去;coder 自己能读,而副本会过期。
 
-**It also follows whether the target project uses OpenSpec** (issue #94). If
-`$ROOT/openspec/config.yaml` exists, the body names the `schema:` that file
-declares and points the coder at `openspec/schemas/<name>/schema.yaml`; if it
-does not, the body is byte-identical to what it was before. Derived, not
-flagged, for the same reason `CHAIN` is derived from `roles.tsv`: this verb
-serves any managed project and plenty do not use OpenSpec, so "go through the
-OpenSpec cycle" would be a wrong instruction for those. The artifact order is
-deliberately NOT in the script — that is a property of the schema, and a copy
-here would be a second source of OpenSpec knowledge that drifts silently the
-first time a schema gains an artifact. podsum is why this exists: it merged
-its schema, and the very next run of this verb produced 4 commits, +414 lines
-and 22 green tests with nothing at all under `openspec/changes/`.
+**它还会跟随目标 project 是否使用 OpenSpec**(issue #94)。如果
+`$ROOT/openspec/config.yaml` 存在,主体会点名那个文件声明的 `schema:`,并把 coder
+指向 `openspec/schemas/<name>/schema.yaml`;如果不存在,主体与之前逐字节相同。是
+推导而不是加 flag,理由跟 `CHAIN` 从 `roles.tsv` 推导一样:这个 verb 服务任意被管
+project,而其中不少并不用 OpenSpec,所以「走一遍 OpenSpec 循环」对它们是一条错误的
+指令。artifact 的顺序刻意**不**写在脚本里 —— 那是 schema 的属性,在这里放一份副本
+就等于多了一个 OpenSpec 知识来源,在某个 schema 第一次新增 artifact 时就会悄悄漂移。
+podsum 就是这条存在的原因:它合并了自己的 schema,而这个 verb 紧接着的那次运行产出
+了 4 个 commit、+414 行和 22 个绿测试,`openspec/changes/` 下面却什么都没有。
 
-### Running it from an agent session
+### 从 agent 会话里跑它
 
-**This verb blocks for the whole chain — minutes to hours. That is not a hang.**
-It polls every `SF_RUN_ISSUE_POLL_SECONDS` (default 15s) up to
-`SF_RUN_ISSUE_TIMEOUT_SECONDS` (default 7200s), plus up to
-`SF_RUN_ISSUE_DELIVERY_SECONDS` (default 600s) more after the Board turns
-`done`, waiting for the delivery record. The loop is plain shell: two
-short round trips per round (`curl /api/state`, `cat tasks.tsv`) and **no model
-call**, so the wait costs no tokens no matter how long it runs. What costs
-tokens is the swarm's own agents on the target host, and that is unaffected by
-the poll interval.
+**这个 verb 会阻塞整条链的时间 —— 几分钟到几小时。那不是卡死。** 它每
+`SF_RUN_ISSUE_POLL_SECONDS`(默认 15s)轮询一次,最多到
+`SF_RUN_ISSUE_TIMEOUT_SECONDS`(默认 7200s),Board 转成 `done` 之后再最多加
+`SF_RUN_ISSUE_DELIVERY_SECONDS`(默认 600s)等交付记录。这个循环是纯 shell:每轮
+两次短往返(`curl /api/state`、`cat tasks.tsv`),**没有 model 调用**,所以不管等多久
+都不烧 token。烧 token 的是目标主机上 swarm 自己的那些 agent,而那与轮询间隔无关。
 
-**Know your harness's cap, and pass a timeout.** The cap that bites is the
-*client's* default, not the shell tool's own ceiling:
+**知道你所在 harness 的上限,并传一个 timeout。** 咬人的是*客户端*的默认值,不是
+shell tool 自己的天花板:
 
-- **pi's `bash`** arms no timer at all unless `timeout` is passed
-  (`dist/core/tools/bash.js:75-80`, mirrored in `pi-agent-core`'s
-  `dist/harness/tools/bash.js:11-19`), and its ceiling is `MAX_TIMEOUT_MS =
-  2_147_483_647` ms — about 24.8 days (`dist/core/tools/bash.js:16`). Nothing
-  in the tree aborts a tool call on a clock; `AbortController` fires only on
-  user abort and session dispose, and the timeout message is assembled from
-  the `timeout` value the caller passed, so it can only ever print a number
-  someone sent. The **120 seconds** recorded in issue #65 was therefore not
-  pi's: it was a client-injected default, and passing an explicit `timeout`
-  removes it. (Measured on `@earendil-works/pi-coding-agent@0.84.3`: no
-  `timeout`, `sleep 150` killed at 120s; `timeout: 300`, the same `sleep 150`
-  ran to completion.)
-- **Claude Code's `Bash`** defaults to 2 minutes (`BASH_DEFAULT_TIMEOUT_MS`)
-  and caps **hard** at 10 minutes (`BASH_MAX_TIMEOUT_MS`). No argument lifts
-  that ceiling.
+- **pi 的 `bash`** 在不传 `timeout` 时根本不装定时器
+  (`dist/core/tools/bash.js:75-80`,在 `pi-agent-core` 的
+  `dist/harness/tools/bash.js:11-19` 里有对应实现),它的天花板是 `MAX_TIMEOUT_MS =
+  2_147_483_647` ms —— 大约 24.8 天(`dist/core/tools/bash.js:16`)。这棵树里没有任何
+  东西会按时钟中止一次 tool 调用;`AbortController` 只在用户中止和会话销毁时触发,而
+  超时消息是用调用方传进来的 `timeout` 值拼出来的,所以它只可能打印某人发过来的数字。
+  因此 issue #65 里记下的那 **120 秒**不是 pi 的:那是客户端注入的默认值,传一个显式
+  的 `timeout` 就能去掉它。(在 `@earendil-works/pi-coding-agent@0.84.3` 上实测:不传
+  `timeout` 时 `sleep 150` 在 120s 被杀;传 `timeout: 300` 时同样的 `sleep 150` 跑
+  完了。)
+- **Claude Code 的 `Bash`** 默认 2 分钟(`BASH_DEFAULT_TIMEOUT_MS`),并**硬性**
+  封顶在 10 分钟(`BASH_MAX_TIMEOUT_MS`)。没有任何参数能抬高那个天花板。
 
-So, in this order:
+所以,按这个顺序来:
 
-1. Pass an **explicit large timeout** where the tool takes one (pi's `bash`
-   takes `timeout` in seconds).
-2. Where the hard cap is below a real chain — Claude Code's 10 minutes is —
-   use **`--max-wait`** just under it, so the verb exits cleanly on `7`
-   `STILL_RUNNING` instead of being SIGKILLed, and call it again. A clean exit
-   reports the lane it reached; a kill reports nothing.
-3. Use the harness's **background mode** if it has one (Claude Code's `Bash`
-   takes `run_in_background: true`).
-4. Otherwise let it be killed and **re-run the same command**. That is a
-   supported path, not a repair (see below).
+1. 在 tool 接受 timeout 的地方传一个**显式的大 timeout**(pi 的 `bash` 收的
+   `timeout` 单位是秒)。
+2. 在硬上限低于一条真实链条的地方 —— Claude Code 的 10 分钟就是 —— 用 **`--max-wait`**
+   取一个略低于它的值,让 verb 干净地以 `7` `STILL_RUNNING` 退出而不是被 SIGKILL,
+   然后再调用一次。干净退出会报出它走到的 lane;被杀掉什么都报不出来。
+3. 用 harness 的**后台模式**,如果它有的话(Claude Code 的 `Bash` 收
+   `run_in_background: true`)。
+4. 实在不行就让它被杀掉,然后**重跑同一条命令**。那是一条受支持的路径,不是修补
+   (见下)。
 
-Do not wrap the call in `nohup ... &` to dodge the cap. Cancelling a pi tool
-call kills the whole process tree, which takes the detached job with it, and a
-detached run's output goes somewhere nobody is reading.
+不要为了躲开上限而把调用包进 `nohup ... &`。取消一次 pi 的 tool 调用会杀掉整棵进程
+树,连那个脱离出去的作业一起带走,而一次脱离运行的输出会跑到没人在读的地方去。
 
-Do not "check on it" with `read swarm` in a second call while it runs — the
-script is already polling, and a second reader tells you nothing it will not
-print itself.
+不要在它跑着的时候用第二次调用去 `read swarm` 「看一眼」—— 脚本已经在轮询了,第二个
+读者告诉不了你任何它自己不会打印的东西。
 
-### `--max-wait <seconds>` — the caller's deadline
+### `--max-wait <seconds>` —— 调用方的期限
 
-`SF_RUN_ISSUE_TIMEOUT_SECONDS` and `SF_RUN_ISSUE_DELIVERY_SECONDS` are the
-*callee's* ceilings; until issue #76 a caller had no way to say how long it
-could wait, and a harness that killed it at 600s produced a SIGKILL rather than
-an exit. `--max-wait` is the caller's own budget, wall-clock, for the whole
-call. The semantics are `kubectl wait --timeout`'s, deliberately not a fourth
-invention:
+`SF_RUN_ISSUE_TIMEOUT_SECONDS` 和 `SF_RUN_ISSUE_DELIVERY_SECONDS` 是*被调用方*的
+天花板;在 issue #76 之前,调用方没有办法说出自己能等多久,而一个在 600s 处杀掉它的
+harness 产出的是 SIGKILL 而不是一次退出。`--max-wait` 是调用方自己的预算,墙钟时间,
+覆盖整次调用。语义就是 `kubectl wait --timeout` 的语义,刻意不去发明第四种:
 
-| value | meaning |
+| 值 | 含义 |
 |---|---|
-| positive | wait at most that long, then exit `7` `STILL_RUNNING`. Replaces both ceilings for this call. |
-| `0` | check once and return: post if a POST is owed, then report the current lane. |
-| negative | keep the existing ceilings. This is the default (`-1`), so behaviour without the flag is unchanged. |
+| 正数 | 最多等这么久,然后以 `7` `STILL_RUNNING` 退出。对这次调用取代上面两个天花板。 |
+| `0` | 检查一次就返回:欠着 POST 就 POST,然后报出当前 lane。 |
+| 负数 | 保持既有的天花板。这是默认值(`-1`),所以不带这个 flag 时行为不变。 |
 
-Reaching it is a **clean exit, not a kill**: nothing is pushed, no PR is
-opened, the task is never re-posted, and the report names the lane it stopped
-at. The budget covers the polling *and* the `accept work` delivery window, so
-one number bounds the command rather than one phase of it.
+到达它是一次**干净退出,不是被杀**:什么都没 push,没开 PR,任务从未被重新 POST,
+报文会点名它停在哪个 lane。这份预算同时覆盖轮询**和** `accept work` 的交付窗口,
+所以是一个数字框住整条命令,而不是框住它的某一个阶段。
 
-### If the run is killed
+### 运行被杀掉之后
 
-**Re-run the exact same command.** The verb detects its own earlier run and
-continues from wherever it stopped: it never posts a second task, never creates
-a second branch, and never opens a second PR. A resumed run prints
-`resumed: yes` in its report body.
+**重跑一模一样的命令。** 这个 verb 会检测出它自己更早那次运行,并从停下的地方接着
+走:它绝不 POST 第二个任务、绝不创建第二个分支、也绝不开第二个 PR。续跑的运行会在
+报文主体里打印 `resumed: yes`。
 
-What it looks at, and what it does:
+它看什么,以及它做什么:
 
-| lane of `issue-<N>-<slug>` | branch `feat/issue-<N>-<slug>` | what happens |
+| `issue-<N>-<slug>` 的 lane | 分支 `feat/issue-<N>-<slug>` | 会发生什么 |
 |---|---|---|
-| absent | absent | fresh run |
-| absent | **present** | **resume** — skip the branch, POST the task that never got posted |
-| active (`coder`, `cleaner`, …) | present | **resume** — skip the branch and the POST, pick up at the poll |
-| active | absent | `6` `UNSAFE` — that card is not this verb's; nothing is touched |
-| **`done`**, no PR on the head | present | **resume** — the swarm's half is over, the shipping half is not: `accept work`, push, PR |
-| **`done`**, PR `OPEN` | present | that PR *is* the terminal state: `0` `PR_OPENED`, reported again, nothing re-done |
-| **`done`**, PR `MERGED`/`CLOSED` | present | `6` `UNSAFE` — round finished; re-run with `--round N` |
-| **`done`** | absent | `6` `UNSAFE` — round finished, branch gone; re-run with `--round N` |
+| 没有 | 没有 | 全新运行 |
+| 没有 | **在** | **续跑** —— 跳过建分支,POST 那个从没 POST 出去的任务 |
+| 活跃(`coder`、`cleaner`、…) | 在 | **续跑** —— 跳过建分支和 POST,从轮询接上 |
+| 活跃 | 没有 | `6` `UNSAFE` —— 那张卡片不是这个 verb 的;什么都不碰 |
+| **`done`**,head 上没有 PR | 在 | **续跑** —— swarm 那一半结束了,交付那一半没有:`accept work`、push、开 PR |
+| **`done`**,PR 是 `OPEN` | 在 | 那个 PR *就是*终态:`0` `PR_OPENED`,再报一次,什么都不重做 |
+| **`done`**,PR 是 `MERGED`/`CLOSED` | 在 | `6` `UNSAFE` —— 这一轮完了;用 `--round N` 重跑 |
+| **`done`** | 没有 | `6` `UNSAFE` —— 这一轮完了,分支也没了;用 `--round N` 重跑 |
 
-The branch is the marker because this verb always creates it *before* it posts.
-A card in an **active** lane whose branch is missing was typed into the
-Dashboard by hand or made by something else, and continuing on it would push
-work this verb never scoped.
+分支之所以是那个标记,是因为这个 verb 永远在 POST *之前*创建它。一张处在**活跃**
+lane、分支却不存在的卡片,是有人手工敲进 Dashboard 的、或者是别的什么东西造的,在
+它上面继续会推上去这个 verb 从未界定过范围的工作。
 
-The lane is read by **value** (issue #115). A decision that only asks whether a
-card exists cannot tell a finished round from an interrupted one, and the two
-need opposite answers. But `done` is not by itself a stop either: the round has
-two halves — the swarm reaching `done`, then this verb shipping it — and
-`STILL_RUNNING` promises that re-running continues the second half. The window
-it points at (`done` on the Board, delivery record not yet visible, nothing
-pushed) is exactly a `done` card with a branch and no PR, so the PR is the third
-marker: no PR, or an open one, means the round is still this verb's to finish.
+lane 是按**值**读的(issue #115)。一个只问卡片存不存在的判断,分不出一个已完成的
+轮次和一个被中断的轮次,而这两者需要相反的答案。但 `done` 本身也不构成停止:一轮有
+两半 —— swarm 走到 `done`,然后这个 verb 把它交付出去 —— 而 `STILL_RUNNING` 承诺过
+重跑会继续第二半。它指向的那个窗口(Board 上是 `done`、交付记录还不可见、什么都没
+push)恰好就是「一张 `done` 卡片,有分支,没有 PR」,所以 PR 是第三个标记:没有 PR、
+或者有一个开着的,都意味着这一轮仍然该由这个 verb 收尾。
 
-The second row is the window **between** those two writes, about two ssh round
-trips wide, and until issue #76 it had no exit: with no card the verb took the
-fresh path, ran `git checkout -b` onto a branch that already existed, and
-failed `5` `ERROR` — on every re-run, until a human deleted the branch by hand.
-Both markers are now read on every run and each of the two decisions (create
-the branch, post the task) answers to its own marker, so no ordering of the two
-writes can produce a state with no way out.
+第二行是那两次写入**之间**的窗口,大约两次 ssh 往返那么宽,而在 issue #76 之前它没有
+出口:没有卡片,verb 走全新路径,对一个已经存在的分支跑 `git checkout -b`,然后以
+`5` `ERROR` 失败 —— 每一次重跑都如此,直到有人手工删掉那个分支。现在每次运行都会读
+两个标记,而那两个决定(建分支、POST 任务)各自只对自己的标记负责,所以这两次写入
+无论以什么顺序发生,都产生不出一个没有出路的状态。
 
-To see which state you are in without running anything:
+不跑任何东西就想知道自己处在哪个状态:
 
 ```sh
 scripts/read-swarm.sh --root <project-root>          # is the swarm still working?
 ssh <target> "grep '^issue-<N>-' <root>/.swarmforge/board/tasks.tsv"   # lane, column 2
 ```
 
-An **active** lane means the task is posted and re-running is always the right
-move. A **`done`** lane means the swarm finished: re-run to ship it if no PR
-exists yet, and `--round N` if one already does.
+**活跃** lane 意味着任务已经 POST,重跑永远是对的动作。**`done`** lane 意味着 swarm
+干完了:还没有 PR 就重跑把它交付出去,已经有了就用 `--round N`。
 
-**Boundary:** this verb opens a PR and stops. It never merges (`--merge` and
-`--auto` are never passed), never answers a clarification (`read swarm` does
-not even know the concept exists — that is a separate issue), and never
-changes the Dashboard's listen address or the role topology. Recovery from
-an `UNSAFE` is a human's: resolve the clarification in the Dashboard; give a
-spent identity a new round with `--round N`; and for a foreign card in an active
-lane, rename it in the Dashboard or take its work with `accept work` by hand.
+**边界:** 这个 verb 开一个 PR 然后停下。它从不合并(`--merge` 和 `--auto` 永远不会
+被传),从不回答澄清(`read swarm` 甚至不知道有这个概念 —— 那是另一个 issue),也从不
+改 Dashboard 的监听地址或角色 topology。从 `UNSAFE` 恢复是人的活:在 Dashboard 里
+解决澄清;用 `--round N` 给一个用完的身份开新一轮;至于活跃 lane 里的外来卡片,在
+Dashboard 里给它改名,或者手工用 `accept work` 接走它的工作。
 
-**Never hand-clear Board or handoff state to force a re-run.** A Board card and
-the records under `inbox/completed/` are history, not levers: `CONTEXT.md` makes
-a task's lane the only authority on whether that task is finished, and this
-verb's own contract makes `accept work` a report that changes nothing under
-`inbox/`. Deleting a row from `tasks.tsv`, or a completed handoff, to make this
-verb see a "fresh" run is doing by hand what the verb must decide for itself —
-and it cannot be done completely: the task name keys three separate state
-sources (the card, the branch, the delivery record), so clearing the two the
-resume table names still leaves the third to be matched by the next run. That
-is how podsum `#112` opened a PR naming a commit that was not on its head: the
-run's wait for "this round's delivery record" was satisfied by the *previous*
-round's, 8 minutes before the real one landed.
+**绝不为了强制重跑而手工清掉 Board 或 handoff 状态。** 一张 Board 卡片和
+`inbox/completed/` 下的那些记录是历史,不是操纵杆:`CONTEXT.md` 规定任务的 lane 是
+「这个任务完没完成」的唯一权威,而这个 verb 自己的契约让 `accept work` 成为一份不改
+动 `inbox/` 下任何东西的报告。为了让这个 verb 看到一次「全新」运行而从 `tasks.tsv`
+里删掉一行、或删掉一个 completed handoff,是在手工做这个 verb 必须自己判断的事 ——
+而且这件事根本做不干净:任务名是三个互相独立的状态来源(卡片、分支、交付记录)的
+键,所以清掉续跑表里点名的那两个,仍然会剩下第三个被下一次运行匹配上。podsum `#112`
+开出一个所指 commit 根本不在它 head 上的 PR,就是这么来的:那次运行对「本轮交付
+记录」的等待,被*上一轮*的记录满足了,比真正那一份早了 8 分钟。
 
-**Re-run a finished issue with `--round N`.** The identity stays derived —
-`issue-<N>-<slug>-r2`, branch `feat/issue-<N>-<slug>-r2` — so round 2 is itself
-resumable by re-running the same command, and round 1's card, branch and
-delivery record stay exactly where they are as the history they are. Round 1
-carries no suffix, so every name this verb has ever produced is unchanged.
+**用 `--round N` 重跑一个已完成的 issue。** 身份仍然是推导出来的 ——
+`issue-<N>-<slug>-r2`,分支 `feat/issue-<N>-<slug>-r2` —— 所以第 2 轮自己也可以靠
+重跑同一条命令来续跑,而第 1 轮的卡片、分支和交付记录原封不动地留在那里,作为它们
+本来就是的历史。第 1 轮不带后缀,所以这个 verb 曾经产出过的每一个名字都未变。
 
 ## Verb: `stop swarm`
 
-Run the bundled script; it preflights before it stops anything (issue #11):
-`stop swarm` used to be a bare `close-swarm` call with no grace period and no
-check of role state or uncommitted work, equivalent to pulling the power
-instead of a shutdown. The script now reports what a stop would interrupt and
-requires a human decision before it touches tmux.
+跑随包的脚本;它在停任何东西之前先做 preflight(issue #11):`stop swarm` 过去是一次
+裸的 `close-swarm` 调用,没有宽限期,也不检查角色状态和未提交的工作,等同于拔电源
+而不是关机。脚本现在会报出一次停机会打断什么,并要求人先做决定,然后才碰 tmux。
 
 ```sh
 scripts/stop-swarm.sh --root <project-root> \
@@ -1335,13 +1114,12 @@ scripts/stop-swarm.sh --root <project-root> \
   [--close-swarm <path-on-target>]
 ```
 
-### Where `close-swarm` lives (issue #82)
+### `close-swarm` 在哪(issue #82)
 
-`close-swarm` runs **on the target**, and the default path is the operator's
-own machine: `/Users/admin/project/swarm-forge/close-swarm`. A managed project
-does not ship one — it has `./swarm` but no `close-swarm`, and
-`swarmforge/scripts/` has none either — so on a target whose home is not
-`/Users/admin` you must say where it is:
+`close-swarm` 是**在目标上**跑的,而默认路径是 operator 自己那台机器的:
+`/Users/admin/project/swarm-forge/close-swarm`。被管 project 不带这个文件 —— 它有
+`./swarm` 但没有 `close-swarm`,`swarmforge/scripts/` 里也没有 —— 所以在一台 home
+不是 `/Users/admin` 的目标机上,你必须说明它在哪:
 
 ```sh
 # find it once per target, then pass it
@@ -1351,51 +1129,44 @@ scripts/stop-swarm.sh --root <root> --target <target> --key <key> \
   --close-swarm /home/<user>/project/swarm-forge/close-swarm
 ```
 
-`CLOSE_SWARM` in the environment still works; the flag wins over it. Get it
-wrong and the verb now says so — `5` `ERROR` carrying close-swarm's own
-stderr, never `STOPPED`.
+环境变量里的 `CLOSE_SWARM` 仍然有效;flag 压过它。给错了这个 verb 现在会说出来 ——
+`5` `ERROR`,带着 close-swarm 自己的 stderr,而不是 `STOPPED`。
 
-It reads `sessions.tsv` and classifies each role's pane exactly the way `read
-swarm` does (same `BUSY`/`IDLE`/`UNKNOWN` judgment, same shared code — the two
-verbs must never disagree about a role's state), then reads `roles.tsv`'s
-worktree-path column and runs `git status --porcelain` against each one
-(deduplicated, since `master`/`none` rows both resolve to the project root).
-Only when every role reads `IDLE` and every worktree is clean does it run the
-same stop `close-swarm` has always done — and then **checks that it worked**.
+它读 `sessions.tsv`,用与 `read swarm` 完全相同的方式对每个角色的 pane 分类(同一套
+`BUSY`/`IDLE`/`UNKNOWN` 判断,同一份共享代码 —— 这两个 verb 绝不能对一个角色的状态
+产生分歧),然后读 `roles.tsv` 的 worktree 路径列,对每一个跑 `git status --porcelain`
+(去重,因为 `master`/`none` 两种行都解析到 project 根)。只有当每个角色都读成
+`IDLE`、每个 worktree 都干净时,它才跑 `close-swarm` 一直以来做的那次停机 —— 然后
+**检查它真的生效了**。
 
-It also stops `pack_web` afterwards, by the pid in
-`$ROOT/.swarmforge/pack_web.pid`, and reports `PACK_WEB=stopped|absent`.
-`close-swarm` only knows about tmux; a dashboard left running means a later
-start on a fixed port gives one `$ROOT` two live `pack_web` processes, which
-is precisely the squatting case `dashboard`'s port-ownership check exists to
-refuse.
+它随后还会按 `$ROOT/.swarmforge/pack_web.pid` 里的 pid 停掉 `pack_web`,并报
+`PACK_WEB=stopped|absent`。`close-swarm` 只知道 tmux;留着一个还在跑的 dashboard,
+意味着之后一次在固定端口上的启动会让同一个 `$ROOT` 有两个活的 `pack_web` 进程,而
+那正是 `dashboard` 的端口归属检查存在要拒绝的蹲位情况。
 
-Exit codes / STATUS line:
+退出码 / STATUS 行:
 
-- `0` `STOPPED` — every role was `IDLE` and every worktree was clean (or
-  `--force` was passed); the swarm was stopped the same way it is today.
-- `2` `USAGE` — missing `--root`.
-- `3` `STOPPED` — `sessions.tsv`/`roles.tsv`/`tmux-socket` missing, or the
-  socket has no tmux server; nothing to stop.
-- `5` `ERROR` — the verb itself failed to run, **or `close-swarm` did not**
-  (issue #82). The body carries close-swarm's own stderr and the path that
-  was tried. The swarm is still up; nothing was stopped. Until this was
-  checked, a `close-swarm` that did not exist on the target printed
-  `STATUS=STOPPED` and exited `0` with every tmux session still alive.
-- `6` `UNSAFE` — a role read `BUSY` or `UNKNOWN`, or a worktree was dirty (or
-  its status could not be verified at all — treated as unsafe, never as
-  clean). **Nothing was changed**: no `kill-session`, no `close-swarm` call.
-  Report the `PREFLIGHT` block to the user and let a human decide whether to
-  wait or re-run with `--force`.
+- `0` `STOPPED` —— 每个角色都是 `IDLE`,每个 worktree 都干净(或者传了 `--force`);
+  swarm 以它今天一贯的方式被停掉了。
+- `2` `USAGE` —— 缺 `--root`。
+- `3` `STOPPED` —— `sessions.tsv`/`roles.tsv`/`tmux-socket` 缺失,或者 socket 上没有
+  tmux server;没有东西可停。
+- `5` `ERROR` —— verb 自己跑失败了,**或者 `close-swarm` 没跑成**(issue #82)。主体
+  带上 close-swarm 自己的 stderr 和试过的那个路径。swarm 仍然活着;什么都没被停掉。
+  在这一项被检查之前,一个在目标上根本不存在的 `close-swarm` 会打印
+  `STATUS=STOPPED` 并以 `0` 退出,而每个 tmux session 都还活着。
+- `6` `UNSAFE` —— 某个角色读成 `BUSY` 或 `UNKNOWN`,或者某个 worktree 是脏的(或者它
+  的状态根本无法核实 —— 一律当作不安全,绝不当作干净)。**什么都没改**:没有
+  `kill-session`,没有 `close-swarm` 调用。把 `PREFLIGHT` 块报给用户,让人来决定是等
+  还是带 `--force` 重跑。
 
-  A `DIRTY` line naming only SwarmForge's own installed files means that
-  project predates issue #87 and never got the `.gitignore` block — see
-  *Already-onboarded projects* under `onboard project`. Add the block and
-  commit it; do not reach for `--force`, which waives the gate for the
-  project's real uncommitted work too.
+  一条只点名 SwarmForge 自己安装的文件的 `DIRTY` 行,意味着那个 project 早于
+  issue #87,从没拿到那个 `.gitignore` 块 —— 见 `onboard project` 下面的*已经 onboard
+  过的 project*。把那个块加上并提交;不要伸手去拿 `--force`,它连 project 真正未提交
+  的工作也一起豁免掉了。
 
-On `6` `UNSAFE`, stdout carries a `PREFLIGHT` block after `STATUS=`, one line
-per unsafe condition found:
+在 `6` `UNSAFE` 时,stdout 会在 `STATUS=` 之后带一个 `PREFLIGHT` 块,每发现一个不安全
+条件一行:
 
 ```
 STATUS=UNSAFE
@@ -1405,144 +1176,106 @@ UNKNOWN=coder
 DIRTY=.worktrees/cleaner (12 files)
 ```
 
-**`--force` skips the preflight gate entirely** — no state files read, no
-tmux reached for anything but the stop itself. It is a human's explicit call
-to interrupt whatever is running; the script never assumes it. It waives the
-preflight only: whether the stop actually ran is still checked, so `--force`
-can still exit `5` `ERROR`.
+**`--force` 完全跳过 preflight 闸门** —— 不读状态文件,除了停机本身之外不为任何事去
+碰 tmux。它是人明确做出的、要打断正在跑的东西的决定;脚本从不替它假设。它豁免的只有
+preflight:停机到底跑没跑成仍然会被检查,所以 `--force` 照样可能以 `5` `ERROR` 退出。
 
-**Boundary:** this verb does not implement graceful per-agent shutdown — no
-`/exit` sent to any backend, no wait for it to wind down. It only surfaces
-state to a human before an irreversible `kill-session`. It also never commits
-on a role's behalf: a dirty worktree blocks the stop, but nothing here writes
-a commit — that stays a human decision. If cleanup is incomplete after a
-clean or forced stop, resolve this project's socket again, kill only that
-tmux server, and match `handoffd.bb` with the exact project root; verify
-other project daemons remain running.
+**边界:** 这个 verb 不实现逐 agent 的优雅关闭 —— 不向任何 backend 发 `/exit`,也不等
+它收尾。它只是在一次不可逆的 `kill-session` 之前把状态摊给人看。它也从不替某个角色
+提交:一个脏的 worktree 会挡住停机,但这里没有任何东西会写 commit —— 那仍然是人的
+决定。如果干净停机或强制停机之后清理仍不彻底,重新解析这个 project 的 socket,只杀
+那一个 tmux server,并用精确的 project 根去匹配 `handoffd.bb`;确认其它 project 的
+daemon 仍在运行。
 
 ## Testing
 
-`scripts/test-open-swarm.sh` and `scripts/test-open-dashboard.sh` run the
-two flows against a stubbed cmux/ssh/curl, covering topology pairing, reuse,
-repair, stopped, drift, unparseable mutation output, tunnel reuse, and
-port-conflict fallback. `test-open-dashboard.sh` additionally stubs `ps`
-(via the ssh stub, plus a fake `pack_web.pid`/process registry) to cover the
-port-ownership check: a live process whose `--serve` argument names a
-different root (exit 4 DRIFT, actual root in stdout, no cmux call at all),
-a missing `pack_web.pid`, and a `pack_web.pid` whose process is dead (both
-exit 3 STOPPED, not 4). `scripts/test-wake-talk.sh` runs `wake-role.sh` and
-`talk-role.sh` against a stubbed tmux, covering verified submit, a submit key
-that never lands, an unknown role, a dead socket, and that neither script
-ever submits with the symbolic `C-m`/`C-j`. `scripts/test-read-swarm.sh` runs
-`read-swarm.sh` against a stubbed tmux (capture-pane keyed per session, so
-one run can give two roles different pane content), covering an explicit
-idle marker, an explicit busy marker, a blank pane (must read `UNKNOWN`,
-never `IDLE`), unrecognized error text (`UNKNOWN` with the raw text still
-attached), a dead socket, and that the script never calls `send-keys`.
-`scripts/test-stop-swarm.sh` runs `stop-swarm.sh` against a stubbed
-tmux/git/close-swarm, covering a `BUSY` role, an `UNKNOWN` role, a `DIRTY`
-worktree, `--force` bypassing the gate, an all-clean stop, and a dead socket
-— and asserts that on every blocked case neither `kill-session` nor
-`close-swarm` is ever called. `scripts/test-accept-work.sh` runs
-`accept-work.sh` against a stubbed `git` (find/sed run for real against
-fixture files, `--local` so ssh is never invoked), covering a clean run with
-no stuck handoffs, a fresh (not-yet-stale) `inbox/new` file that must not
-WARN, a stale `inbox/new` backlog and a stale `inbox/in_process` backlog that
-each WARN with their count and worktree name, an in-progress
-`inbox/in_process` file under its longer threshold that must not WARN, the
-already-shipped-commit exclusion, terminal-handoff dedup across chain hops,
-and that two runs never change a byte under any `inbox/` tree.
-`scripts/test-start-swarm.sh` runs `start-swarm.sh` against a stubbed
-tmux/ssh and a fake `./swarm` launcher, covering missing `--root`/
-`--terminal`, an invalid `--terminal` value, an already-running swarm
-(refused, launcher never invoked), a stale dead socket (proceeds to
-launch), `--terminal`'s value reaching the launcher's environment, `auto`
-never being exported, and launch timeout. Its detachment cases prove real
-process survival rather than argv shape: a fake launcher records its own
-PID and sleeps past the point `start-swarm.sh` has already returned
-control, and the test asserts start-swarm.sh returned well before that
-delay elapsed, then sends the launcher a real `SIGHUP` (local case — what a
-closing session delivers) and confirms it still finishes and writes its
-marker file afterward, and (remote case, via a stub `ssh` that actually
-executes the launch command instead of just logging it) that the marker
-appears only after the stub ssh invocation itself has already returned.
-`scripts/test-update-swarmforge-scripts.sh` runs `update-swarmforge-scripts.sh`
-against a stubbed tmux/ssh and real local filesystem operations for staging,
-digesting, validation, and replacement (stubbing only the ssh/tmux
-boundary, per issue #29's Testing Decisions), against disposable fixture
-git repos built from a real copy of this repo's own scripts so the
-dirty-source case never depends on this checkout's own live git state.
-Covers missing `--root`, an already-running swarm (refused with `--force`,
-zero filesystem changes), project-lock contention naming the holder and
-`--force` stealing it, a dirty source checkout, a staged tree missing a
-required helper or terminal adapter (names the file, `$ROOT` untouched), a
-successful local update (manifest digest/commit/repo correct, old tree
-gone, legacy launcher rewritten and verified, `swarmforge.conf`/roles/
-constitution/`sessions.tsv` byte-identical before and after), a legacy
-launcher whose `ARCHIVE_URL` never matches the expected pattern (rolls back
-the scripts swap and manifest write, not just the launcher), a manifest
-write failure (old tree restored), a project with no legacy `./swarm` file
-at all (launcher rewrite skipped, not an error), a full remote update over
-the stub-ssh tar-pipe transfer, and the required cross-verb case: this
-script's own successful update followed by `start-swarm.sh --local` with no
-`--force` proceeding straight to `STATUS=STARTED` instead of `DRIFT`,
-proving the digest this script writes and `start-swarm.sh`'s own read of it
-genuinely agree. `scripts/test-run-issue.sh` runs `run-issue.sh` against stubbed
-`gh`/`git`/`curl` and a stubbed `accept-work.sh`, with `--local` so `ssh` is
-never invoked while `dashboard-url`, `roles.tsv` and the Board TSV stay real
-files read by a real `cat`. Lane progression is driven by the stubs — the POST
-stub creates the card in the master lane, and each `/api/state` call advances
-it by one scripted lane — so "how many rounds did it wait" is an assertable
-number rather than a race. It covers missing/non-numeric arguments (nothing
-runs at all), a duplicate Board card (exit 6, no POST, board and handoffs
-byte-identical, no branch created), a pending clarification and a pending
-approval before the POST (exit 6 naming the id, nothing created), a
-clarification appearing mid-poll (exit 6 at the exact round it appeared, no
-PR), `BASE` taken from an open PR's head and falling back to `main`, the
-branch and task name sharing one slug, the task body naming the handoff chain
-derived from `roles.tsv`, a coder that goes idle mid-chain while the lane is
-still `coder`/`cleaner` (keeps waiting, and `work_in_flight` never appears
-outside comments in the script), the poll ceiling (exit 5, exactly one POST,
-no PR), and the PR argv itself: `--base`/`--head`/`--title`/`--body` present,
-`Closes #N` and `accept work`'s `commit:` in the body, and `--merge`,
-`--auto`, `--fill` absent. Two cases cover issue #63's delivery window, using
-an `accept work` stub that reports successfully while omitting the current
-task's block for a set number of calls: one where the record appears on the
-third call (exit 0, exactly one push, exactly one `gh pr create`, and still
-only one POST) and one where it never appears (exit 5 naming `in_process`, no
-push, no PR, no re-post). Issue #65's resume path is covered by running the
-script twice against one fixture: the first pass is cut off after the POST (a
-lane that never reaches `done` plus a zero poll ceiling), and the second pass
-must exit 0 with `resumed: yes` while the Board still holds exactly one card
-and the two runs together produce exactly one POST, one branch, one push and
-one `gh pr create`. A third case re-runs after a PR already exists for the
-head and asserts `gh pr create` is not called again. Issue #76's dead end gets
-a case of its own: the branch registry is seeded with the branch and the Board
-left empty — exactly what a run killed between step 4 and step 5 leaves — and
-the run must exit 0 having created no second branch, posted exactly one task,
-and opened one PR. That case only bites because the `git` stub's `checkout -b`
-now **fails on an existing branch** the way real git does; with a stub that
-always succeeded it would pass against the broken script. `--max-wait` is
-covered four ways: `0` exits `7` `STILL_RUNNING` after exactly one lane check
-with no push and no PR and is then resumable like any other kill, `0` during
-the delivery window exits `7` rather than `5`, a negative value still reaches
-the old `5` `ERROR` ceiling, and a non-numeric value exits `2` having run no
-command at all. Issue #115's split of the card row by lane value gets five: a
-`done` card with its branch and no PR still ships the round it was left in
-(exit 0, `resumed: yes`, no re-POST); the same card whose head carries a
-`CLOSED` PR exits `6` naming that PR and `--round`, with the board and handoffs
-byte-identical and no push; the same card whose PR is `OPEN` still exits 0
-reporting it; a `done` card with no branch exits `6` naming `--round` and
-explicitly **not** the old "delete or rename it" remedy, while an *active* lane
-with no branch keeps that remedy word for word; and `--round 2` runs fresh
-under the suffixed identity, leaving round 1's card untouched, with `--round 0`
-and a non-numeric value exiting `2` before any command runs. One structural
-check backs them: the script must compare `EXISTING_LANE` against `done`
-outside its comments, because a decision that only tests the lane for
-emptiness is the bug itself, however green the behavioural cases look. For these the `git` stub
-keeps a real branch registry — `checkout -b` records a name and `rev-parse
---verify` answers from it — because a stub that always exits 0 would let both
-the resume case and the not-our-card case pass for the wrong reason. Its `accept work` stub prints a `WARN=` line and a
-decoy task block first, so a parser that reads by line offset instead of by
-`task:` prefix fails. Run them after any change to the scripts or the stub
-contracts.
+`scripts/test-open-swarm.sh` 和 `scripts/test-open-dashboard.sh` 对着打了桩的
+cmux/ssh/curl 跑这两条流程,覆盖 topology 配对、复用、修复、停机、drift、无法解析的
+mutation 输出、隧道复用,以及端口冲突时的回退。`test-open-dashboard.sh` 还额外给 `ps`
+打桩(经由 ssh 桩,外加一份假的 `pack_web.pid`/进程注册表)来覆盖端口归属检查:一个
+`--serve` 参数指向另一个根的活进程(退出 4 DRIFT,实际的根打在 stdout 上,完全不调用
+cmux)、一个缺失的 `pack_web.pid`,以及一个进程已死的 `pack_web.pid`(两者都退出 3
+STOPPED,不是 4)。`scripts/test-wake-talk.sh` 对着打了桩的 tmux 跑 `wake-role.sh` 和
+`talk-role.sh`,覆盖经过验证的提交、一个始终没落地的提交键、一个未知角色、一个死掉的
+socket,以及两个脚本都绝不用符号键名 `C-m`/`C-j` 提交。`scripts/test-read-swarm.sh`
+对着打了桩的 tmux 跑 `read-swarm.sh`(capture-pane 按 session 分别打桩,所以一次运行
+可以给两个角色不同的 pane 内容),覆盖一个明确的 idle 标记、一个明确的 busy 标记、
+一个空白 pane(必须读成 `UNKNOWN`,绝不能是 `IDLE`)、认不出来的错误文本(`UNKNOWN`,
+且原始文本照样附上)、一个死掉的 socket,以及脚本从不调用 `send-keys`。
+`scripts/test-stop-swarm.sh` 对着打了桩的 tmux/git/close-swarm 跑 `stop-swarm.sh`,
+覆盖一个 `BUSY` 角色、一个 `UNKNOWN` 角色、一个 `DIRTY` worktree、`--force` 绕过闸门、
+一次全干净的停机,以及一个死掉的 socket —— 并断言在每一种被拦下的情况里,
+`kill-session` 和 `close-swarm` 一次都没被调用过。`scripts/test-accept-work.sh` 对着
+打了桩的 `git` 跑 `accept-work.sh`(find/sed 是对着 fixture 文件真跑的,用 `--local`
+所以 ssh 从不被调用),覆盖一次没有卡住 handoff 的干净运行、一个还新鲜(尚未变陈旧)
+因而不能 WARN 的 `inbox/new` 文件、一份陈旧的 `inbox/new` 积压和一份陈旧的
+`inbox/in_process` 积压(两者都要带上条数和 worktree 名 WARN)、一个在它更长阈值之内
+因而不能 WARN 的进行中 `inbox/in_process` 文件、已交付 commit 的排除、跨链条跳的终端
+handoff 去重,以及两次运行绝不改动任何 `inbox/` 树下的一个字节。
+`scripts/test-start-swarm.sh` 对着打了桩的 tmux/ssh 和一个假的 `./swarm` launcher 跑
+`start-swarm.sh`,覆盖缺 `--root`/`--terminal`、一个非法的 `--terminal` 值、一个已经
+在跑的 swarm(拒绝,launcher 从不被调用)、一个陈旧的死 socket(继续启动)、
+`--terminal` 的值到达 launcher 的环境、`auto` 从不被导出,以及启动超时。它那几个关于
+脱离终端的用例证明的是真实的进程存活,而不是 argv 的形状:一个假 launcher 记下自己的
+PID 并一直睡到 `start-swarm.sh` 早已交还控制权之后,测试断言 start-swarm.sh 在那段
+延迟结束之前很久就返回了,然后给 launcher 发一个真实的 `SIGHUP`(本地情形 —— 一个正在
+关闭的会话会投递的信号)并确认它之后仍然跑完并写下它的标记文件,以及(远端情形,经由
+一个真的执行启动命令而不只是记录它的 `ssh` 桩)标记文件只在那次桩 ssh 调用本身已经返回
+之后才出现。`scripts/test-update-swarmforge-scripts.sh` 对着打了桩的 tmux/ssh 跑
+`update-swarmforge-scripts.sh`,staging、算 digest、校验与替换都用真实的本地文件系统
+操作(只在 ssh/tmux 边界处打桩,依 issue #29 的 Testing Decisions),对着用本仓库自己
+脚本的真实副本搭出来的一次性 fixture git 仓库跑,这样「脏来源」那个用例永远不依赖当前
+checkout 自己的实时 git 状态。覆盖缺 `--root`、一个已经在跑的 swarm(带 `--force` 也
+拒绝,零文件系统改动)、project 锁竞争并点名持有者以及 `--force` 抢走它、一份脏的来源
+checkout、一棵缺了必需 helper 或 terminal adapter 的 staged 树(点名那个文件,`$ROOT`
+未被碰)、一次成功的本地 update(manifest 的 digest/commit/repo 正确、旧树消失、历史
+launcher 已重写并核实,`swarmforge.conf`/roles/constitution/`sessions.tsv` 前后逐字节
+相同)、一个 `ARCHIVE_URL` 始终不符合预期模式的历史 launcher(回滚脚本换入和 manifest
+写入,不只是回滚 launcher)、一次 manifest 写入失败(旧树被恢复)、一个根本没有历史
+`./swarm` 文件的 project(跳过 launcher 改写,不算错误)、一次经由桩 ssh 的 tar 管道
+传输的完整远端 update,以及那个必需的跨 verb 用例:本脚本自己成功 update 之后,不带
+`--force` 的 `start-swarm.sh --local` 直接走到 `STATUS=STARTED` 而不是 `DRIFT`,证明
+本脚本写下的 digest 与 `start-swarm.sh` 自己对它的读取是真的一致的。
+`scripts/test-run-issue.sh` 对着打了桩的 `gh`/`git`/`curl` 和一个打了桩的
+`accept-work.sh` 跑 `run-issue.sh`,用 `--local` 所以 `ssh` 从不被调用,而
+`dashboard-url`、`roles.tsv` 和 Board TSV 都是被真实 `cat` 读的真实文件。lane 的推进
+由桩驱动 —— POST 桩在 master lane 里创建卡片,每次 `/api/state` 调用把它往前推一个
+脚本化的 lane —— 所以「它等了多少轮」是一个可断言的数字,而不是一次竞态。它覆盖缺失/
+非数字的参数(什么都不跑)、一张重复的 Board 卡片(退出 6,没有 POST,board 和
+handoff 逐字节相同,没有创建分支)、POST 之前的一个待处理澄清和一个待处理批准(退出
+6 并点名 id,什么都没创建)、轮询中途出现的一个澄清(在它出现的那一轮精确退出 6,没有
+PR)、`BASE` 取自一个开着的 PR 的 head 以及回退到 `main`、分支与任务名共用一个 slug、
+任务主体点名从 `roles.tsv` 推导出来的 handoff 链、一个在 lane 仍是 `coder`/`cleaner`
+时中途转 idle 的 coder(继续等,而且 `work_in_flight` 在脚本里除注释外从不出现)、
+轮询上限(退出 5,恰好一次 POST,没有 PR),以及 PR 的 argv 本身:`--base`/`--head`/
+`--title`/`--body` 都在,body 里有 `Closes #N` 和 `accept work` 的 `commit:`,而
+`--merge`、`--auto`、`--fill` 都不在。有两个用例覆盖 issue #63 的交付窗口,用的是一个
+会成功报告、但在设定的次数内省略当前任务那一段的 `accept work` 桩:一个是记录在第三次
+调用时出现(退出 0,恰好一次 push、恰好一次 `gh pr create`,而且仍然只有一次 POST),
+另一个是它始终不出现(退出 5 并点名 `in_process`,没有 push、没有 PR、没有重新 POST)。
+issue #65 的续跑路径靠对同一份 fixture 跑两遍脚本来覆盖:第一遍在 POST 之后被切断
+(一个永远到不了 `done` 的 lane,加上一个为零的轮询上限),第二遍必须以 0 退出并带
+`resumed: yes`,同时 Board 里仍然恰好只有一张卡片,两次运行合起来恰好产生一次 POST、
+一个分支、一次 push 和一次 `gh pr create`。第三个用例在 head 已经有 PR 之后重跑,并
+断言 `gh pr create` 不会被再次调用。issue #76 那个死胡同有它自己的用例:分支注册表里
+预置了那个分支而 Board 留空 —— 正是一次在第 4 步和第 5 步之间被杀掉的运行会留下的
+状态 —— 这次运行必须以 0 退出,没有创建第二个分支,恰好 POST 了一个任务,并开了一个
+PR。那个用例之所以真的咬得住,是因为 `git` 桩的 `checkout -b` 现在会像真 git 一样
+**在分支已存在时失败**;换成一个永远成功的桩,它对着有 bug 的脚本也会通过。
+`--max-wait` 从四个方向被覆盖:`0` 在恰好一次 lane 检查之后以 `7` `STILL_RUNNING`
+退出,没有 push 也没有 PR,并且之后可以像任何一次被杀掉的运行一样续跑;交付窗口期间
+的 `0` 退出 `7` 而不是 `5`;一个负值仍然走到老的 `5` `ERROR` 上限;一个非数字值退出
+`2`,一条命令都没跑。issue #115 把卡片那一行按 lane 值拆开,拿到五个用例:一张带着
+分支、没有 PR 的 `done` 卡片,仍然把它被留在的那一轮交付出去(退出 0,`resumed: yes`,
+不重新 POST);同一张卡片但 head 上带着一个 `CLOSED` PR 时退出 `6`,点名那个 PR 和
+`--round`,board 与 handoff 逐字节相同且没有 push;同一张卡片但 PR 是 `OPEN` 时仍然
+退出 0 并报出它;一张没有分支的 `done` 卡片退出 `6` 并点名 `--round`,而且明确**不**
+给出老的「删掉它或改个名」补救说法,与此同时一个没有分支的*活跃* lane 一字不差地保留
+那句补救说法;以及 `--round 2` 在带后缀的身份下全新跑一遍,第 1 轮的卡片原封不动,而
+`--round 0` 和一个非数字值在任何命令跑起来之前就退出 `2`。有一项结构性检查为它们兜底:
+脚本必须在注释之外把 `EXISTING_LANE` 与 `done` 做比较,因为一个只测 lane 是否为空的
+判断本身就是那个 bug,不管那些行为用例看起来多绿。为了这些用例,`git` 桩维护一份真实
+的分支注册表 —— `checkout -b` 记下一个名字,`rev-parse --verify` 从它那里作答 ——
+因为一个永远退出 0 的桩会让续跑用例和「不是我们的卡片」用例都因为错误的理由而通过。
+它的 `accept work` 桩会先打印一行 `WARN=` 和一段诱饵任务块,这样一个按行偏移而不是按
+`task:` 前缀解析的解析器就会失败。任何一次改动脚本或桩的契约之后,都要跑一遍它们。
