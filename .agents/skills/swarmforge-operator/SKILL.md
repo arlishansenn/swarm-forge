@@ -801,7 +801,8 @@ scripts/run-issue.sh --root <project-root> --issue <N> \
 5. `POST {dashboard-url}/api/tasks` 一次 —— 只在卡片已经在 Board 上时才跳过 ——
    然后轮询 Board lane 直到 `done`。
 6. 用 `accept work` 取 commit —— **一直重试直到交付记录真的可见**,不是只读一次 ——
-   然后 `git push` 加 `gh pr create --base BASE`。
+   然后 `git push`,停在 `NEEDS_PR_BODY`(退出 8)并把 commit 交回给你。**正文由你
+   来写**,写完带 `--body-file` 重跑,第二趟直接走到 `gh pr create --base BASE`。
 
 ### 堆叠分支,以及为什么不动 `main`
 
@@ -824,6 +825,62 @@ commit。而且 swarm 不再直接往 `main` 上提交。一旦有人合并了�
 (`merge-base --is-ancestor` 和 `merge --no-edit`),都是针对当前 `HEAD` 的;swarm 里
 没有任何东西点名一个分支。`BASE` 每次调用都从 `gh pr list` 重新查一遍 ——
 **这个 verb 在两次调用之间不保留任何状态。**
+
+### PR 正文:字段归脚本,散文归你
+
+在 issue #118 之前,正文是四行 `printf`。podsum#149 就是它在 reviewer 眼里的样子:
+
+```text
+Closes #138
+
+task: issue-138-brief
+commit: 8ff7c7055b
+completed_at: 2026-09-09T15:43:01.447590Z
+```
+
+**没有一个字是模型写的**,标题是 `gh issue view --json title` 原样搬的。改角色 prompt、
+改 skill description、改 `AGENTS.md` 都修不了它:**那条路径上根本没有模型可以指挥。**
+
+现在这个 verb **分两趟**:
+
+```text
+第一趟  run-issue.sh --root R --issue 28
+          投 task → 轮询 → accept work → git push
+          → STATUS=NEEDS_PR_BODY（退出 8），报出 issue/task/branch/base/commit
+你       派一个子代理：用 to-pr skill 读 BASE..COMMIT 写正文
+          → 正文落到一个文件
+第二趟  run-issue.sh --root R --issue 28 --body-file <那个文件>
+          → 走同一套标记判断，直接到 gh pr create
+```
+
+**为什么正文不由这个脚本去要。** 它曾经内嵌 `pi -p` 去调模型。那把一个 operator verb
+绑死在一个 harness 上:一个 Claude Code 编排者,在一台没装 `pi` 的机器上,**这个 verb
+根本跑不起来**。每个 harness 都有自己的子代理机制,这里一个都不写死。
+
+**为什么是子代理,而不是你自己读 diff。** 一次改动的 diff 动辄几十 KB,而这个 verb 的
+常规用法是连投(`for n in 28 29 30; ...`)。让它进你的上下文,是每张票几十 KB 地累加;
+交给子代理,你只收回正文。**这和「派 subagent 去趟噪音大的活、只把结论带回来」是同一条
+理由。**
+
+分工:
+
+| 正文的哪部分 | 谁写 | 为什么归那一侧 |
+|---|---|---|
+| `Closes #N`、`task:`、`commit:`、`completed_at:` | 脚本 | 下游有东西要解析它们;编错一个 issue 号,代价正是这个 verb 存在的理由 |
+| 那几个 `##` 小节 | 你派的子代理,用 `to-pr` | 只有读过 diff 的东西写得出来 |
+
+**形状在 `to-pr` skill 里**,不在这个文件里,也不在脚本里。改 PR 正文长什么样是 skills
+仓的一次改动,单独 review;人手动跑 `/to-pr` 拿到的是同一个形状。
+
+**什么会让它大声失败**(都是 `STATUS=ERROR` / 退出 5,而且**都不回退到旧的元数据正文**
+—— 那个回退才是 bug,它比失败更坏,因为它看起来像成功):
+
+- `--body-file` 指向的路径不存在。
+- 那个文件是空的。**一个空正文的 PR 看起来完成了、却什么都没说。**
+
+第一趟停在 `NEEDS_PR_BODY` 时,分支**已经推上去了**、PR **没开**。原样带 `--body-file`
+重跑即可,不会开出第二个 PR —— 幂等判断(这个 head 上是不是已经有开着的 PR)仍然在
+脚本里。
 
 ### 它拒绝弄错的四件事
 

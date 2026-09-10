@@ -75,12 +75,29 @@
 # calls. Once a human merges the lower PR, GitHub retargets the upper one to
 # `main` on its own.
 #
+# The PR body is written by a model, not by this script (issue #118). The
+# script owns only the fields something downstream parses — `Closes #N`,
+# `task`, `commit`, `completed_at` — because a hallucinated issue number costs
+# a human the reverse-engineering this verb exists to avoid. The four
+# body's prose can only be written by something that read the diff, and this
+# script is not that something. It stops at `NEEDS_PR_BODY` (exit 8) and hands
+# back the commit; the CALLER writes the body — the intended shape is to send a
+# subagent with the `to-pr` skill, so the diff lands in the subagent's context
+# and not in the orchestrator's — then re-runs with `--body-file`. That second
+# run walks the same markers and goes straight to `gh pr create`.
+#
+# No model is invoked from here, on purpose. An earlier version shelled out to
+# `pi -p`, which bound an operator verb to one harness: a Claude Code
+# orchestrator on a box with no `pi` could not run it at all. Every harness has
+# some way to dispatch a subagent; none of them is spelled here.
+#
 # One issue per call, deliberately. A `--issues 28,29,30` flag would need
 # exactly one piece of error handling, and the caller already has it:
 #   for n in 28 29 30; do run-issue.sh --root R --issue "$n" || break; done
 #
 # Exit codes / STATUS line:
 #   0 PR_OPENED   2 USAGE   5 ERROR   6 UNSAFE   7 STILL_RUNNING
+#   8 NEEDS_PR_BODY
 # 7 is deliberately not 5: reaching the caller's deadline means the task is
 # posted and the swarm is working, and the fix is to run the same command
 # again. The `for ... || break` chain above breaks on both, but has to report
@@ -92,7 +109,7 @@
 #
 # Usage: run-issue.sh --root <project-root> --issue <N> \
 #   [--target user@host] [--key <path>] [--local] [--max-wait <seconds>] \
-#   [--round <N>]
+#   [--round <N>] [--body-file <path>]
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib-wake-talk.sh"
@@ -123,6 +140,7 @@ DELIVERY_SECONDS=${SF_RUN_ISSUE_DELIVERY_SECONDS:-600}
 # Overridable so tests can point step 5 at a stub instead of the real report,
 # same trick as start-swarm.sh's SWARM_LAUNCHER.
 ACCEPT_WORK=${ACCEPT_WORK:-$HERE/accept-work.sh}
+BODY_FILE=${BODY_FILE:-}
 
 usage() { printf 'STATUS=USAGE\n'; sed -n '2,95p' "$0"; exit 2; }
 
@@ -135,6 +153,10 @@ while [ $# -gt 0 ]; do
     --local) LOCAL=1; shift ;;
     --max-wait) MAX_WAIT=${2:-}; shift 2 ;;
     --round) ROUND=${2:-}; shift 2 ;;
+    # The PR body, written by the caller between the first run (which stops at
+    # NEEDS_PR_BODY) and this one. Read on the CALLER, not the target: the
+    # subagent that wrote it has no reason to have shell access over there.
+    --body-file) BODY_FILE=${2:-}; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -441,20 +463,45 @@ done
 in_root "git push -u origin $(printf '%q' "$BRANCH")" \
   || die ERROR "could not push $BRANCH from $ROOT" 5
 
-# Explicit --title/--body, never --fill: --fill would use the swarm's own
-# commit messages, which do not carry `Closes #N` — that is precisely how a PR
-# ended up needing a human to reverse-engineer which issue it closed. The body
-# carries pointers, not a diff copy.
-PR_BODY=$(printf 'Closes #%s\n\ntask: %s\ncommit: %s\ncompleted_at: %s\n' \
-  "$ISSUE" "$TASK_NAME" "$COMMIT" "$COMPLETED")
 # A run killed between the push and the PR would otherwise try to open a
 # second PR for the same head on the next attempt, and `gh pr create` would
 # fail with a message about the existing one. Resuming has to be idempotent at
-# every step, not only at the POST.
+# every step, not only at the POST. This runs BEFORE the body is generated so
+# a resume never pays for a model call whose output it would throw away.
 PR_URL=$(in_root "gh pr list --head $(printf '%q' "$BRANCH") --state open --json url --jq '.[].url' | head -1") \
   || PR_URL=''
 PR_URL=${PR_URL%$'\n'}
 if [ -z "$PR_URL" ]; then
+  # ---------- step 8b: the body comes from the caller ----------
+  # Until issue #118 the body was four lines of printf. podsum#149 is what that
+  # looks like from a reviewer's seat: `Closes #138`, task, commit, timestamp,
+  # and nothing a human could review against. No model was on this path at all,
+  # so no amount of prompt or skill work could have fixed it.
+  #
+  # The split now: this script owns the fields something downstream parses,
+  # because a hallucinated issue number costs a human exactly the archaeology
+  # this verb exists to prevent. The prose belongs to whoever read the diff.
+  # That is the caller, and the shape it should follow is the `to-pr` skill.
+  if [ -z "$BODY_FILE" ]; then
+    printf 'STATUS=NEEDS_PR_BODY\nissue: %s\ntask: %s\nbranch: %s\nbase: %s\ncommit: %s\nresumed: %s\nthe branch is pushed and no PR is open. Write the body for %s..%s, then re-run the same command with --body-file <path>. Send a subagent with the to-pr skill to write it: the diff belongs in that subagent, not in yours. Do not write Closes #%s, task, commit or completed_at — this verb appends them.\n' \
+      "$ISSUE" "$TASK_NAME" "$BRANCH" "$BASE" "$COMMIT" \
+      "$([ "$RESUMING" = 1 ] && echo yes || echo no)" \
+      "$BASE" "$COMMIT" "$ISSUE"
+    exit 8
+  fi
+  [ -f "$BODY_FILE" ] \
+    || die ERROR "--body-file $BODY_FILE does not exist; $BRANCH is pushed and no PR was opened" 5
+  PR_PROSE=$(cat "$BODY_FILE")
+  # An empty file would open a PR that looks finished and says nothing — the
+  # exact state #118 is about. Cheaper to refuse than to explain later.
+  [ -n "$(printf '%s' "$PR_PROSE" | tr -d '[:space:]')" ] \
+    || die ERROR "--body-file $BODY_FILE is empty; refusing to open a PR with no body. $BRANCH is pushed, no PR was opened" 5
+
+  # Explicit --title/--body, never --fill: --fill would use the swarm's own
+  # commit messages, which do not carry `Closes #N` — that is precisely how a
+  # PR ended up needing a human to reverse-engineer which issue it closed.
+  PR_BODY=$(printf 'Closes #%s\n\n%s\n\n---\ntask: %s\ncommit: %s\ncompleted_at: %s\n' \
+    "$ISSUE" "$PR_PROSE" "$TASK_NAME" "$COMMIT" "$COMPLETED")
   PR_OUT=$(in_root "gh pr create --base $(printf '%q' "$BASE") --head $(printf '%q' "$BRANCH") --title $(printf '%q' "$TITLE") --body $(printf '%q' "$PR_BODY")") \
     || die ERROR "gh pr create failed for $BRANCH -> $BASE in $ROOT" 5
   PR_URL=$(printf '%s\n' "$PR_OUT" | grep -o 'https://[^[:space:]]*' | tail -1 || true)
