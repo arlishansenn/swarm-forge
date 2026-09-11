@@ -75,6 +75,15 @@ STUB=${STUB:?}
 { printf 'git'; printf ' <%s>' "$@"; printf '\n'; } >> "$STUB/calls.log"
 touch "$STUB/branches"
 case "$1 $2" in
+  "merge-base --is-ancestor")
+    # #122: BASE must be an ancestor of origin/BASE before it is moved.
+    # STUB_GIT_DIVERGED=1 makes the local BASE carry commits origin has not.
+    [ -n "${STUB_GIT_DIVERGED:-}" ] && exit 1
+    exit 0 ;;
+  "checkout -B")
+    # Creates or force-moves; either way the branch exists afterwards.
+    grep -qxF "$3" "$STUB/branches" || printf '%s\n' "$3" >> "$STUB/branches"
+    exit 0 ;;
   "checkout -b")
     # Real git fails here ("a branch named X already exists"), and issue #76's
     # dead end is exactly that failure: a stub that always succeeded would let
@@ -193,7 +202,9 @@ reset() { # $@ = extra board rows, each "name<TAB>lane"
   printf 'a handoff\n' > "$ROOT/.swarmforge/handoffs/inbox/new/x.handoff"
   : > "$STUB/calls.log"
   : > "$STUB/lane-script"
-  : > "$STUB/branches"
+  # A managed project's checkout always has `main`. Leaving the registry empty
+  # sent every run down the stacked-BASE path, which is the rarer of the two.
+  printf 'main\n' > "$STUB/branches"
   printf '%s\n' "$STATE_CLEAN" > "$STUB/state.json"
 }
 tree_digest() {
@@ -308,8 +319,11 @@ out=$(GH_OPEN_HEAD='feat/issue-27-expose-append-only-email-evidence-as-via' \
 check "stacked run exits 0" 0 "$rc"
 has "BASE is the open PR head" "$(cat "$STUB/pr-create.argv")" \
   "--base feat/issue-27-expose-append-only-email-evidence-as-via"
-has "branches off the open PR head" "$(cat "$STUB/calls.log")" \
-  "git <checkout> <feat/issue-27-expose-append-only-email-evidence-as-via>"
+# The stacked BASE was pushed by a DIFFERENT round, so it may not exist on this
+# machine at all — it is created straight from the remote (#122). The `main`
+# case takes the other branch of that decision; see case 29.
+has "creates the stacked BASE from the remote" "$(cat "$STUB/calls.log")" \
+  "git <checkout> <-B> <feat/issue-27-expose-append-only-email-evidence-as-via> <origin/feat/issue-27-expose-append-only-email-evidence-as-via>"
 
 # ---------- 7. coder goes idle mid-chain, lane not done: keep waiting ----------
 # The chain is coder -> cleaner -> coder, and the coder is briefly idle between
@@ -740,6 +754,44 @@ out=$(GH_OPEN_HEAD='' "$SCRIPT" --root "$ROOT" --issue 28 --local \
 check "missing body file exits 5" 5 "$rc"
 check "missing body file STATUS" "STATUS=ERROR" "$(printf '%s\n' "$out" | head -1)"
 check "missing body file opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
+
+# ---------- 29. BASE is refreshed from the remote before branching ----------
+# The verb's own header names "a `git pull` was never run after a merge" as one
+# of the two ways podsum lost work, and until #122 it did not do that fetch.
+# Measured after podsum#155 merged: the managed checkout sat 4 commits behind
+# origin/main, so the next round would have branched off stale code.
+reset
+printf 'done\n' > "$STUB/lane-script"
+out=$(GH_OPEN_HEAD='' "$SCRIPT" --root "$ROOT" --issue 28 --local \
+  --body-file "$WORK/prbody.md" 2>&1); rc=$?
+check "refreshed BASE run exits 0" 0 "$rc"
+calls=$(cat "$STUB/calls.log")
+has "it fetches origin" "$calls" "git <fetch> <origin> <--quiet>"
+has "an existing BASE is fast-forwarded, not force-moved" "$calls" \
+  "git <merge> <--ff-only> <origin/main>"
+hasnt "an existing BASE is never force-moved" "$calls" "git <checkout> <-B> <main>"
+# Order matters: fetching after the branch already exists fixes nothing.
+fetch_line=$(printf '%s\n' "$calls" | grep -n 'git <fetch>' | head -1 | cut -d: -f1)
+branch_line=$(printf '%s\n' "$calls" | grep -n "git <checkout> <-b> <$BRANCH>" | head -1 | cut -d: -f1)
+[ -n "$fetch_line" ] && [ -n "$branch_line" ] && [ "$fetch_line" -lt "$branch_line" ] \
+  && ok "the fetch happens before the branch is cut" \
+  || bad "the fetch happens before the branch is cut" "fetch=$fetch_line branch=$branch_line"
+
+# ---------- 30. a diverged BASE is refused, not fast-forwarded over ----------
+# `checkout -B` here would silently orphan whatever that machine had committed,
+# and the canonical checkout of a managed project is exactly where a stray
+# commit must not vanish quietly. Same judgement pi-governance's step_repo_ff
+# makes: ancestor or refuse.
+reset
+printf 'done\n' > "$STUB/lane-script"
+out=$(GH_OPEN_HEAD='' STUB_GIT_DIVERGED=1 "$SCRIPT" --root "$ROOT" --issue 28 --local \
+  --body-file "$WORK/prbody.md" 2>&1); rc=$?
+check "diverged BASE exits 6" 6 "$rc"
+check "diverged BASE STATUS" "STATUS=UNSAFE" "$(printf '%s\n' "$out" | head -1)"
+has "diverged BASE says what would be lost" "$out" "orphan"
+check "diverged BASE posts nothing" "0" "$(count curl-post)"
+hasnt "diverged BASE pushes nothing" "$(cat "$STUB/calls.log")" "git <push>"
+check "diverged BASE opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
 
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

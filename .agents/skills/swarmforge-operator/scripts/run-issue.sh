@@ -325,7 +325,34 @@ refuse_if_blocked
 # branch simply has to exist first. It is also what a later run reads as
 # "this card is mine".
 if [ "$NEED_BRANCH" = 1 ]; then
-in_root "git checkout $(printf '%q' "$BASE") && git checkout -b $(printf '%q' "$BRANCH")" \
+# BASE's NAME comes from `gh pr list`, which is the remote. Its CONTENT is
+# whatever that machine last checked out, and nothing here used to reconcile
+# the two: after a human merged a PR, the managed project's `main` stayed
+# behind and the next round branched off stale code. This verb's own header
+# names that as one of the two ways podsum lost work (issue #122), so it does
+# the fetch rather than only remembering the lesson.
+in_root "git fetch origin --quiet" \
+  || die ERROR "could not fetch origin in $ROOT — $BASE cannot be trusted to match the remote, and branching off a stale base is what #122 is about; nothing was posted and nothing was pushed" 5
+
+# Two shapes, because BASE is either `main` or the head branch of the PR below
+# this one in the stack, and the stacked one was pushed by a DIFFERENT round —
+# it may not exist on this machine at all.
+if in_root "git rev-parse --verify --quiet $(printf '%q' "refs/heads/$BASE")" >/dev/null 2>&1; then
+  # It exists locally. Move it only if that loses nothing: `-B` here would
+  # silently orphan any local commit, and the canonical checkout of a managed
+  # project is precisely where a stray commit must not disappear quietly. Same
+  # judgement pi-governance's step_repo_ff makes: ancestor or refuse.
+  in_root "git merge-base --is-ancestor $(printf '%q' "refs/heads/$BASE") $(printf '%q' "refs/remotes/origin/$BASE")" >/dev/null 2>&1 \
+    || die UNSAFE "$BASE in $ROOT has commits that are not on origin/$BASE — fast-forwarding it would orphan them, and branching off it as-is would build on a base nobody else has. Resolve it by hand; nothing was posted and nothing was pushed" 6
+  in_root "git checkout $(printf '%q' "$BASE") && git merge --ff-only $(printf '%q' "origin/$BASE")" \
+    || die ERROR "could not fast-forward $BASE to origin/$BASE in $ROOT" 5
+else
+  # Nothing local to lose, so create it pointing straight at the remote.
+  in_root "git checkout -B $(printf '%q' "$BASE") $(printf '%q' "origin/$BASE")" \
+    || die ERROR "$BASE exists on neither this machine nor origin in $ROOT — the PR this round stacks on may have been deleted" 5
+fi
+
+in_root "git checkout -b $(printf '%q' "$BRANCH")" \
   || die ERROR "could not create $BRANCH from $BASE in $ROOT" 5
 fi
 

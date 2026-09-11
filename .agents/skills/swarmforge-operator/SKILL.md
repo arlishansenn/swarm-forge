@@ -797,12 +797,41 @@ scripts/run-issue.sh --root <project-root> --issue <N> \
    并回答每一种状态:两个标记都没有是全新运行,活跃 lane 加上它的分支是续跑,只有
    分支是一次还欠着 POST 的续跑,只有活跃 lane 会被拒绝,而 `done` lane 是一个这个
    verb 会把交付部分做完、但绝不重启的轮次。swarm 在等人时同样拒绝。除非分支已经在
-   那里,否则从 `BASE` 创建它。
+   那里,否则从 `BASE` 创建它 —— **创建之前先 `git fetch origin`,并把 `BASE` 对齐到
+   远端**(见下)。
 5. `POST {dashboard-url}/api/tasks` 一次 —— 只在卡片已经在 Board 上时才跳过 ——
    然后轮询 Board lane 直到 `done`。
 6. 用 `accept work` 取 commit —— **一直重试直到交付记录真的可见**,不是只读一次 ——
    然后 `git push`,停在 `NEEDS_PR_BODY`(退出 8)并把 commit 交回给你。**正文由你
    来写**,写完带 `--body-file` 重跑,第二趟直接走到 `gh pr create --base BASE`。
+
+### 开分支之前先对齐 BASE
+
+`BASE` 的**名字**来自 `gh pr list`,那是远端;它的**内容**是那台机器上次 checkout 留下的。
+这两者之间原本没有任何东西去对账 —— 人合并一个 PR 之后,被管 project 的 `main` 就留在
+原地,下一轮从旧代码上开分支。**这个 verb 的开头注释本来就把「合并之后从没跑过
+`git pull`」记作 podsum 两种丢法之一**,而它自己直到 #122 才真的去做那次 fetch。
+
+实测过一次:podsum#155 合并之后,那台机器的 checkout 落后 `origin/main` **4 个 commit**。
+
+现在建分支之前:
+
+```sh
+git fetch origin --quiet
+# BASE 在本地存在（通常就是 main）
+git merge-base --is-ancestor refs/heads/<BASE> refs/remotes/origin/<BASE>   # 不是祖先 → 拒绝
+git checkout <BASE> && git merge --ff-only origin/<BASE>
+# BASE 在本地不存在（stacked：它是另一轮推上去的分支）
+git checkout -B <BASE> origin/<BASE>
+```
+
+**两种形状不能合并成一条 `checkout -B`。** 对 `main` 用 `-B` 会**静默地把本地 commit 甩成
+孤儿**,而被管 project 的 canonical checkout 正是最不该让一个野生 commit 无声消失的地方。
+所以本地 BASE 不是 `origin/BASE` 的祖先时,这个 verb **拒绝**(`STATUS=UNSAFE`,退出 6),
+零 POST、零 push —— 与 pi-governance 的 `step_repo_ff` 是同一条判据。
+
+stacked 那一侧则相反:上一个 PR 的 head 分支可能**本地根本不存在**(它是别的轮次推上去的),
+所以直接从远端建出来,没有本地东西可丢。
 
 ### 堆叠分支,以及为什么不动 `main`
 
