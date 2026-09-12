@@ -307,5 +307,20 @@ apply:
     - tasks
   tracks: tasks.md
   instruction: |
-    Read context files, work through pending tasks, mark complete as you go.
+    Work through the pending tasks with `/implement`. Invoke it for each piece of
+    work rather than implementing the task yourself, and mark tasks complete as you go.
+
+    **Who owns what.** This phase owns *which tasks remain*: it counts the checkboxes
+    in tasks.md. `/implement` owns *how one piece gets built* - the red-green loop
+    through `/tdd`, the checks run along the way, and the review and domain-doc
+    write-ups it closes with. Do not restate those steps here.
+
+    **Pass the seam list path down.** If this project commits a generated seam list,
+    give `/implement` its path, so that it can hand that path to `/tdd`. `/tdd` never
+    goes looking for a seam list on its own. If this project has no seam list, say so
+    rather than inventing a path.
+
+    Read the context files first: specs for what to build, design for how to build it,
+    and <repo>/docs/adr/ for durable architectural commitments to honor.
+
     Pause if you hit blockers or need clarification.
