@@ -411,19 +411,26 @@ fi
 # Without this paragraph every unattended round silently degrades, which is the
 # state pi-governance#455 was opened against.
 #
-# The stop on a miss is deliberately NOT a new status or exit code. The coder
-# raises a clarification, and refuse_if_blocked() — already the first thing
-# every poll round does — catches it and exits 6 with the question verbatim.
+# This note carries information and nothing else. It does NOT say when to stop,
+# when a new seam is warranted, or where one goes — those are judgements, and an
+# earlier version of this note that spelled them out as procedure fired on
+# "the module is not on the list", which is true for 14 of podsum's 16
+# capabilities: it turned the common case into a mandatory human round trip.
 #
-# Two things are deliberately not copied here, for the same reason the artifact
-# order is not copied above: the way to ask a human lives in the swarm
-# constitution every role already reads, and the shape of a seam requirement
-# lives in the rows of openspec/seams.md the coder is being sent to read.
+# What catches a wrong judgement is a check, not this paragraph. The
+# `code-review` seam baseline already reports a new external dependency that no
+# seam registers, and a test double whose subject is not registered — the two
+# signals that a seam question even exists.
+#
+# Stopping needs no instruction either: every role already reads the swarm
+# constitution, which tells it to ask the operator when it is stuck, and
+# refuse_if_blocked() turns any pending clarification into a hard exit 6. Both
+# halves predate this note and work for everything, not just seams.
 SEAM_NOTE=''
 if read_file openspec/seams.md >/dev/null 2>&1; then
   SEAM_NOTE="
 
-本项目登记了 test seam，名单在 openspec/seams.md。动手前先查待测模块在不在名单里。命中就按那条缝写测试，PR 正文点名命中了哪条。没命中不要开工，也不要自己决定缝切在哪——停下来问操作员这一轮的缝切在哪，拿到答复后按答复写测试，并把这条缝按名单里现有那几行的格式补进对应 capability 的 spec，PR 正文带上这次 clarification 的 id。"
+本项目登记了 test seam，名单在 openspec/seams.md，动手前先读。命中就按那条缝写测试。PR 正文写清这一轮与缝的关系。"
 fi
 
 TASK_TEXT="读 gh issue view ${ISSUE}，按它的 Acceptance criteria 逐条做。
