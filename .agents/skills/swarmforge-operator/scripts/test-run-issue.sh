@@ -793,5 +793,72 @@ check "diverged BASE posts nothing" "0" "$(count curl-post)"
 hasnt "diverged BASE pushes nothing" "$(cat "$STUB/calls.log")" "git <push>"
 check "diverged BASE opens no PR" "0" "$([ -f "$STUB/pr-create.argv" ] && echo 1 || echo 0)"
 
+# ---------- 25. seams: the task body follows the TARGET project too ----------
+# pi-governance#455. `config/instructions/test-seams.md` requires an unattended
+# round to consult the seam list before it decides where the tests go, and to
+# stop and ask a human when the module under test is not on that list. The
+# coder can only do either if the task body says the list exists — the body is
+# the ONLY thing an unattended round hands it.
+#
+# Gated on the target's runtime state for the same reason OPENSPEC_NOTE is
+# (case 20): this verb serves any managed project, and a project that never
+# agreed a seam convention has nothing to consult. An unconditional paragraph
+# would order it to read a file that is not there.
+#
+# Asserted as BEHAVIOUR, not wording: AGENTS.md forbids pinning prompt text
+# with automated tests. The only token asserted is the list's path, because the
+# presence or absence of that path IS the gate. Nothing here pins a sentence.
+
+# 25a. the project has a seam list -> the body names it
+reset
+printf 'done\n' > "$STUB/lane-script"
+mkdir -p "$ROOT/openspec"
+printf '| Seam | capability |\n| --- | --- |\n' > "$ROOT/openspec/seams.md"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
+check "seams: exits 0" 0 "$rc"
+has "seams: payload names the seam list the project actually has" \
+  "$(cat "$STUB/post.payloads")" "openspec/seams.md"
+
+# 25b. no seam list -> the path appears nowhere, and the body a project got
+#      before this change is the body it still gets.
+reset
+rm -rf "$ROOT/openspec"
+printf 'done\n' > "$STUB/lane-script"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
+check "no seams: exits 0" 0 "$rc"
+hasnt "no seams: payload carries no seam list path" \
+  "$(cat "$STUB/post.payloads")" "openspec/seams.md"
+has "no seams: body still points at the issue" \
+  "$(cat "$STUB/post.payloads")" "gh issue view 28"
+has "no seams: body still names the chain from roles.tsv" \
+  "$(cat "$STUB/post.payloads")" "coder -> cleaner -> coder"
+
+# 25c. the two notes are gated separately. A project can have agreed seams
+#      without using OpenSpec, and one that uses OpenSpec need not have a seam
+#      list yet — podsum was in the second state for months. One `openspec/`
+#      directory holding both files must not make either note imply the other.
+reset
+printf 'done\n' > "$STUB/lane-script"
+mkdir -p "$ROOT/openspec"
+printf '| Seam | capability |\n' > "$ROOT/openspec/seams.md"
+rm -f "$ROOT/openspec/config.yaml"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
+has "seams without openspec config: the seam list is still named" \
+  "$(cat "$STUB/post.payloads")" "openspec/seams.md"
+hasnt "seams without openspec config: no schema paragraph rides along" \
+  "$(cat "$STUB/post.payloads")" "foo-bar"
+
+reset
+printf 'done\n' > "$STUB/lane-script"
+mkdir -p "$ROOT/openspec"
+printf 'schema: foo-bar\n' > "$ROOT/openspec/config.yaml"
+rm -f "$ROOT/openspec/seams.md"
+out=$("$SCRIPT" --root "$ROOT" --issue 28 --local --body-file "$WORK/prbody.md" 2>&1); rc=$?
+has "openspec without seam list: the schema is still named" \
+  "$(cat "$STUB/post.payloads")" "foo-bar"
+hasnt "openspec without seam list: no seam paragraph rides along" \
+  "$(cat "$STUB/post.payloads")" "openspec/seams.md"
+rm -rf "$ROOT/openspec"
+
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
