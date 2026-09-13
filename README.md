@@ -468,7 +468,7 @@ If the backend cannot open sessions at all, set both capability functions to `re
 | `talk <role>` | 给指定角色发一条行为切片，同样验证送达且被提交，不是发了就算 |
 | `onboard project` | 把 upstream 的 two-pack/four-pack/six-pack 装进一个项目目录；拒绝 `main`，目标非空时零写入拒绝；改写 `ARCHIVE_URL` 默认值指向本 fork，装完不启动 |
 | `accept work` | 人工验收：**只读 master worktree**（按 `roles.tsv` 第 2 列 `worktree-name == master` 定位，不认 role 名，不是恰好一条就报错）的终端 handoff 报 `task`/`commit`，别的 worktree 的中间跳不再被当成结果；缺字段的记录 `WARN=` 点名而不静默丢弃；同时扫 `inbox/new`/`inbox/in_process` 的滞留，卡链了会 `WARN=` 报出来，不再跟"没活干"读起来一样 |
-| `run issue <root> --issue <N>` | 把**一张** issue 走完「投 task → 轮询 → 开 PR」：读 `dashboard-url`（端口每次起 server 会变，永远现读）→ `gh issue view` 取 slug，分支 `feat/issue-<N>-<slug>` 与 task name `issue-<N>-<slug>` 同源 → BASE 取最新 open PR 的 head branch（无则 `main`，**stacked 在上一张票上，`main` 只被人 merge 推进**）→ **建分支前先 `git fetch origin` 并把 BASE 对齐到远端**（本地 BASE 不是 `origin/BASE` 的祖先就拒绝，退出 6，绝不 `-B` 把本地 commit 甩成孤儿；stacked 的 head 分支本地可能不存在，直接从远端建，issue #122）→ 读 **card 与分支两个标记**决定走哪条路，四格都有出口：两个都没有是首次运行；两个都在是 **resume**（跳过建分支与 POST，直接接着轮询）；只有分支没有 card，说明上次死在建分支与 POST 之间，**resume 但补做 POST**（issue #76，旧代码在这一格必然 `5` ERROR 且每次重跑都一样）；只有 card 没分支，那不是这个动词的 card，拒绝（退出 6，零 POST、零写入，因为 `pack_web` 的 `create-task!` 不去重）→ `/api/state` 有 pending clarification/approval 拒绝（退出 6，报出 id 与问题原文，**这是连投时唯一会自动停的人闸**）→ POST 一次 task（目标有 `openspec/seams.md` 就追加一段缝名单指令：命中按那条缝写测试，**没命中不开工、停下问操作员**，pi-governance#455）→ 轮询 board lane 到 `done`（**只认 lane，不看 `work_in_flight` 的 idle**，链路中途 coder 会短暂 idle）→ `accept work` 拿 commit（**重试到 delivery record 真的可见为止**，board `done` 只代表 handoff 已送达，master 还可能在处理，issue #63）→ push → **停在 `NEEDS_PR_BODY`（退出 8）把 commit 交回给调用方**，正文由调用方写（建议派子代理用 `to-pr` skill，让 diff 落在子代理而不是编排者），带 `--body-file` 重跑第二趟才开 PR（issue #118）→ `gh pr create` 显式 `--title/--body`（body = `Closes #N` 等字段由脚本拼 + 小节由调用方给；**从不** `--merge`/`--auto`/`--fill`）；超时报 `ERROR`（退出 5）并明说可能还在跑，**绝不重投** |
+| `run issue <root> --issue <N>` | 把**一张** issue 走完「投 task → 轮询 → 开 PR」：读 `dashboard-url`（端口每次起 server 会变，永远现读）→ `gh issue view` 取 slug，分支 `feat/issue-<N>-<slug>` 与 task name `issue-<N>-<slug>` 同源 → BASE 取最新 open PR 的 head branch（无则 `main`，**stacked 在上一张票上，`main` 只被人 merge 推进**）→ **建分支前先 `git fetch origin` 并把 BASE 对齐到远端**（本地 BASE 不是 `origin/BASE` 的祖先就拒绝，退出 6，绝不 `-B` 把本地 commit 甩成孤儿；stacked 的 head 分支本地可能不存在，直接从远端建，issue #122）→ 读 **card 与分支两个标记**决定走哪条路，四格都有出口：两个都没有是首次运行；两个都在是 **resume**（跳过建分支与 POST，直接接着轮询）；只有分支没有 card，说明上次死在建分支与 POST 之间，**resume 但补做 POST**（issue #76，旧代码在这一格必然 `5` ERROR 且每次重跑都一样）；只有 card 没分支，那不是这个动词的 card，拒绝（退出 6，零 POST、零写入，因为 `pack_web` 的 `create-task!` 不去重）→ `/api/state` 有 pending clarification/approval 拒绝（退出 6，报出 id 与问题原文，**这是连投时唯一会自动停的人闸**）→ POST 一次 task（目标有 `openspec/seams.md` 就点名这份名单、要求动手前先读，**只给信息不给流程**，pi-governance#455）→ 轮询 board lane 到 `done`（**只认 lane，不看 `work_in_flight` 的 idle**，链路中途 coder 会短暂 idle）→ `accept work` 拿 commit（**重试到 delivery record 真的可见为止**，board `done` 只代表 handoff 已送达，master 还可能在处理，issue #63）→ push → **停在 `NEEDS_PR_BODY`（退出 8）把 commit 交回给调用方**，正文由调用方写（建议派子代理用 `to-pr` skill，让 diff 落在子代理而不是编排者），带 `--body-file` 重跑第二趟才开 PR（issue #118）→ `gh pr create` 显式 `--title/--body`（body = `Closes #N` 等字段由脚本拼 + 小节由调用方给；**从不** `--merge`/`--auto`/`--fill`）；超时报 `ERROR`（退出 5）并明说可能还在跑，**绝不重投** |
 | `onboard project <root> --pack <N>` | 装一个 fork Pack 进被管项目；**装完往 `$ROOT/.gitignore` 追加一段 SwarmForge 装机产物的忽略清单**（条目从刚装的 artifact 派生，不硬编码；`.gitignore` 与 `README.md` 除外，那两个归项目所有，装之前先存、装完还原，不让 tar 覆盖），否则那些文件永远以未跟踪身份让 `stop swarm` 的 DIRTY 闸常亮（issue #87）；已经装好的老项目要人工补一次同样的块 |
 | `stop swarm` | 停机前先 preflight：有角色 `BUSY`/`UNKNOWN` 或 worktree 有未提交改动就拒绝停机（退出 6），全干净才走 `close-swarm`，**并检查它真的停成了**——`close-swarm` 失败就报 `5` ERROR 带上它自己的 stderr，绝不报 `STOPPED`（issue #82，此前对非 operator 机器会假报 `STOPPED` 且退出 0）；停完顺带按 `pack_web.pid` 停掉 dashboard 并报 `PACK_WEB=stopped\|absent`；`close-swarm` 跑在 **target** 上而默认路径是 operator 自己那台机器，被管项目里没有这个脚本，所以别的机器要用 `--close-swarm <target 上的路径>` 指明；`--force` 只跳过 preflight，不跳过"停没停成"的检查 |
 
@@ -572,8 +572,7 @@ for n in 28 29 30; do run-issue.sh --root <root> --issue "$n" || break; done
 `5` ERROR（runtime 文件缺失、`gh`/`git`/`curl` 失败、轮询超时、或 board 说 `done` 后
 delivery record 在整个等待窗口里始终对 `accept work` 不可见）；`6` UNSAFE（同名 card
 存在**但分支不在**，即那不是本动词的 card；或有 pending clarification/approval，两者都
-点名要清什么。**存量 seam 声明没补齐的 project 上这条会明显变频繁**——coder 查名单没命中
-就开一张 clarification 等人答，走的正是这个已有的人闸，不是新状态）；`7` STILL_RUNNING（`--max-wait` 到点，task 已投、swarm 还在跑，输出带
+点名要清什么）；`7` STILL_RUNNING（`--max-wait` 到点，task 已投、swarm 还在跑，输出带
 `lane:`/`waiting_for:`，原样重跑即续）。**所有超时都不会 push、不会开 PR、不会重投 task。**
 `7` 刻意不复用 `5`：`|| break` 那条链两种都会 break，但「还在跑，再叫我一次」和「出事了」
 要的反应不同——GNU `timeout` 用 124 而不复用被测命令退出码，是同一个理由。成功输出里的
@@ -598,14 +597,13 @@ delivery record 在整个等待窗口里始终对 `accept work` 不可见）；`
   之后，本地已有的 BASE 走 `merge --ff-only`，**不是祖先就拒绝**（`UNSAFE`，退出 `6`，零
   POST 零 push）；stacked 的 head 分支本地可能不存在，走 `checkout -B <BASE> origin/<BASE>`。
   两种形状不能合并成一条 `-B`——对 `main` 用 `-B` 会静默把本地 commit 甩成孤儿。
-- **缝名单跟着目标 project 走，没命中就停下问人。** 目标有 `openspec/seams.md` 时，task 正文
-  要求 coder 动手前先查待测模块在不在名单里：命中按那条缝写测试并在 PR 正文点名哪条；
-  **没命中不开工**，也不许自己决定缝切在哪，而是开一张 clarification 问操作员。停顿**不是新
-  状态**——`refuse_if_blocked()` 本来就是每轮轮询第一件事，扫到就按既有行为退出 `6` 并打出问题
-  原文。你答完之后 coder 把那条缝补进对应 capability 的 spec 并在 PR 正文带上 clarification
-  id，所以**同一个模块只停一次**。选址由人定、agent 只誊写：「缝切得对不对」是设计判断，
-  `code-review` 的 seam baseline 明确不查它（pi-governance#454），下放给 agent 等于无人复核。
-  没有 `openspec/seams.md` 的 project 拿到的正文与之前逐字节相同。
+- **缝名单跟着目标 project 走，但只给信息不给流程。** 目标有 `openspec/seams.md` 时，task 正文
+  点名这份名单并要求动手前先读；没有时正文与之前逐字节相同。**正文不规定什么时候停、要不要新
+  立一条缝、缝切在哪**——那些是判断，判断错了由 `code-review` 的 seam baseline 兜着（它本来就报
+  「新引入的外部依赖没登记成 seam」与「测试替身的对象不在名单里」）。早先有一版把这些写成流程，
+  触发条件是「模块不在名单里」，而**在多数被管 project 里那是常态不是例外**——每一轮都被变成
+  要人回一趟。**停也不靠这段正文**：constitution 已经告诉每个角色卡住就问操作员，`refuse_if_blocked()`
+  会把任何 pending clarification 变成硬退出 `6`，两半都早于这段话存在且对所有事有效。
 - **形状不在脚本里，也不由脚本去要。** 这个 verb 分两趟：第一趟做完机械活（投 task、
   轮询、`accept work`、`git push`）就停在 `STATUS=NEEDS_PR_BODY`（退出 `8`），把
   issue/task/branch/base/commit 交回给调用方；调用方写好正文，带 `--body-file <path>`
