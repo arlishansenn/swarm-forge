@@ -995,6 +995,29 @@ project,而其中不少并不用 OpenSpec,所以「走一遍 OpenSpec 循环」�
 podsum 就是这条存在的原因:它合并了自己的 schema,而这个 verb 紧接着的那次运行产出
 了 4 个 commit、+414 行和 22 个绿测试,`openspec/changes/` 下面却什么都没有。
 
+**它同样跟随目标 project 有没有约定过 test seam**(pi-governance#455)。如果
+`$ROOT/openspec/seams.md` 存在,主体会要求 coder 动手前先查待测模块在不在那份名单
+里:命中就按那条缝写测试、PR 正文点名命中了哪条;**没命中不开工**,也不许自己决定
+缝该切在哪,而是停下来问操作员。不存在这个文件时主体与之前逐字节相同 —— 同样是推导
+而不是加 flag,理由与上一段一致:没约定过缝的 project 没有名单可对,让它去读一个不
+存在的文件是错误指令。
+
+**这个停顿不是新的 STATUS,也不是新的退出码。** coder 开一张 clarification,而
+`refuse_if_blocked()` 本来就是每一轮轮询的第一件事,它扫到 pending clarification 就
+按既有行为报 `STATUS=UNSAFE` 退出 6,并把问题原文整段打出来。**对你的实际影响是:存量
+没补齐的 project 上,这个 verb 会比以前更常停在退出 6 上** —— 那不是故障,是在等你回答
+这一轮的缝切在哪。在 Dashboard 上答完,那个角色就接着跑。
+
+答复不会只用一次:coder 拿到坐标后要把这条缝补进对应 capability 的 spec,并在 PR 正文
+里带上这次 clarification 的 id。所以**同一个模块只会停一次**,存量是逐轮摊销掉的,不是
+每轮重付。选址由人定、agent 只负责誊写,是因为「缝切得对不对」是设计判断,`code-review`
+的 seam baseline 明确把它排除在检查项之外(pi-governance#454),下放给 agent 就等于无人
+复核。
+
+有两样刻意**不**写在脚本里,理由跟上面 artifact 顺序那条一样:问操作员的具体办法写在
+每个角色都会读的 swarm constitution 里,seam requirement 的格式写在 coder 正被指去读的
+`openspec/seams.md` 的那几行里。在这里各放一份副本,就是各多一个会漂的知识来源。
+
 ### 从 agent 会话里跑它
 
 **这个 verb 会阻塞整条链的时间 —— 几分钟到几小时。那不是卡死。** 它每
