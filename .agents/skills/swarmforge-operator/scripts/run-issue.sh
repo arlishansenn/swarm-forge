@@ -414,8 +414,8 @@ fi
 # This note carries information and nothing else. It does NOT say when to stop,
 # when a new seam is warranted, or where one goes — those are judgements, and an
 # earlier version of this note that spelled them out as procedure fired on
-# "the module is not on the list", which is true for 14 of podsum's 16
-# capabilities: it turned the common case into a mandatory human round trip.
+# "the module is not on the list", which in most managed projects is the
+# common case, not the exception: it turned every round into a human round trip.
 #
 # What catches a wrong judgement is a check, not this paragraph. The
 # `code-review` seam baseline already reports a new external dependency that no
