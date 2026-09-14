@@ -36,13 +36,31 @@
                (fs/directory? (fs/path grand "projects")))
       (str grand))))
 
+(defn submit-keys
+  "tmux send-keys arguments that make this agent's TUI submit its input line.
+  Kept byte-identical to handoffd's copy: a symbolic key name is re-encoded by
+  tmux for a TUI that negotiated extended keys and then never submits."
+  [agent]
+  (if (= agent "claude")
+    [["-H" "1b" "5b" "31" "33" "75"]]
+    [["-H" "0d"]]))
+
+(defn agent-for-role
+  "Column 6 of roles.tsv is the backend; `codex` is the default for a row that
+  predates the column."
+  [root role]
+  (if-let [row (some #(when (= role (first %)) %) (role-rows root))]
+    (let [agent (nth row 5 nil)]
+      (if (str/blank? agent) "codex" agent))
+    "codex"))
+
 (defn inject-pane! [root role text]
   (when-not (or (str/blank? role) (str/blank? text))
     (when-let [socket (tmux-socket root)]
       (when-let [session (session-for-role root role)]
         (send-keys! socket session "-l" text)
-        (send-keys! socket session "C-m")
-        (send-keys! socket session "C-j")))))
+        (doseq [keys (submit-keys (agent-for-role root role))]
+          (apply send-keys! socket session keys))))))
 
 (defn tmux-pane [root role]
   (let [socket (tmux-socket root)

@@ -188,29 +188,43 @@
     (when (fs/exists? file)
       (not-empty (str/trim (slurp (str file)))))))
 
+(defn submit-keys
+  "tmux send-keys arguments that make this agent's TUI submit its input line.
+  Kept byte-identical to handoffd's copy: a symbolic key name is re-encoded by
+  tmux for a TUI that negotiated extended keys and then never submits."
+  [agent]
+  (if (= agent "claude")
+    [["-H" "1b" "5b" "31" "33" "75"]]
+    [["-H" "0d"]]))
+
+(defn lieutenant-agent
+  "Backend of the forge-level lieutenant session, from column 6 of the forge's
+  own roles.tsv - the same convention every other pane uses. Defaults to codex,
+  which is also what every backend but Claude wants from submit-keys."
+  [forge]
+  (let [file (fs/path forge ".swarmforge" "roles.tsv")]
+    (or (when (fs/exists? file)
+          (some (fn [line]
+                  (let [cols (str/split line #"\t")]
+                    (when (= "lieutenant" (first cols))
+                      (not-empty (nth cols 5 nil)))))
+                (str/split-lines (slurp (str file)))))
+        "codex")))
+
 (defn inject-lieutenant! [forge text]
   (when-let [socket (tmux-socket forge)]
-    (let [stub (System/getenv "SWARMFORGE_TMUX_STUB")]
-      (if stub
-        (do
-          (when-let [dir (fs/parent stub)]
-            (fs/create-dirs dir))
-          (spit stub (str (pr-str ["tmux" "-S" socket "send-keys" "-t"
-                                   "swarmforge-lieutenant" "-l" text])
-                          "\n")
-                :append true)
-          (spit stub (str (pr-str ["tmux" "-S" socket "send-keys" "-t"
-                                   "swarmforge-lieutenant" "C-m"])
-                          "\n")
-                :append true)
-          (spit stub (str (pr-str ["tmux" "-S" socket "send-keys" "-t"
-                                   "swarmforge-lieutenant" "C-j"])
-                          "\n")
-                :append true))
-        (do
-          (sh "tmux" "-S" socket "send-keys" "-t" "swarmforge-lieutenant" "-l" text)
-          (sh "tmux" "-S" socket "send-keys" "-t" "swarmforge-lieutenant" "C-m")
-          (sh "tmux" "-S" socket "send-keys" "-t" "swarmforge-lieutenant" "C-j"))))))
+    (let [stub (System/getenv "SWARMFORGE_TMUX_STUB")
+          send! (fn [& keys]
+                  (let [argv (into ["tmux" "-S" socket "send-keys" "-t"
+                                    "swarmforge-lieutenant"]
+                                   keys)]
+                    (if stub
+                      (do (when-let [dir (fs/parent stub)] (fs/create-dirs dir))
+                          (spit stub (str (pr-str argv) "\n") :append true))
+                      (apply sh argv))))]
+      (send! "-l" text)
+      (doseq [keys (submit-keys (lieutenant-agent forge))]
+        (apply send! keys)))))
 
 (defn notify-clarify! [root role body]
   (when-let [forge (forge-root root)]

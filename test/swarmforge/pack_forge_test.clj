@@ -447,7 +447,12 @@
       (is (zero? (:exit created)) (:err created))
       (is (seq notes))
       (is (str/includes? (slurp (str (first notes))) "event: clarify"))
-      (is (seq (submitted-texts (read-argv argv)))))))
+      (is (seq (submitted-texts (read-argv argv))))
+      ;; The forge lieutenant runs grok here, so Enter is the raw byte 0d. A
+      ;; symbolic C-m is re-encoded by tmux for a TUI that negotiated extended
+      ;; keys and never submits: the question would sit typed but unsent.
+      (is (= ["-H" "0d"] (take-last 2 (last (read-argv argv)))))
+      (is (not-any? #(some #{"C-m" "C-j"} %) (read-argv argv))))))
 (deftest handoffd-wakes-lieutenant-with-submit-keys
   (let [root (tmp-dir)
         bin (fs/path root "bin")
@@ -463,6 +468,12 @@
     (run {:dir root} "chmod" "+x" (str fake-tmux))
     (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
                   "--test-new-project" (str root) "cave" "two-pack" "m")
+    ;; The forge's own roles.tsv is the only place the daemon can learn the
+    ;; lieutenant backend: the roles it loaded belong to the project, not the
+    ;; forge. Claude here so a wrong lookup shows up as a bare CR.
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (format "lieutenant\tmaster\t%s\tswarmforge-lieutenant\tLieutenant\tclaude\ttask\tforward-only\n"
+                        root))
     (setup-pack! dest ["specifier" "coder"])
     (create-task dest "cave" "specifier")
     (write-file (fs/path root ".swarmforge/tmux-socket") (str (fs/path root "tmux.sock") "\n"))
@@ -478,7 +489,10 @@
           notes (vec (fs/glob (fs/path root ".swarmforge/notify") "*specifier-handoff*.notify"))]
       (is (zero? (:exit result)) (:err result))
       (is (seq notes))
-      (is (seq (submitted-texts (read-argv tmux-log) "swarmforge-lieutenant"))))))
+      (is (seq (submitted-texts (read-argv tmux-log) "swarmforge-lieutenant")))
+      (is (= ["-H" "1b" "5b" "31" "33" "75"]
+             (take-last 6 (last (read-argv tmux-log))))
+          "claude only submits on CSI u; a bare CR leaves the notice unsent"))))
 (deftest forge-lieutenant-heat-rises
   (let [root (tmp-dir)]
     (seed-mini-forge! root)

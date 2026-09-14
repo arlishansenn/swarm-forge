@@ -1043,3 +1043,37 @@
       (is (str/includes? page "use an RNG"))
       (is (str/includes? page "retry note"))
       (is (not (str/includes? page ":candidate"))))))
+
+(deftest inject-master-submits-a-codex-pane-with-a-raw-carriage-return
+  ;; Given a master session running codex in roles.tsv
+  ;; When --test-inject-argv records the would-be tmux argv
+  ;; Then it send-keys -l the text, then a raw carriage return - the same
+  ;; encoding handoffd uses, because a symbolic C-m is re-encoded by tmux for a
+  ;; TUI that negotiated extended keys and then never submits
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        sock (str (fs/path root "tmux.sock"))
+        text "hello from operator"]
+    (setup-pack! root)
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+    (let [result (pack-web root false "--test-inject-argv" (str root) argv-file text)
+          argv (read-argv argv-file)]
+      (is (zero? (:exit result)))
+      (is (= text (inject-literal (first argv))))
+      (is (= ["-H" "0d"] (take-last 2 (second argv))))
+      (is (= 2 (count argv)) "raw CR replaces the C-m + C-j pair, so one submit call"))))
+
+(deftest inject-master-submits-a-claude-pane-with-csi-u-enter
+  ;; Given a master session running claude in roles.tsv
+  ;; When --test-inject-argv records the would-be tmux argv
+  ;; Then Enter stays CSI-u: claude negotiates the kitty keyboard protocol and
+  ;; ignores a bare CR
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        sock (str (fs/path root "tmux.sock"))]
+    (setup-pack! root)
+    (set-backend! root "claude")
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+    (pack-web root false "--test-inject-argv" (str root) argv-file "wake up")
+    (is (= ["-H" "1b" "5b" "31" "33" "75"]
+           (take-last 6 (second (read-argv argv-file)))))))

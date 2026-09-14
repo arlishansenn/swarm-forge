@@ -895,3 +895,57 @@
         (is (str/includes? (:err ready) "TASK_IN_PROCESS_IS_BATCH"))
         (is (= 2 (:exit done)))
         (is (str/includes? (:err done) "CURRENT_WORK_IS_BATCH"))))))
+
+(defn- wake-argv!
+  "Deliver one queued note through handoffd with the tmux argv stub in place and
+  return the recorded calls. `note` is used on purpose: preflight! rejects any
+  other type before delivery ever reaches tmux."
+  [root id]
+  (let [argv-file (fs/path root "tmux.argv")]
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (write-file (fs/path root (str ".swarmforge/handoffs/outbox/50_" id ".handoff"))
+                (handoff {:id id :from "sender" :to "receiver"
+                          :priority "50" :type "note" :task-id id :task id}))
+    (run {:dir root :env {"SWARMFORGE_TMUX_STUB" (str argv-file)}}
+         "bb" (script "handoffd.bb") "--once" (str root))
+    (read-argv argv-file)))
+
+(deftest handoffd-routes-every-tmux-call-through-the-argv-stub
+  ;; Given a queued outbox handoff and SWARMFORGE_TMUX_STUB set
+  ;; When the daemon runs one pass
+  ;; Then no real tmux runs: the wake text lands in the stub file instead
+  (let [root (tmp-dir)]
+    (init-repo! root)
+    (setup-project! root {"sender" "task" "receiver" "task"})
+    (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-l"
+            "You have new handoff mail. If idle, run ready_for_next.sh."]
+           (first (wake-argv! root "stub-seam")))
+        "the wake text send must be recorded, not executed")))
+
+(deftest handoffd-submits-a-codex-wake-with-a-raw-carriage-return
+  ;; Given a codex role receiving a handoff
+  ;; When the daemon delivers it
+  ;; Then Enter goes out as the raw byte 0d, not as the symbolic C-m/C-j that
+  ;; tmux re-encodes for a TUI that negotiated extended keys
+  (let [root (tmp-dir)]
+    (init-repo! root)
+    (setup-project! root {"sender" "task" "receiver" "task"})
+    (let [argv (wake-argv! root "codex-enter")]
+      (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session" "-H" "0d"]
+             (second argv)))
+      (is (= 2 (count argv)) "raw CR replaces the C-m + C-j pair, so one submit call"))))
+
+(deftest handoffd-submits-a-claude-wake-with-csi-u-enter
+  ;; Given a claude role receiving a handoff
+  ;; When the daemon delivers it
+  ;; Then Enter stays CSI-u: claude negotiates the kitty keyboard protocol and
+  ;; ignores a bare CR
+  (let [root (tmp-dir)]
+    (init-repo! root)
+    (setup-project! root {"sender" "task" "receiver" "task"})
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (str "sender\tmaster\t" root "\tsession\tSender\tclaude\ttask\n"
+                     "receiver\tmaster\t" root "\tsession\tReceiver\tclaude\ttask\n"))
+    (is (= ["tmux" "-S" "/tmp/fake.sock" "send-keys" "-t" "session"
+            "-H" "1b" "5b" "31" "33" "75"]
+           (second (wake-argv! root "claude-enter"))))))

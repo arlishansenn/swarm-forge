@@ -10,6 +10,8 @@
 (def poll-ms 1000)
 (def wake-message
   "You have new handoff mail. If idle, run ready_for_next.sh.")
+(def wake-echo-timeout-ms 5000)
+(def wake-echo-interval-ms 100)
 
 (defn usage []
   (binding [*out* *err*]
@@ -130,19 +132,86 @@
   (fs/path (:worktree-path role-info)
            ".swarmforge" "handoffs" "inbox" "new" filename))
 
-(defn notify! [socket session & [message]]
-  (let [text (or message wake-message)
-        send-text (sh "tmux" "-S" socket "send-keys" "-t" session "-l" text)
-        _ (Thread/sleep 150)
-        send-carriage-return (sh "tmux" "-S" socket "send-keys" "-t" session "C-m")
-        _ (Thread/sleep 50)
-        send-line-feed (sh "tmux" "-S" socket "send-keys" "-t" session "C-j")]
-    (when-not (zero? (:exit send-text))
-      (throw (ex-info "tmux send text failed" send-text)))
-    (when-not (zero? (:exit send-carriage-return))
-      (throw (ex-info "tmux send carriage return failed" send-carriage-return)))
-    (when-not (zero? (:exit send-line-feed))
-      (throw (ex-info "tmux send line feed failed" send-line-feed)))))
+(defn tmux-stub []
+  (System/getenv "SWARMFORGE_TMUX_STUB"))
+
+(defn record-argv! [file argv]
+  (when-let [dir (fs/parent file)]
+    (fs/create-dirs dir))
+  (spit (str file) (str (pr-str (vec argv)) "\n") :append true))
+
+(defn tmux!
+  "Every tmux call goes through here so tests can record argv instead of driving
+  a real TUI. The stub answers exit 0: a recorder has nothing to fail at."
+  [& argv]
+  (let [full (into ["tmux"] argv)]
+    (if-let [stub (tmux-stub)]
+      (do (record-argv! stub full) {:exit 0 :out "" :err ""})
+      (apply sh full))))
+
+(defn pane-text [socket session]
+  (let [result (tmux! "-S" socket "capture-pane" "-p" "-t" session)]
+    (if (zero? (:exit result)) (:out result) "")))
+
+(defn wake-probe
+  "A short prefix of the text just sent. The input box wraps long text, so
+  matching the whole line against the pane is unreliable; a prefix stays
+  contiguous on the first visual row."
+  [text]
+  (subs text 0 (min 16 (count text))))
+
+(defn await-wake-echo!
+  "Block until the sent text shows up in the pane, or the timeout expires.
+
+  An agent TUI batches an incoming paste, and a submit key that races that paste
+  gets swallowed: the wake-up then sits typed but unsent and the role looks idle
+  while work waits in its inbox. A fixed delay cannot cover this because the wait
+  depends on TUI startup, load, and paste size, so poll for the echo instead.
+  Returns false on timeout; the caller still submits, because a missed echo is
+  less bad than no submit at all."
+  [socket session text]
+  (let [probe (wake-probe text)
+        deadline (+ (System/currentTimeMillis) wake-echo-timeout-ms)]
+    (loop []
+      (cond
+        (str/includes? (pane-text socket session) probe) true
+        (>= (System/currentTimeMillis) deadline) false
+        :else (do (Thread/sleep wake-echo-interval-ms) (recur))))))
+
+(defn submit-keys
+  "tmux send-keys arguments that make this agent's TUI submit its input line.
+
+  Both branches send raw bytes on purpose. A symbolic key name goes through
+  tmux's key-encoding layer, which re-encodes it for a TUI that negotiated
+  extended keys, so `C-m` does not reliably arrive as a literal Enter. Claude
+  Code negotiates the kitty keyboard protocol and only submits on CSI u
+  (ESC [ 13 u); every other backend wants the plain carriage return 0x0d, and
+  sending CSI u to a TUI that did not negotiate would insert those bytes as
+  literal text."
+  [agent]
+  (if (= agent "claude")
+    [["-H" "1b" "5b" "31" "33" "75"]]
+    [["-H" "0d"]]))
+
+(defn notify!
+  ([socket session agent] (notify! socket session agent nil true))
+  ([socket session agent message] (notify! socket session agent message true))
+  ([socket session agent message await?]
+   (let [text (or message wake-message)
+         send-text (tmux! "-S" socket "send-keys" "-t" session "-l" text)]
+     (when-not (zero? (:exit send-text))
+       (throw (ex-info "tmux send text failed" send-text)))
+     ;; The echo wait covers the first-delivery race where a submit key lands
+     ;; mid-paste. A retry must not wait: it can block up to
+     ;; wake-echo-timeout-ms, and poll-once! is single threaded.
+     (when (and await? (not (tmux-stub)))
+       (await-wake-echo! socket session text))
+     (doseq [keys (submit-keys agent)]
+       (let [result (apply tmux! (concat ["-S" socket "send-keys" "-t" session] keys))]
+         (when-not (zero? (:exit result))
+           (throw (ex-info "tmux send submit key failed" result)))
+         (when-not (tmux-stub)
+           (Thread/sleep 50)))))))
 
 (defn move-with-collision [source target-dir]
   (fs/create-dirs target-dir)
@@ -349,6 +418,19 @@
                (fs/directory? (fs/path grand "projects")))
       (str grand))))
 
+(defn lieutenant-agent
+  "Backend of the forge-level lieutenant session, from column 6 of the forge's
+  own roles.tsv. notify! needs it to pick the submit key, and the project roles
+  this daemon loaded say nothing about the forge. Defaults to codex, which is
+  also what every backend but Claude wants from submit-keys."
+  [forge]
+  (or (some (fn [line]
+              (let [cols (str/split line #"\t")]
+                (when (= "lieutenant" (first cols))
+                  (not-empty (nth cols 5 nil)))))
+            (read-lines (fs/path forge ".swarmforge" "roles.tsv")))
+      "codex"))
+
 (defn notify-event [headers]
   (if (terminal-handoff? nil headers)
     "card-done"
@@ -371,7 +453,8 @@
                  "task: " (or (get headers "task") "") "\n"))
       (when socket
         (try
-          (notify! socket "swarmforge-lieutenant" (str "Notify: " event))
+          (notify! socket "swarmforge-lieutenant" (lieutenant-agent forge)
+                   (str "Notify: " event))
           (catch Exception e
             (log! "lieutenant-notify-failed" (.getMessage e))))))))
 
@@ -463,7 +546,9 @@
              (sender-ready-work? roles sender-role)
              (not (contains? (set (recipient-list headers)) sender-role)))
     (try
-      (notify! socket (get-in roles [sender-role :session]))
+      (notify! socket
+               (get-in roles [sender-role :session])
+               (get-in roles [sender-role :agent]))
       (safe-log! "notified-unblocked-sender" sender-role)
       (catch Exception e
         (try
@@ -539,7 +624,8 @@
                      (not-empty (str/trim (slurp (str socket-path)))))]
         (when socket
           (try
-            (notify! socket "swarmforge-lieutenant" "Notify: reverse-cleared")
+            (notify! socket "swarmforge-lieutenant" (lieutenant-agent forge)
+                     "Notify: reverse-cleared")
             (catch Exception e
               (safe-log! "lieutenant-notify-failed" (.getMessage e)))))))))
 
@@ -715,7 +801,9 @@
 
 (defn notify-or-queue! [roles socket headers recipient]
   (try
-    (notify! socket (get-in roles [recipient :session]))
+    (notify! socket
+             (get-in roles [recipient :session])
+             (get-in roles [recipient :agent]))
     (catch Exception e
       (try
         (queue-wakeup! headers recipient (.getMessage e))
@@ -735,7 +823,9 @@
         (if-not info
           (fs/delete-if-exists file)
           (try
-            (notify! socket (:session info))
+            ;; A retry must not wait for the pane echo: it can block up to
+            ;; wake-echo-timeout-ms and poll-once! is single threaded.
+            (notify! socket (:session info) (:agent info) nil false)
             (fs/delete-if-exists file)
             (catch Exception e
               (let [attempt (inc (long (or (:attempt state) 0)))]

@@ -98,6 +98,9 @@
 (defn pack-board
   ([root ok? & args]
    (apply run {:dir root :ok? ok?} (script "pack_board.sh") args)))
+(defn pack-board-env
+  [root env & args]
+  (apply run {:dir root :env env} (script "pack_board.sh") args))
 (defn pack-web
   ([root ok? & args]
    (apply run {:dir root :ok? ok?} (script "pack_web.sh") args)))

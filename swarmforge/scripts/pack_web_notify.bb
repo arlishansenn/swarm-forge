@@ -49,24 +49,37 @@
     (when (fs/exists? file)
       (not-empty (str/trim (slurp (str file)))))))
 
-(defn inject-target! [socket target text]
+(defn submit-keys
+  "tmux send-keys arguments that make this agent's TUI submit its input line.
+  Kept byte-identical to handoffd's copy: a symbolic key name is re-encoded by
+  tmux for a TUI that negotiated extended keys and then never submits."
+  [agent]
+  (if (= agent "claude")
+    [["-H" "1b" "5b" "31" "33" "75"]]
+    [["-H" "0d"]]))
+
+(defn inject-target! [socket target agent text]
   (when (and socket target (not (str/blank? text)))
     (send-keys! socket target "-l" text)
     (when-not (tmux-stub)
       (Thread/sleep 150))
-    (send-keys! socket target "C-m")
-    (when-not (tmux-stub)
-      (Thread/sleep 50))
-    (send-keys! socket target "C-j")))
+    (doseq [keys (submit-keys agent)]
+      (apply send-keys! socket target keys))))
 
 (defn inject-role! [root role text]
   (try
     (let [socket (tmux-socket root)
-          target (when-let [row (role-row root role)]
-                   (pane-target row))]
+          row (role-row root role)
+          target (when row (pane-target row))]
       (when-not (and socket target)
         (throw (ex-info "missing tmux target" {:role role :socket socket})))
-      (inject-target! socket target text))
+      ;; D-3 (docs/fork-deltas.md): inject-target! takes the agent, because the
+      ;; submit-key encoding differs per backend. upstream's call site passes
+      ;; three arguments, and the arity error that produces is swallowed whole
+      ;; by the catch below — the injection simply never happens and nothing is
+      ;; reported. Column 6 of roles.tsv is the backend; `codex` is the default
+      ;; for a row that predates the column.
+      (inject-target! socket target (nth row 5 "codex") text))
     (catch Exception e
       (binding [*out* *err*]
         (println (str "inject failed role=" role

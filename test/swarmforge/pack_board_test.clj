@@ -496,3 +496,21 @@
       (is (= "specifier" (task-lane root "next")))
       (is (= 1 (count (handoff-names
                        (fs/path root ".swarmforge/handoffs/outbox"))))))))
+
+(deftest pack-board-stop-submits-the-halt-notice-with-a-raw-carriage-return
+  ;; Given a live card whose role runs codex
+  ;; When pack_board stop injects the halt notice into that role's pane
+  ;; Then Enter goes out as the raw byte 0d. A symbolic C-m is re-encoded by
+  ;; tmux for a TUI that negotiated extended keys and never submits, so the
+  ;; role would keep executing a card the lieutenant already stopped.
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))]
+    (plant-live-card-for-halt! root ["specifier"])
+    (write-file (fs/path root ".swarmforge/tmux-socket")
+                (str (fs/path root "tmux.sock") "\n"))
+    (pack-board-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                    "stop" "--root" (str root) "--name" "HTW" "--caller" "handoffd")
+    (let [argv (read-argv argv-file)]
+      (is (seq argv) "the halt notice must reach tmux")
+      (is (= ["-H" "0d"] (take-last 2 (last argv))))
+      (is (not-any? #(some #{"C-m" "C-j"} %) argv)))))
