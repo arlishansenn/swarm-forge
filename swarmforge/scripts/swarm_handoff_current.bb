@@ -1,9 +1,16 @@
 ;; In-process current work and reverse-lane fill. Loaded into swarm-handoff.
 
 (declare commit-descends-from?)
+;; git-cwd is defined in swarm_handoff_headers.bb, which swarm_handoff.bb loads
+;; after this file.
+(declare git-cwd)
 
+;; The inbox is the sender's own, resolved from its worktree column in
+;; roles.tsv rather than from the process working directory. handoffd delivers
+;; using that same column, so reading the inbox any other way gives the two
+;; sides different answers and the chain stops with neither one reporting it.
 (defn in-process-dir []
-  (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs" "inbox" "in_process"))
+  (fs/path (git-cwd) ".swarmforge" "handoffs" "inbox" "in_process"))
 
 (defn handoff-files [dir]
   (if (fs/exists? dir)

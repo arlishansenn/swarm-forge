@@ -3,12 +3,10 @@
 (ns done-with-current-batch
   (:require [babashka.fs :as fs]
             [babashka.process :as process]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [handoff-lib :as hl]))
 
 (def script-dir (fs/parent *file*))
-
-(defn inbox-dir []
-  (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs" "inbox"))
 
 (defn timestamp []
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
@@ -66,7 +64,7 @@
   (process/exec "bb" (str (fs/path script-dir "handoff_lib.bb")) "finish-done"))
 
 (defn -main []
-  (let [inbox (inbox-dir)
+  (let [inbox (hl/inbox-dir)
         in-process-dir (fs/path inbox "in_process")
         completed-dir (fs/path inbox "completed")]
     (doseq [dir [in-process-dir completed-dir]]

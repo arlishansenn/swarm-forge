@@ -4,16 +4,14 @@
   (:require [babashka.fs :as fs]
             [clojure.edn :as edn]
             [clojure.java.shell :as sh]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [handoff-lib :as hl]))
 
 (def script-dir (fs/parent *file*))
 (try
   (require 'ready-for-next-guard)
   (catch Exception _
     (load-file (str (fs/path script-dir "ready_for_next_guard.bb")))))
-
-(defn inbox-dir []
-  (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs" "inbox"))
 
 (defn timestamp []
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
@@ -307,7 +305,7 @@
       (filterv #(= key (batch-key %)) new-files))))
 
 (defn -main []
-  (let [inbox (inbox-dir)
+  (let [inbox (hl/inbox-dir)
         new-dir (fs/path inbox "new")
         in-process-dir (fs/path inbox "in_process")
         completed-dir (fs/path inbox "completed")]

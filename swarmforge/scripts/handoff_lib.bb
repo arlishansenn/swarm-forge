@@ -16,12 +16,6 @@
     (when-not (str/blank? out)
       (str/trim out))))
 
-(defn state-dir []
-  (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs"))
-
-(defn inbox-dir []
-  (fs/path (state-dir) "inbox"))
-
 (defn roles-at? [root]
   (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))))
 
@@ -68,6 +62,26 @@
 
 (defn role-worktree-name [role-name]
   (second (role-row role-name)))
+
+(defn role-worktree [role-name]
+  (let [path (nth (role-row role-name) 2 nil)]
+    (if (str/blank? path)
+      (throw (ex-info (str "Role has no worktree path in roles.tsv: " role-name) {:exit 1}))
+      (fs/path path))))
+
+(defn state-dir
+  "Where this role's handoff queues live.
+
+  Derived from the role's worktree in roles.tsv, never from the current working
+  directory. handoffd delivers using that same column, so resolving it any other
+  way lets the two sides disagree: the daemon writes into the worktree while the
+  agent reads wherever it happens to be standing, and the chain stops with
+  neither side reporting anything wrong."
+  []
+  (fs/path (role-worktree (role)) ".swarmforge" "handoffs"))
+
+(defn inbox-dir []
+  (fs/path (state-dir) "inbox"))
 
 (defn role-receive-mode [role-name]
   (let [mode (nth (role-row role-name) 6 "")]
