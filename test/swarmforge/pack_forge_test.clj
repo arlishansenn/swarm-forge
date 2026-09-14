@@ -490,8 +490,15 @@
       (is (zero? (:exit result)) (:err result))
       (is (seq notes))
       (is (seq (submitted-texts (read-argv tmux-log) "swarmforge-lieutenant")))
+      ;; Pick the lieutenant's own calls: the same pass also wakes the recipient
+      ;; role, and reconciliation may add more, so position in the log is not a
+      ;; stable handle.
       (is (= ["-H" "1b" "5b" "31" "33" "75"]
-             (take-last 6 (last (read-argv tmux-log))))
+             (->> (read-argv tmux-log)
+                  (filter #(= "swarmforge-lieutenant" (inject-target %)))
+                  (remove #(some #{"-l" "capture-pane"} %))
+                  last
+                  (take-last 6)))
           "claude only submits on CSI u; a bare CR leaves the notice unsent"))))
 (deftest forge-lieutenant-heat-rises
   (let [root (tmp-dir)]

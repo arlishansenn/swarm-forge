@@ -13,6 +13,45 @@
 (def wake-echo-timeout-ms 5000)
 (def wake-echo-interval-ms 100)
 
+(defn env-long [name default]
+  (or (some-> (System/getenv name) parse-long) default))
+
+;; Retry ladder for handoffs still sitting unclaimed in a recipient's inbox/new.
+;; Deliberately not named retry-*: retry-delay-ms below paces outbox delivery,
+;; an exponential backoff on an operation that threw. This ladder paces a level
+;; check on work nobody picked up. Two different questions, two different
+;; schedules, and one name for both is how a later edit silently repoints one at
+;; the other.
+;;
+;; Overridable constants, not standards: a swallowed keystroke must be re-sent,
+;; but an agent that is simply slow must not be spammed every second.
+;; SWARMFORGE_WAKE_RETRY_MS collapses the ladder to one interval; tests use it to
+;; observe several passes without waiting out the real schedule.
+(def wake-delays-ms
+  (if-let [flat (env-long "SWARMFORGE_WAKE_RETRY_MS" nil)]
+    [flat]
+    [5000 15000 60000]))
+(def wake-interval-ms (env-long "SWARMFORGE_WAKE_RETRY_MS" 300000))
+(def wake-attempt-cap (env-long "SWARMFORGE_WAKE_ATTEMPT_CAP" 12))
+;; Ladder position a file resumes at when the daemon has no memory of it - after a
+;; restart, or after a busy role finally frees up. Without this floor, elapsed
+;; wall-clock time alone is charged as attempts: a file older than the whole ladder
+;; resumes at the cap and is exhausted by its very first wake, which is precisely
+;; the 8-hour-idle case this reconciliation exists to fix. The floor keeps the
+;; restart from replaying the fast 5s/15s rungs while leaving most of the cap unspent.
+(def wake-resume-floor (env-long "SWARMFORGE_WAKE_RESUME_FLOOR" 3))
+;; Wake notifications per poll pass, shared by the queue and reconciliation.
+;; poll-once! is single threaded, so an unbounded retry backlog would push
+;; outbox->inbox delivery behind it.
+(def wake-notify-budget (env-long "SWARMFORGE_WAKE_BUDGET" 2))
+
+;; handoff id -> {:attempts n :last-ms t}. In memory only: a daemon restart costs
+;; at most one extra idempotent wake, which is cheaper than a persistence surface
+;; to maintain. Keyed by the id header, not the filename, because
+;; move-with-collision renames files on delivery collisions.
+(def wake-state (atom {}))
+(def alerted (atom #{}))
+
 (defn usage []
   (binding [*out* *err*]
     (println "Usage: handoffd.bb [--once] <project-root>"))
@@ -785,6 +824,152 @@
           (finally
             (fs/delete-if-exists tmp)))))))
 
+;; D-5 (docs/fork-deltas.md): level reconciliation for unclaimed handoffs.
+;;
+;; The wakeup queue below is edge-triggered - an entry exists only because
+;; notify! threw, and a tmux exit 0 deletes it. That leaves three silent holes:
+;; a TUI that swallows the submit key (tmux still exits 0), a queue write that
+;; itself fails, and a crash between committing the delivery to sent/ and
+;; queueing. In all three the work sits in inbox/new and nothing ever wakes
+;; anyone again. The file in inbox/new is the level - it stays until
+;; ready_for_next moves it to in_process - so scanning for it makes wake-up
+;; at-least-once instead of fire-and-forget.
+
+(defn distinct-by [f coll]
+  (:out (reduce (fn [{:keys [seen out]} x]
+                  (let [k (f x)]
+                    (if (contains? seen k)
+                      {:seen seen :out out}
+                      {:seen (conj seen k) :out (conj out x)})))
+                {:seen #{} :out []}
+                coll)))
+
+(defn parse-instant-ms [s]
+  (try
+    (.toEpochMilli (java.time.Instant/parse s))
+    (catch Exception _ nil)))
+
+(defn wake-delay-ms [attempts]
+  (get wake-delays-ms attempts wake-interval-ms))
+
+(defn attempts-from-age
+  "Ladder position implied by how long a file has waited. Used when the daemon has
+  no in-memory record, so a restart resumes the ladder instead of replaying
+  5s/15s/60s from the top."
+  [age-ms]
+  (loop [n 0 spent 0]
+    (let [d (wake-delay-ms n)]
+      (if (or (>= n wake-attempt-cap) (< age-ms (+ spent d)))
+        n
+        (recur (inc n) (+ spent d))))))
+
+(defn due-attempt
+  "Attempt number to make now for an unclaimed handoff, or nil if it is not due
+  yet or the cap is spent.
+
+  With no in-memory record the clock starts at the file's own enqueued_at rather
+  than at daemon start: after a restart the ladder resumes where it was. That
+  resume position is clamped to wake-resume-floor, not just to (dec cap): age
+  alone would otherwise charge a long-idle file the full ladder as attempts and
+  exhaust it on its very first wake, which is exactly the silent-strand case
+  this reconciliation exists to fix."
+  [now-ms id enqueued-ms]
+  (if-let [{:keys [attempts last-ms]} (get @wake-state id)]
+    (when (and (< attempts wake-attempt-cap)
+               (>= (- now-ms last-ms) (wake-delay-ms attempts)))
+      attempts)
+    (let [age (- now-ms enqueued-ms)]
+      (when (>= age (wake-delay-ms 0))
+        (min (attempts-from-age age) (dec wake-attempt-cap) wake-resume-floor)))))
+
+(defn busy?
+  "True when this role is already working something. inbox-handoffs descends
+  into batch_ directories, so a batch in progress counts just like a single
+  handoff does."
+  [role-info]
+  (role-has-inbox-state? role-info "in_process"))
+
+(defn wake-candidates
+  "Unclaimed handoffs due for a wake retry, oldest filename first."
+  [roles now-ms]
+  (->> (vals roles)
+       (remove busy?)
+       (mapcat (fn [role-info]
+                 (for [path (sort-by fs/file-name (inbox-handoffs role-info "new"))
+                       :let [headers (:headers (parse-message path))
+                             id (get headers "id")
+                             enqueued (parse-instant-ms (get headers "enqueued_at"))
+                             attempt (when (and id enqueued)
+                                       (due-attempt now-ms id enqueued))]
+                       :when attempt]
+                   {:role-info role-info :path path :id id :attempt attempt})))
+       (sort-by #(fs/file-name (:path %)))))
+
+(defn alert!
+  "Hand a cap-exhausted handoff to whatever channel the operator configured.
+
+  The daemon log is audit, not delivery: a chain once stalled eight hours with
+  the evidence sitting in this very log and nobody reading it. So the channel is
+  an env hook the deployment fills in - hermes, ntfy, mail, anything that reaches
+  a human - and this code stays ignorant of which. The command sees the handoff
+  id and attempt count as env vars so it can name what is stuck.
+
+  A broken alert channel must never stop the daemon, so a failing or missing
+  command is logged and swallowed."
+  [id attempts]
+  (when-let [cmd (System/getenv "SWARMFORGE_ALERT_CMD")]
+    (let [env (merge (into {} (System/getenv))
+                     {"SWARMFORGE_ALERT_HANDOFF" id
+                      "SWARMFORGE_ALERT_ATTEMPTS" (str attempts)})
+          result (try
+                   (sh "sh" "-c" cmd :env env)
+                   (catch Exception e {:exit -1 :out "" :err (.getMessage e)}))]
+      (safe-log! "alert" id (str "exit=" (:exit result))
+                 (str/trim (str (:out result) " " (:err result)))))))
+
+(defn wake-exhausted!
+  "Record that nobody claimed this handoff after the cap, and alert the operator
+  once. The work stays in inbox/new forever on purpose: quarantine is for
+  malformed outbound handoffs, never for work whose notification failed.
+
+  The de-bounce is the point of the alerted set - reconcile reaches this cap
+  check on every later pass, and an alert that repeats every second is noise a
+  human learns to ignore."
+  [id attempts]
+  (when-not (contains? @alerted id)
+    (swap! alerted conj id)
+    (safe-log! "wake-exhausted" id (str "attempts=" attempts))
+    (alert! id attempts)))
+
+(defn reconcile-once!
+  "Re-send the wake hint for handoffs still sitting in a recipient's inbox/new.
+
+  Never moves, copies, or deletes anything: a lost notification must never be
+  mistaken for invalid work. `skip` is the set of roles the wakeup queue already
+  woke this pass, and `budget` is what it left over - one budget across both, or
+  a retry backlog starves outbox delivery."
+  [roles socket skip budget]
+  (when (pos? budget)
+    (let [now-ms (System/currentTimeMillis)]
+      (doseq [{:keys [role-info id attempt]}
+              (->> (wake-candidates roles now-ms)
+                   (remove #(contains? skip (:role (:role-info %))))
+                   (distinct-by :id)
+                   (take budget))]
+        (try
+          ;; No echo wait: a retry can block up to wake-echo-timeout-ms and
+          ;; poll-once! is single threaded.
+          (notify! socket (:session role-info) (:agent role-info) nil false)
+          (safe-log! "wake-retry" id (str "attempt=" attempt))
+          (catch Exception e
+            ;; Log and count, then come back next tick. Routing this through fail!
+            ;; would quarantine legitimate unclaimed work.
+            (safe-log! "wake-retry-failed" id (.getMessage e))))
+        (let [attempts (inc attempt)]
+          (swap! wake-state assoc id {:attempts attempts :last-ms now-ms})
+          (when (>= attempts wake-attempt-cap)
+            (wake-exhausted! id attempts)))))))
+
 (defn wakeup-dir []
   (fs/path daemon-dir "wakeups"))
 
@@ -812,27 +997,43 @@
           (safe-log! "wake-queue-failed" recipient
                      (.getMessage queue-error)))))))
 
-(defn process-wakeups! [roles socket]
-  (when (fs/directory? (wakeup-dir))
-    (doseq [file (fs/list-dir (wakeup-dir))
-            :when (fs/regular-file? file)
-            :let [state (read-edn-file file)]
-            :when (and state (<= (long (or (:next-at state) 0)) (epoch-ms)))]
-      (let [recipient (:recipient state)
-            info (get roles recipient)]
-        (if-not info
-          (fs/delete-if-exists file)
-          (try
-            ;; A retry must not wait for the pane echo: it can block up to
-            ;; wake-echo-timeout-ms and poll-once! is single threaded.
-            (notify! socket (:session info) (:agent info) nil false)
-            (fs/delete-if-exists file)
-            (catch Exception e
-              (let [attempt (inc (long (or (:attempt state) 0)))]
-                (write-edn-atomic! file (assoc state
-                                               :attempt attempt
-                                               :next-at (+ (epoch-ms) (retry-delay-ms attempt))
-                                               :error (.getMessage e)))))))))))
+(defn process-wakeups!
+  "Retry queued wakes whose notify! threw. Returns {:woke #{role} :spent n} so
+  reconcile-once! neither wakes the same role twice in one pass nor spends a
+  budget this already spent."
+  [roles socket budget]
+  (let [woke (atom #{})
+        spent (atom 0)]
+    (when (fs/directory? (wakeup-dir))
+      (doseq [file (fs/list-dir (wakeup-dir))
+              :while (< @spent budget)
+              :when (fs/regular-file? file)
+              :let [state (read-edn-file file)]
+              :when (and state (<= (long (or (:next-at state) 0)) (epoch-ms)))]
+        (let [recipient (:recipient state)
+              info (get roles recipient)]
+          (cond
+            (nil? info) (fs/delete-if-exists file)
+            ;; A role already working must not be interrupted. The entry stays
+            ;; queued and comes back once the role is free, and it costs no
+            ;; budget, because nothing was sent.
+            (busy? info) nil
+            :else
+            (do
+              (swap! spent inc)
+              (swap! woke conj recipient)
+              (try
+                ;; A retry must not wait for the pane echo: it can block up to
+                ;; wake-echo-timeout-ms and poll-once! is single threaded.
+                (notify! socket (:session info) (:agent info) nil false)
+                (fs/delete-if-exists file)
+                (catch Exception e
+                  (let [attempt (inc (long (or (:attempt state) 0)))]
+                    (write-edn-atomic! file (assoc state
+                                                   :attempt attempt
+                                                   :next-at (+ (epoch-ms) (retry-delay-ms attempt))
+                                                   :error (.getMessage e)))))))))))
+    {:woke @woke :spent @spent}))
 
 (defn deliver! [roles socket sender-role path]
   (let [filename (fs/file-name path)
@@ -915,7 +1116,15 @@
                 (record-retry! (fs/path path) (.getMessage e))
                 (catch Exception nested
                   (log! "failed-to-record-retry" path (.getMessage nested))))))))
-      (process-wakeups! roles socket)
+      (let [{:keys [woke spent]} (try
+                                   (process-wakeups! roles socket wake-notify-budget)
+                                   (catch Exception e
+                                     (safe-log! "wakeups-failed" (.getMessage e))
+                                     {:woke #{} :spent 0}))]
+        (try
+          (reconcile-once! roles socket woke (- wake-notify-budget spent))
+          (catch Exception e
+            (safe-log! "reconcile-failed" (.getMessage e)))))
       (try
         (reconcile-reverse-cycle!)
         (catch Exception e
