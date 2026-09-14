@@ -54,6 +54,13 @@
         (is (str/includes? (:err result) "Unknown role 'missing'")))
       (finally
         (fs/delete-tree root)))))
+(defn executable-relative-paths [dir]
+  (->> (fs/glob dir "**" {:hidden true})
+       (filter fs/regular-file?)
+       (filter fs/executable?)
+       (map #(str (fs/relativize (fs/path dir) %)))
+       set))
+
 (deftest swarmforge-exactly-mirrors-managed-worktree-trees
   (let [root (tmp-dir)
         worktree (fs/path root ".worktrees/coder")]
@@ -78,6 +85,13 @@
       (is (not (fs/exists? (fs/path worktree "swarmforge/roles/stale.prompt"))))
       (is (not (fs/exists? (fs/path worktree "swarmforge/constitution/stale.prompt"))))
       (is (fs/regular-file? (fs/path worktree "swarmforge/scripts/safe_paths.bb")))
+      ;; D-6 (docs/fork-deltas.md): content parity is not enough. A wrapper
+      ;; that arrives byte-identical but lost its +x bit passes every content
+      ;; check and then fails to exec when the role launches. The source side
+      ;; is this repo's own scripts dir: context() binds :script-dir to
+      ;; swarmforge.bb's own parent, not to anything under the fixture root.
+      (is (= (executable-relative-paths scripts-dir)
+             (executable-relative-paths (fs/path worktree "swarmforge/scripts"))))
       (is (fs/regular-file? (fs/path worktree "swarmforge/constitution/current.prompt")))
       (is (= "keep\n" (slurp (str (fs/path worktree "product.txt")))))
       (is (= "keep\n" (slurp (str (fs/path worktree ".swarmforge/keep.state")))))
@@ -591,3 +605,23 @@
       (finally
         (run {:dir root :ok? false} "tmux" "-S" sock "kill-server")
         (fs/delete-tree root)))))
+
+(deftest swarmforge-dashboard-port-is-configurable
+  ;; Unset must produce the exact argv that shipped before the option existed:
+  ;; three tokens, no port, so pack_web keeps asking the kernel for one.
+  ;; A fixed port is what gives `dashboard --tailnet` a URL that survives a
+  ;; restart; a kernel-assigned one has nothing stable to publish.
+  (let [default-result (run {:dir repo-root}
+                            (script "swarmforge.bb")
+                            "--test-pack-web-argv" "/proj")
+        blank-result (run {:dir repo-root
+                           :env {"SWARMFORGE_DASHBOARD_PORT" ""}}
+                          (script "swarmforge.bb")
+                          "--test-pack-web-argv" "/proj")
+        fixed-result (run {:dir repo-root
+                           :env {"SWARMFORGE_DASHBOARD_PORT" "7780"}}
+                          (script "swarmforge.bb")
+                          "--test-pack-web-argv" "/proj")]
+    (is (= "pack_web.sh --serve /proj" (str/trim (:out default-result))))
+    (is (= "pack_web.sh --serve /proj" (str/trim (:out blank-result))))
+    (is (= "pack_web.sh --serve /proj 7780" (str/trim (:out fixed-result))))))

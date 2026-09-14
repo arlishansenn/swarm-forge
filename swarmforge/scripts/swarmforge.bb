@@ -483,6 +483,7 @@
     "--test-sync-worktrees" (test-sync-worktrees! (second args))
     "--remove-hooks" (remove-hooks! (second args))
     "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
+    "--test-pack-web-argv" (println (str/join " " (pack-web-argv "pack_web.sh" (or (second args) "/root"))))
     "--test-sleep-inhibitor-prefix" (test-sleep-inhibitor-prefix!)
     "--test-ensure-codex-trust" (test-ensure-codex-trust! (second args))
     "--test-reset-pack-web-state" (test-reset-pack-web-state! (second args))
