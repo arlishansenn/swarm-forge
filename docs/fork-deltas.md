@@ -89,8 +89,94 @@ launcher 与角色拓扑，从不合进 `main`，要各自 merge upstream 的同
 **2026-09-14 起多一条：`project-manager`（issue #134）。** 它是 forge product，树 = 本 fork
 `main` 的树 + 一份产品 README，所以 `swarmforge/scripts/` 的全部 fork 差异跟着 `main`
 走，不需要在它上面重复一遍。**它与 Pack 分支不同的地方是：每次合完 `main` 之后都要把
-`main` 合进它**，否则装出来的 forge 拿到的是旧脚本。`lieutenant` 本 fork 还没建，原因
-与判据在 issue #135。
+`main` 合进它**，否则装出来的 forge 拿到的是旧脚本。
+
+**2026-09-14 起再多一条，第五条：`lieutenant`（issue #135）。** 同样要跟 upstream 的同名
+分支同步，同样**每次合完 `main` 之后都要把 `main` 合进去**。
+
+**但它与 `project-manager` 不是同一种分支，这一格最容易读错。** `project-manager` 的树 =
+本 fork `main` 的树 + 一份产品 README，所以差异跟着 `main` 走，不用重复。`lieutenant` 的树
+是 **upstream 自己的一条产品分支**——`swarmforge/scripts/` 在它上面被重写过：`handoffd.bb`
+从 446 行长到 862 行、多出 43 个 `main` 上没有的函数（卡片派发、Attention 栏、反向车道），
+`pack_web.bb` 拆成了 `pack_web_*.bb` 一族，`swarmforge.bb` 的 `start-pack-web!` 搬去了
+`swarmforge_terminal.bb`。**所以每一条 B 类差异都要在它上面单独打一遍，而且锚点往往对不上。**
+
+一次性移植做完了（PR 待开，分支 `lieutenant` 已推到 origin），逐条结果：
+
+| 差异 | 在 `lieutenant` 上怎么处理的 | 落点 |
+|---|---|---|
+| D-1 收件箱按 roles.tsv | 移了。另外 upstream 在**新文件** `swarm_handoff_current.bb` 里重犯了 issue #45 那个 bug | `handoff_lib.bb`、`swarm_handoff_current.bb` |
+| D-2 提交键裸回车 / CSI-u | 移了，**四处**。`submit-keys` 这个符号在该分支零命中 | `handoffd.bb`、`pack_web_notify.bb`、`pack_board_tmux.bb`、`pack_dashboard_request.bb` |
+| D-3 `notify!` 按 backend 分发 | 移了，但**不能照搬 arity**（见下） | `handoffd.bb` 五个调用点 |
+| D-4 helper 集中在 `handoff_lib.bb` | 移了，**连 12 个 `.sh` wrapper 的 `--classpath` 一起**（见下） | 四个收件侧脚本 + 12 个 wrapper |
+| D-5 handoffd 对账与重试 | **部分保留**，不是整条搬也不是删（见下） | `handoffd.bb` |
+| **D-6 `sync-worktree-scripts!` 完整镜像** | **不用移：upstream 自己已经做到了，而且钉子比我们的强** | — |
+| D-9 script snapshot 指向本 fork | 移了 | `get-swarm-forge` |
+| D-10 `start-pack-web!` 读固定端口 | 移了。`pack-web-argv` / `start-pack-web!` 两个锚点都零命中 | `swarmforge_terminal.bb` + `swarmforge.bb` 的 dispatch |
+| README 六条链接指本 fork | 移了，五条链接 | `README.md` |
+
+**D-6 是这次唯一「差异消失了」的一格，值得单独记。** upstream 的 `mirror-tree!` 已经是
+先 `delete-tree` 再 `copy-tree`（真镜像，不是覆盖式合并），而且它自带的
+`swarmforge-exactly-mirrors-managed-worktree-trees` 钉 scripts / roles / constitution 三棵树的
+stale 文件都被删掉——**这颗钉子在 `bb test` 里**，而本 fork 的
+`test-sync-worktree-scripts.sh` 必须单独跑，那正是 D-6 在 `main` 上被静默弄坏**两次**的原因。
+实测 `fs/copy-tree` 保留可执行位，所以「丢了 +x 然后启动时 exec 失败」在该分支上结构性不存在。
+只补了可执行位的断言本身（42 个可执行文件的集合比对），加进 upstream 那颗既有钉子里。
+**注意这一格只对 `lieutenant` 成立，`main` 上的 D-6 照旧，别顺手把表行删了。**
+
+**D-5 的判定过程是这次最值得复用的一段。** upstream/lieutenant 自己造了一套
+`record-retry!` / `retry-due?` / `queue-wakeup!` / `process-wakeups!` / `notify-or-queue!`，
+函数名跟 D-5 高度重叠，第一眼像「upstream 已经修了，可以删 D-5」。**逐条比对下来 9 条钉子
+只有 1 条 COVERED、2 条 PARTIAL、7 条 MISSING。** 根因不是实现细节，是事实来源不同：
+
+- **upstream 是边沿触发**：队列条目只在 `notify!` 抛异常时产生，tmux `exit 0` 就删掉。
+- **D-5 是电平对账**：每轮扫 `inbox/new`，文件在就重发，直到 `ready_for_next` 把它搬走。
+
+边沿漏掉三种，三种都是「工作躺在 `inbox/new`，再也没人被唤醒」：TUI 吞掉提交键（tmux 照样
+`exit 0`）、入队本身失败、投递已提交到 `sent/` 之后崩溃。**队列持久化到磁盘这件事是真的
+（`write-edn-atomic!`），但它救不了这三种——持久化的是「发生过一次异常」的记录，不是「工作
+还没被领走」这个事实。** 别把「有持久化」当成「是电平的」。
+
+**移植时踩到的三个坑，下次先看这里：**
+
+1. **`notify!` 的第三个参数两边含义不同。** fork `main` 是 `agent`，upstream/lieutenant 是
+   自定义 `message`（`notify-lieutenant!` 与 `notify-reverse-cleared!` 在用）。照搬 fork 的
+   三参形状会静默把事件文案变成 backend 名。两个能力都要留，最后是
+   `[socket session agent]` / `[... message]` / `[... message await?]`。
+2. **`retry-delay-ms` 两边同名、语义相反。** upstream 那个是 outbox 投递的指数退避（1-based），
+   fork 那个是未领取唤醒的阶梯（0-based）。**Clojure 后定义胜出，直接搬过去会静默改掉
+   upstream 的 outbox 重试，而且不报任何错。** 整套改名 `wake-*` 解决；环境变量名
+   `SWARMFORGE_WAKE_*` 保持不变。
+3. **不能叠两个各发各的唤醒调度器。** `process-wakeups!` 改成返回
+   `{:woke #{role} :spent n}`，`reconcile-once!` 拿 skip 集合与预算余额，两者共用同一个
+   `wake-notify-budget`；队列侧同时补上 busy 跳过。**队列没有删掉**——upstream 自己的
+   `handoffd-keeps-delivery-success-when-session-wakeup-fails` 钉着它，而且
+   `maybe-notify-unblocked-sender!` 给 sender 排的队不对应 sender inbox 里的任何文件，
+   电平扫描覆盖不到那一条。
+
+**D-4 有两半，只做一半会炸。** `lieutenant` 的 12 个 `.sh` wrapper 原本一个都没有
+`--classpath "$SCRIPT_DIR"`。只把 `.bb` 的 `:require` 改成 `[handoff-lib :as hl]`，脚本独立
+运行时就 `Could not locate handoff_lib.bb on classpath`——**实测 37 个测试 / 62 个断言变红。**
+
+**`bb test` 在这条分支上拿不到总数。** 套件在 `coverage-in-process-test` 处 abort，报
+`Cannot find SwarmForge project root`，**`upstream/lieutenant` 原样也一样**，是 upstream 既有
+问题。所以「N tests / 0 failures」这种证据在这条分支上目前不存在，**唯一能用的验收方式是
+before/after 逐行 diff 失败清单**：
+
+```sh
+LC_ALL=C LANG=C bb test > /tmp/after.out 2>&1
+grep -oE '(FAIL|ERROR) in \([a-z0-9-]+\)' /tmp/after.out | sort -u
+grep -cE '^(FAIL|ERROR) in ' /tmp/after.out
+```
+
+基线是 **1 个失败测试 / 3 个断言**（`merge-and-process-takes-inbound-task-docs`，upstream 自己
+就是红的）。**必须加 `LC_ALL=C LANG=C`**：不加的话 git 输出中文，那个测试会因为断言查英文串而
+多报——两种情况下都红，但讯息不同，会让你误判成是自己弄的。
+
+**该分支上 fork main 的测试 fixture 不能原样搬。** `preflight!` 只收 `git_handoff` / `note`，
+fork `main` 那几条 handoffd wake 测试用的 `type: message` 会在够到 tmux 之前就被拒掉；改用
+合法的 `note`，**不要为了让旧测试过而放松 `preflight!`**。另外该分支的 `read-argv` 对不存在的
+文件答 `nil`（fork `main` 答 `[]`），`(= [] ...)` 这种断言要改成 `empty?`。
 
 A 类差异的钉子在 `.agents/skills/swarmforge-operator/scripts/test-*.sh`，也不在
 `bb test` 里。**跑它们时把输出重定向到文件，不要用 `$(...)` 捕获**：
@@ -357,6 +443,10 @@ pack 分支，所以这行默认值现在同时决定 host 脚本与三个 pack 
 那类陷阱；但它意味着本 fork 目前只能供应 upstream 五个 product 里的三个。issue #132，详见
 2026-09-14 那条 merge 记录。
 
+**这个缺口已经补上了（2026-09-14，晚些）。** `project-manager`（issue #134）与
+`lieutenant`（issue #135）两条分支都建了并推到 origin，五个 product 现在全部可供。
+两条都要按上面那两格的规矩同步，**每次合完 `main` 之后都要把 `main` 合进去**。
+
 **注意 digest 是两份独立实现。** launcher 随 Pack 分支发布、由 curl 取回，够不到 operator
 skill，所以它自己抄了一份 `scripts_digest`。两边一旦漂移，症状是 bootstrap 之后第一次
 `start swarm` 报 DRIFT。`test-swarm-launcher.sh` 里那份参考实现就是钉这个的。
@@ -477,6 +567,8 @@ upstream 新加一条绕过 `repo_url` 的下载路径。本轮手工核对过�
 squad）。所以合完之后 `get-swarm-forge project-manager` 与 `get-swarm-forge lieutenant`
 对本 fork 必然报 `branch '<name>' was not found`。**有意不在本次 merge 里补分支**：建哪些
 product 是产品决定，不该作为跟随 upstream 的副作用发生。记在 issue #132。
+**后来补上了：**`project-manager`（#134）与 `lieutenant`（#135）都已建并推送，详见
+上面「两类差异」之前那两段分支记录。
 
 **upstream 弄红了自己的一个测试。** `get-swarm-forge-copies-only-swarmforge-owned-paths`
 （`5f23afb`，Robert C. Martin，在 `upstream/main` 里逐字还在）不带参数调
