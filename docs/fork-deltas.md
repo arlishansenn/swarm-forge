@@ -91,15 +91,30 @@ launcher 与角色拓扑，从不合进 `main`，要各自 merge upstream 的同
 走，不需要在它上面重复一遍。**它与 Pack 分支不同的地方是：每次合完 `main` 之后都要把
 `main` 合进它**，否则装出来的 forge 拿到的是旧脚本。
 
-**2026-09-14 起再多一条，第五条：`lieutenant`（issue #135）。** 同样要跟 upstream 的同名
-分支同步，同样**每次合完 `main` 之后都要把 `main` 合进去**。
+**2026-09-14 起再多一条，第五条：`lieutenant`（issue #135）。** 要跟 upstream 的同名分支同步。
 
-**但它与 `project-manager` 不是同一种分支，这一格最容易读错。** `project-manager` 的树 =
-本 fork `main` 的树 + 一份产品 README，所以差异跟着 `main` 走，不用重复。`lieutenant` 的树
-是 **upstream 自己的一条产品分支**——`swarmforge/scripts/` 在它上面被重写过：`handoffd.bb`
+**它在行为上像 Pack 分支，不像 `project-manager`。这一格最容易读错，而且读错了会真的毁
+东西。** 两者的差别在于分支的树是什么：
+
+- `project-manager` 的树 = 本 fork `main` 的树 + 一份产品 README。它是被当作 `main` 的副本
+  维护的，所以差异跟着 `main` 走，**每次合完 `main` 之后要把 `main` 合进去**。
+- `lieutenant` 的树是 **upstream 自己的一条产品分支**，跟 `main` 不是同一棵树。
+  **绝不要把 `main` 合进 `lieutenant`。**
+
+**为什么不能合：**`swarmforge/scripts/` 在 `lieutenant` 上被 upstream 重写过——`handoffd.bb`
 从 446 行长到 862 行、多出 43 个 `main` 上没有的函数（卡片派发、Attention 栏、反向车道），
 `pack_web.bb` 拆成了 `pack_web_*.bb` 一族，`swarmforge.bb` 的 `start-pack-web!` 搬去了
-`swarmforge_terminal.bb`。**所以每一条 B 类差异都要在它上面单独打一遍，而且锚点往往对不上。**
+`swarmforge_terminal.bb`。把 `main` 合进来会用 446 行那份盖掉 862 行这份，**把 lieutenant 这个
+产品的核心能力整块删掉**。
+
+**所以每一条 B 类差异都要在它上面单独打一遍，而且锚点往往对不上。** 这跟 Pack 分支是同一个
+成本模型：各走各的 PR，各自跟 upstream 同名分支同步，从不与 `main` 互合。
+
+**实测依据（不是推测）：** `get-swarm-forge` 在 `product == lieutenant` 时走
+`download_branch "$product" "$host_dir"` + `install_project_pack`，**从头到尾没有下载过
+`main`**。只有 `two-pack` / `four-pack` / `six-pack` 那条分支才 `download_branch "main"`。
+所以「`main` 的改动会自动到达 lieutenant forge」这个直觉是错的，它正是会让人跳过「逐条
+打一遍」那一步的那个直觉。
 
 一次性移植做完了（PR 待开，分支 `lieutenant` 已推到 origin），逐条结果：
 
@@ -445,7 +460,8 @@ pack 分支，所以这行默认值现在同时决定 host 脚本与三个 pack 
 
 **这个缺口已经补上了（2026-09-14，晚些）。** `project-manager`（issue #134）与
 `lieutenant`（issue #135）两条分支都建了并推到 origin，五个 product 现在全部可供。
-两条都要按上面那两格的规矩同步，**每次合完 `main` 之后都要把 `main` 合进去**。
+两条的同步规矩**不一样**，见上面那两格：`project-manager` 要把 `main` 合进去，
+`lieutenant` **绝不要**（它的树是 upstream 自己的产品分支，合 `main` 会把它的核心能力覆掉）。
 
 **注意 digest 是两份独立实现。** launcher 随 Pack 分支发布、由 curl 取回，够不到 operator
 skill，所以它自己抄了一份 `scripts_digest`。两边一旦漂移，症状是 bootstrap 之后第一次
