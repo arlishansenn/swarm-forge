@@ -14,11 +14,12 @@ lieutenant forge.
 
 > **This is `arlishansenn/swarm-forge`, a fork of `unclebob/swarm-forge`.**
 > Every link on this page points at the fork on purpose. `get-swarm-forge
-> lieutenant` installs the fork's `main` tree, so upstream's pages would
-> describe a different tree. The fork's `swarmforge/scripts/` carries fixes that
-> are not upstream — a forge built from upstream's tree gets a handoff chain
-> that deadlocks silently when a wake-up keystroke is swallowed. The deltas and
-> the reasoning live on `main`, not on this branch:
+> lieutenant` installs **this branch's own tree** — it never downloads `main` —
+> so upstream's pages describe a different forge. This branch's
+> `swarmforge/scripts/` carries fixes that are not upstream: without them a
+> forge deadlocks silently when a wake-up keystroke is swallowed, because
+> upstream only retries a wake that threw, never one that was swallowed. The
+> deltas and the reasoning live on `main`, not on this branch:
 > [`docs/fork-deltas.md`](https://github.com/arlishansenn/swarm-forge/blob/main/docs/fork-deltas.md)
 > and
 > [`docs/adr/0001-script-snapshot-follows-this-fork.md`](https://github.com/arlishansenn/swarm-forge/blob/main/docs/adr/0001-script-snapshot-follows-this-fork.md).
