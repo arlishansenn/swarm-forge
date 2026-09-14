@@ -1,57 +1,51 @@
-# Agent instructions
+# Agent 须知
 
-**This is `arlishansenn/swarm-forge`, a fork of `unclebob/swarm-forge`, on the
-`lieutenant` product branch.** Read the next two sections before running any
-`gh` command or any `git merge`. Both describe ways to do public, hard-to-undo
-damage that look like ordinary work.
+**这是 `arlishansenn/swarm-forge` 的 `lieutenant` 产品分支，upstream 是
+`unclebob/swarm-forge`。** 跑任何 `gh` 命令、任何 `git merge` 之前先读下面两节。
+那两件事都长得像日常操作，一件公开且撤不回，一件完全静默。
 
-## Never touch the upstream tracker
+## 绝不碰 upstream 的 tracker
 
-Track work in GitHub Issues for `arlishansenn/swarm-forge`. Never create, edit,
-or comment on issues or pull requests in `unclebob/swarm-forge`.
+工作记在 `arlishansenn/swarm-forge` 的 GitHub Issues 上。**绝不在
+`unclebob/swarm-forge` 创建、编辑或评论 issue 与 pull request。**
 
-This clone's `origin` is the fork, but **`gh` resolves to the upstream by
-default**, so a bare `gh issue create` files a ticket on someone else's
-repository. Pass `--repo arlishansenn/swarm-forge` on every `gh issue` and
-`gh pr` call. This is public and cannot be quietly undone.
+这个 clone 的 `origin` 是本 fork，但 **`gh` 默认解析到 upstream**，所以裸的
+`gh issue create` 会把票开到别人的仓库上。每一条 `gh issue` 与 `gh pr` 都要带
+`--repo arlishansenn/swarm-forge`。开出去是公开的，撤不干净。
 
-## Never merge `main` into this branch
+## 绝不把 `main` 合进这条分支
 
-The tree here is upstream's `lieutenant` product branch. It is **not** a copy of
-this fork's `main`, and the two are not interchangeable:
+这里的树是 upstream 的 `lieutenant` 产品分支，**不是**本 fork `main` 的副本，
+两者不可互换：
 
-- `handoffd.bb` is 862 lines here and 446 on `main`. The extra 43 functions are
-  card dispatch, the Attention lane, and the reverse lane — the whole point of
-  this product. Merging `main` deletes them.
-- `pack_web.bb` is split into `pack_web_*.bb` here; `start-pack-web!` lives in
-  `swarmforge_terminal.bb`, not `swarmforge.bb`.
+- `handoffd.bb` 在这里 1161 行，在 `main` 上 697 行。多出来的 43 个函数是卡片
+  派发、Attention 栏、反向车道——正是这个产品的全部意义。合 `main` 会删掉它们。
+- `pack_web.bb` 在这里拆成了 `pack_web_*.bb` 一族；`start-pack-web!` 住在
+  `swarmforge_terminal.bb`，不在 `swarmforge.bb`。
 
-Sync against `upstream/lieutenant` only, the same way the pack branches do.
-`get-swarm-forge lieutenant` downloads this branch and never downloads `main`,
-so nothing on `main` reaches an installed forge on its own.
+只跟 `upstream/lieutenant` 同步，做法与 pack 分支一样。
+`get-swarm-forge lieutenant` 下载的是这条分支，**从不下载 `main`**，所以 `main`
+上的任何改动都不会自己到达一座装好的 forge。
 
-## Fork deltas apply here too, one at a time
+## fork 差异在这里要逐条重打
 
-Every behavioural fix this fork carries has to be applied to this branch
-separately, and the anchors usually differ from `main`'s — several symbols
-(`submit-keys`, `pack-web-argv`) have zero hits here. The index, the reasoning,
-and the per-delta nails are on `main`:
-[`docs/fork-deltas.md`](https://github.com/arlishansenn/swarm-forge/blob/main/docs/fork-deltas.md).
+本 fork 带的每一条行为修复都得在这条分支上单独打一遍，而且锚点通常跟 `main` 对不上
+——`submit-keys`、`pack-web-argv` 这些符号在这里都是零命中。索引、理由与每条差异的
+钉子都在 `main` 上：
+[`docs/fork-deltas.md`](https://github.com/arlishansenn/swarm-forge/blob/main/docs/fork-deltas.md)。
 
-Two traps this branch has already sprung:
+这条分支已经绊过两次的坑：
 
-- `notify!`'s third parameter is a custom `message` here and an `agent` on
-  `main`. Both capabilities have to survive.
-- `retry-delay-ms` exists on both sides with opposite meanings — exponential
-  backoff for outbox delivery here, a wake ladder on `main`. Clojure lets the
-  later definition win **silently**. The wake ladder is named `wake-*` here for
-  that reason; keep it that way.
+- `notify!` 的第三个参数在这里是自定义 `message`，在 `main` 上是 `agent`。两个能力
+  都得活下来。
+- `retry-delay-ms` 两边都有，含义相反——这里是 outbox 投递的指数退避，`main` 上是
+  唤醒阶梯。Clojure 让后定义的**静默**胜出。唤醒阶梯在这里改名叫 `wake-*` 就是因为
+  这个，别改回去。
 
-## Verifying a change on this branch
+## 在这条分支上怎么验证改动
 
-`bb test` aborts at `coverage-in-process-test` (`Cannot find SwarmForge project
-root`), on `upstream/lieutenant` too, so there is no total to report. Compare
-the failure list before and after instead:
+`bb test` 会在 `coverage-in-process-test` 处 abort（`Cannot find SwarmForge project
+root`），`upstream/lieutenant` 原样也一样，所以报不出总数。改成比对前后的失败清单：
 
 ```sh
 LC_ALL=C LANG=C bb test > /tmp/after.out 2>&1
@@ -59,21 +53,18 @@ grep -oE '(FAIL|ERROR) in \([a-z0-9-]+\)' /tmp/after.out | sort -u
 grep -cE '^(FAIL|ERROR) in ' /tmp/after.out
 ```
 
-The baseline is **1 failing test / 3 assertions**
-(`merge-and-process-takes-inbound-task-docs`, already red upstream). `LC_ALL=C
-LANG=C` is required: without it git speaks Chinese and that test fails
-differently, which reads like a regression you caused.
+基线是 **1 个失败测试 / 3 个断言**（`merge-and-process-takes-inbound-task-docs`，
+upstream 自己就是红的）。**`LC_ALL=C LANG=C` 必须加**：不加的话 git 输出中文，那个
+测试会以另一种方式失败，看起来像是你弄出来的回归。
 
-## Do not pin prompt text with tests
+## 不要用测试去钉 prompt 文本
 
-Do not test the text of prompts with an automated unit or acceptance test.
-That includes constitution articles, role prompts, Tool Startup, and generated
-instruction files. Prompt wording is not production behavior to pin with
-`str/includes?`, Gherkin, or any other automated check.
+不要用自动化单元测试或验收测试去钉 prompt 的文字，包括 constitution articles、
+role prompts、Tool Startup 以及生成出来的指令文件。prompt 的措辞不是可以用
+`str/includes?`、Gherkin 或任何自动检查去钉的生产行为。
 
-## What is deliberately missing here
+## 这里缺的东西是有意缺的
 
-`docs/`, `openspec/`, `.agents/`, `CONTEXT.md`, and `contrib/` do not exist on
-this branch by design. They are development-time assets of `main`, and
-`get-swarm-forge` never installs them. For the `swarmforge-operator` skill, an
-OpenSpec change, or an ADR, switch to `main`.
+`docs/`、`openspec/`、`.agents/`、`CONTEXT.md`、`contrib/` 在这条分支上不存在，是
+设计如此。它们是 `main` 的开发期资产，`get-swarm-forge` 从不安装它们。要用
+`swarmforge-operator` skill、要改 OpenSpec、要写 ADR，切回 `main`。
