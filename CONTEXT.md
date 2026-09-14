@@ -36,6 +36,18 @@ _Avoid_: pack (when meaning the running process)
 A named role topology (`two-pack`, `four-pack`, `six-pack`) recorded in `swarmforge.conf`.
 _Avoid_: swarm (when meaning the topology file)
 
+**Forge**:
+An installation that holds many managed projects under its own `projects/` directory and runs one Dashboard across all of them. A Pack is installed inside one managed project; a Forge is installed around any number of them.
+_Avoid_: host project, parent repo, workspace
+
+**Host lieutenant**:
+The single agent a Forge runs for itself. It plans and dispatches work to project swarms; it never implements project work.
+_Avoid_: the lieutenant role (when meaning a role inside a Pack), the forge agent
+
+**Open project**:
+A managed project under a Forge whose swarm the Forge has started. The Forge records the set in `.swarmforge/open-projects`; closing one stops that swarm and leaves the directory.
+_Avoid_: active project, running project, started project
+
 **Board**:
 The set of tasks a swarm has been given, each sitting in one lane. A task's lane is the only authority on whether that task is finished.
 _Avoid_: task list, queue, kanban

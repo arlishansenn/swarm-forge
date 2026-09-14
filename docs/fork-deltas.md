@@ -25,7 +25,7 @@ scenario，且尽量带一句「换成 upstream 的版本，本 scenario 失败�
 | D-9 script snapshot 指向本 fork | `script-snapshot-provenance` |
 | D-10 `start-pack-web!` 读固定端口 | `dashboard-port-binding` |
 
-**D-7（`swarmforge-operator` skill）有十个 capability**，因为它是本 fork 相对 upstream 最大
+**D-7（`swarmforge-operator` skill）有十一个 capability**，因为它是本 fork 相对 upstream 最大
 的一块——upstream 完全没有 operator verb，它的动作是人手敲的 ssh 命令：
 
 | 覆盖的东西 | capability |
@@ -38,11 +38,12 @@ scenario，且尽量带一句「换成 upstream 的版本，本 scenario 失败�
 | `wake role` / `talk role` | `role-message-delivery` |
 | `accept work` | `work-acceptance` |
 | `run issue` | `issue-to-pr-pipeline` |
-| `update SwarmForge scripts` 与 `start swarm` 的 snapshot 判定 | `snapshot-install-safety` |
+| `update SwarmForge scripts` 与 `start swarm` 的 snapshot 判定，以及 manifest 归谁写（ADR-0006） | `snapshot-install-safety` |
 | `onboard project` | `project-onboarding` |
+| `provision forge` | `forge-provisioning` |
 
-**这十个的用途和上面那八个不同。** 上面八个是 merge 验收用的：B 类差异，upstream 会碰。
-D-7 是 A 类，merge 从不碰它——这十个 spec 的用途是**让契约本身有个可验收的载体**。
+**这十一个的用途和上面那八个不同。** 上面八个是 merge 验收用的：B 类差异，upstream 会碰。
+D-7 是 A 类，merge 从不碰它——这十一个 spec 的用途是**让契约本身有个可验收的载体**。
 `SKILL.md` 说的是同一批事，但散文说不清「换成别的实现会不会失败」。
 
 **本表仍然要读。** spec 说「差异是什么」，本表说「merge 时怎么找到它、上次是怎么丢的」——

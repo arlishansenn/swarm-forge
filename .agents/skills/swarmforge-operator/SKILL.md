@@ -1,6 +1,6 @@
 ---
 name: swarmforge-operator
-description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, running one GitHub issue through the swarm to a stacked pull request, stopping the swarm, or installing a fork pack (two-pack, four-pack, six-pack) into a new or existing project directory before the swarm has ever run."
+description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, running one GitHub issue through the swarm to a stacked pull request, stopping the swarm, installing a fork pack (two-pack, four-pack, six-pack) into a new or existing project directory before the swarm has ever run, or provisioning a whole forge (project-manager, lieutenant) from an empty directory and creating its first project."
 ---
 
 # SwarmForge Operator
@@ -72,11 +72,107 @@ runtime 文件缺失、socket 上没有 session、或者 master 行不是恰好�
 **handover verb 的契约只到交接那一步为止。** 它检查它能检查的,然后把自己替换成
 目标程序。之后的退出码属于那个程序,不属于这份契约。
 
-**不是每个 verb 都已经有脚本。** `onboard project`、`open swarm`、`dashboard`、
-`wake role`、`talk role`、`read swarm`、`stop swarm`、`accept work`、
+**不是每个 verb 都已经有脚本。** `provision forge`、`onboard project`、`open swarm`、
+`dashboard`、`wake role`、`talk role`、`read swarm`、`stop swarm`、`accept work`、
 `start swarm`、`update SwarmForge scripts` 和 `run issue` 今天已经有脚本并遵守
 这份契约。其余 verb 是本文件里的 shell 步骤;照写的跑,读它们的原始输出。把它们
 纳入契约的工作记在 issue tracker 里。
+
+## Verb: `provision forge`
+
+从一个空目录到一个跑着的 forge,外加它里面第一个跑着的 project。这是 forge 那条路的
+入口,对应 upstream README 的第 2–4 步。
+
+```sh
+scripts/provision-forge.sh --root <forge-root> \
+  --forge <project-manager|lieutenant> --dashboard-port <N> \
+  [--project <name> [--pack <two-pack|four-pack|six-pack>]] \
+  [--mission <text>] [--terminal <value>] \
+  [--target user@host] [--key <path>] [--local]
+```
+
+退出码 / STATUS 行:
+
+- `0` `PROVISIONED` —— 报出 `ROOT`/`FORGE`/`URL`,建了 project 时再加
+  `PROJECT`/`PACK`/`PROJECT_PATH`。
+- `2` `USAGE` —— 参数不对。什么都不会尝试。
+- `4` `DRIFT` —— 由 `start swarm` 抛上来的;它的 STATUS 行原样透传。
+- `5` `ERROR` —— 装失败、来源校验不过、dashboard 没在预算内应答,或者建 project 被拒。
+- `6` `UNSAFE` —— 目标目录不空且没有完整安装,或者 project 重名。什么都没改。
+
+**它与 `onboard project` 的边界。** 两者都落文件,但对象不同:`onboard project` 把一个
+pack 装进**一个已有的 product 仓库**;`provision forge` 从空目录建一个**能装很多 product
+的 forge**。名字用 `provision` 而不是 `start`,因为 `start swarm` 撞见已在跑的 swarm 是
+`6` `UNSAFE` 且无 override,而本 verb 撞见已在跑的 forge 要跳过启动继续往下走 —— 同一个
+动词在同一个条件上一拒一放,是给读的人埋雷。
+
+### 它吃掉的三个陷阱
+
+**来源。** upstream README 第 2 步的 helper URL 指向 `unclebob/swarm-forge`。从那棵树装出来
+的 forge 既没有 D-1(收件箱按 `roles.tsv` 解析)也没有 D-5(handoffd 的对账与重试),
+handoff 链在唤醒键被 TUI 吞掉时**静默**卡死 —— 不报错,只是不动了(ADR-0001/0002)。所以
+安装走本 fork 的 `get-swarm-forge`,**并且装完从文件内容自证**:`handoffd.bb` 里要有
+`reconcile-once!`,`handoff_lib.bb` 里要有 `roles.tsv`。「我传的参数是对的」不是证据。
+文件是否存在也不是判据 —— 这两个文件 upstream 也有,只是内容不同。
+
+天花板说在明处:两个 marker 不是全树等价性证明。upstream 哪天长出同名函数,这个判据就会
+把 upstream 的树认成 fork 的。真正的等价性证明要重新下载本 fork 的同一分支再比 digest,
+那是每次运行多一次下载,换一个还没发生过的失效模式 —— 等 marker 真的失效再换。
+
+**启动。** 从 ssh 会话裸跑 `./swarm`,`osascript` 存在这一点就足以让
+`detect-terminal-backend` 选中 `terminal-app`,而背后没有真实 window,window watchdog
+几秒内就把整个 forge 拆了(issue #10,手工操作下已复现两次)。所以启动一律委托给
+`start swarm`,白拿它的 detached 启动、readiness 轮询、project 锁和「已在跑就拒绝」那道
+闸。**绝不自己拼 `ssh` + `nohup ./swarm &`,也绝不传 `--force`。**`--terminal` 默认
+`none`:forge 跑在远端主机上,没有人会去看它的终端窗口,而 `auto` 正是 #10 的复现路径。
+
+**manifest。** `get-swarm-forge` 装完 forge 后 `swarmforge/scripts/` 存在而
+`.swarmforge/scripts-manifest` 从不存在,`start swarm` 的三态判定读作 INCOMPLETE 并以
+`4` `DRIFT` 拒绝 —— 于是 `--force` 成了启动**任何** forge 的唯一办法,而 `--force` 同时
+关掉 issue #29 建立的 digest 校验。ADR-0006 把这个责任放在这里:**装那棵树的 verb 负责写
+描述它的 manifest。**`get-swarm-forge` 与 `start-swarm.sh` 都不改 —— 前者是 upstream 也
+拥有的安装器,后者的三态判定本身是对的,缺的只是一个 writer。
+
+manifest 只在**缺失**时写。已经存在却与树不一致,那是真的 drift,归 `start swarm` 报;
+在这里覆盖掉它等于抹掉 issue #29 建起来的那个信号。`SOURCE_COMMIT` 写 `unknown`:
+安装走的是分支 tarball,拿不到 commit id,而 `read_manifest` 从来只读 `DIGEST=`。
+
+### 三个阶段,各自可续跑
+
+| 阶段 | 已完成的判据 | 已完成时 |
+|---|---|---|
+| 装 | `$ROOT` 有 `swarm` 且有 `swarmforge/scripts` | 跳过,`WARN=`;manifest 缺失则补写 |
+| 起 | `tmux-socket` 上有活 tmux server | 跳过,`WARN=` |
+| 建 | `projects/<name>` 已存在 | `6` `UNSAFE`,零改动 |
+
+所以「装到一半 / 起到一半被中断了怎么办」的答案是**同一条命令再跑一遍**。没有 `--resume`,
+也没有为此新增的 STATUS 词。
+
+`$ROOT` 存在、不空、又没有完整安装时是 `6` `UNSAFE`:那要么是一次撕裂的安装,要么是别人的
+目录,而 `get-swarm-forge` 会毫不犹豫地往里面写。这道闸是写入边界上的守卫,不是状态机的
+一环。
+
+### 建 project 为什么只能走 HTTP
+
+生产 `pack_web.bb` 的 `-main` 只认 `--serve`;所有 `--test-*` flag(含
+`--test-new-project`)只在测试 harness 里 dispatch。绕过 HTTP 直接调 `forge.bb` 也不行 ——
+那会让这个脚本变成 forge 的 open-projects 状态的第二个写者,而那份状态归跑着的 dashboard。
+所以它 `ssh` 进目标主机、在那台机器上 `curl` `127.0.0.1`。**这不违反「绝不用任何其它方式
+把 dashboard 暴露出去」** —— 那条禁的是往外暴露,主机内自访不在其内。这个 verb 不建隧道、
+不写 `tailscale serve`、不改 `pack_web` 绑什么。
+
+POST 之前要等两次:`start swarm` 的 readiness 只证明 tmux server 有应答,**不证明
+`pack_web` 在听**。所以还要等 `.swarmforge/dashboard-url` 出现并且那个端口握手成功,预算
+照抄 `dashboard` 的 20 次 × 0.5s —— 它等的是同一件事,一次 TCP 握手。
+
+`POST /api/projects` 的 handler 是 `forge/instantiate!` 接 `forge/open-project!`,所以
+2xx 意味着 project 目录建好了**并且**它自己的 swarm 已经被拉起。`409` 是这个端点唯一的
+冲突状态,覆盖「已存在」与「已打开」两种 —— `forge.bb` 那个 `:error` keyword 到不了线上
+(`http-error` 只序列化 message),所以分流看状态码,不看 body 字段。
+
+**lieutenant forge 的 `--pack` 是可省的。** 它只有一个 project 模板
+(`.swarmforge/project-pack`),它那份 `forge.bb` 的 `pack-dir` 干脆忽略 pack 名。
+project-manager 才有 `packs/`,那里 `--pack` 是真选择。
 
 ## Verb: `onboard project`
 
@@ -511,7 +607,8 @@ project:
 |---|---|
 | podsum | `7780` |
 | pi-governance (coder2) | `7781` |
-| unassigned | `7782`-`7789` |
+| `provision forge` 的验收 forge (macmini) | `7782` |
+| unassigned | `7783`-`7789` |
 
 端口跨主机其实不会真的冲突 —— 这张表存在的意义是让读 URL 的人知道那是什么。它是
 本 fork 的 operator 手工维持的一条约定:没有任何东西推导它,没有任何东西强制它,
@@ -1314,3 +1411,21 @@ PR。那个用例之所以真的咬得住,是因为 `git` 桩的 `checkout -b` �
 因为一个永远退出 0 的桩会让续跑用例和「不是我们的卡片」用例都因为错误的理由而通过。
 它的 `accept work` 桩会先打印一行 `WARN=` 和一段诱饵任务块,这样一个按行偏移而不是按
 `task:` 前缀解析的解析器就会失败。任何一次改动脚本或桩的契约之后,都要跑一遍它们。
+
+`scripts/test-provision-forge.sh` 跑 `provision-forge.sh`。这里有两样东西是**真的**,
+不是桩:dashboard 是一个真的 HTTP server(python3),所以 POST 那条路走的是真 curl、
+真 JSON、真状态码 —— 一个 curl 桩会让畸形的 body 或读错的状态码蒙混过关,而 body 的
+形状正是生产 `pack_web` 那个端点的契约所在;`start-swarm.sh` 是**真的被调用**的,对着
+那个打了桩的 tmux 和一个假 launcher(与 `test-start-swarm.sh` 用的是同一个
+`SWARM_LAUNCHER` 接缝)—— 委托本身就是这个 verb 的要点,断言一条 argv 字符串证明不了
+它。只有网络是假的:helper 来自一个 `file://` URL 指着的假 `get-swarm-forge`,这也正是
+让某个用例能决定「装出来的树」里有什么的办法 —— 有本 fork 的 marker,或者像 upstream
+那样没有。覆盖:十一种 USAGE(含 `--project` 没配 `--pack`、lieutenant 不需要 `--pack`、
+project 名里有空格、`--root` 带引号或是相对路径),而且没有任何一种装了东西;一棵
+upstream 的树以 `5` 退出、launcher 一次都没被调用、也没写下 manifest;一次失败的安装
+不写 manifest;一个不空又没装完的 root 以 `6` 退出且原封不动;一次成功的安装写下的
+manifest digest 与树一致、以换行结尾,而且 `STATUS=` 是 stdout 的**第一行**(装完之后
+`get-swarm-forge` 自己那句话曾经抢在它前面);同一条命令再跑一遍跳过装与起并各打一条
+`WARN=`;一棵装好但 manifest 缺失的树被补写而不重新下载;POST 的 body 里 name/pack/
+mission 逐项正确;`projects/<name>` 已存在时零 POST 并以 `6` 退出;dashboard 不应答时
+以 `5` 退出、一个 POST 都没发;以及 `409` 走 `6`、`500` 走 `5` 并带上服务端原话。
