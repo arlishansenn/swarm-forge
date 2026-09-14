@@ -418,8 +418,16 @@ README、三条 pack、handoff-protocol）。本 fork 的同名分支把它们�
 （只有 `two-pack` 有）。
 
 **merge 注意：这条差异没有测试钉得住。** upstream 下次重写产品 README，`-X theirs` 会静默
-把六条 unclebob 链接换回来，而 `bb test` 看不见。合完跑一句
-`grep -c unclebob README.md`，应为 0。
+把六条 unclebob 链接换回来，而 `bb test` 看不见。合完在 `project-manager` 上跑：
+
+```sh
+grep -c 'github.com/unclebob' README.md      # 应为 0
+grep -c 'github.com/arlishansenn' README.md  # 应为 6
+```
+
+**数链接，不数字面量。** 该分支 README 顶部那段 fork 说明里有一句
+「a fork of `unclebob/swarm-forge`」，所以裸的 `grep -c unclebob README.md` 永远是 1，
+把它当判据会把正常状态读成异常、把异常读成正常。
 
 **遗留：** `update SwarmForge scripts` 保留它自己那份 `ARCHIVE_URL` 改写与回滚逻辑，
 **有意不删**：那是给本次改动之前 onboard 的项目用的 legacy 修复路径，那批项目的 launcher
