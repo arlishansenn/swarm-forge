@@ -344,6 +344,13 @@ pack 分支，所以这行默认值现在同时决定 host 脚本与三个 pack 
   `start swarm` 的 `scripts_digest` 一致、安装中途被 kill 目标树不受影响、
   失败不留半装 snapshot 或 manifest。
 
+**2026-09-14 暴露面又大了一圈，并且变成了一个缺口。** upstream 给 `get-swarm-forge` 加了
+`project-manager` 与 `lieutenant` 两个 forge product，它们从同一个 `repo_url` 拉同名分支，
+而**本 fork 没有这两条分支**。于是这两个 product 对本 fork 必然报
+`branch '<name>' was not found`。不是默默装错东西，是直接失败，所以不是 ADR-0001 要堵的
+那类陷阱；但它意味着本 fork 目前只能供应 upstream 五个 product 里的三个。issue #132，详见
+2026-09-14 那条 merge 记录。
+
 **注意 digest 是两份独立实现。** launcher 随 Pack 分支发布、由 curl 取回，够不到 operator
 skill，所以它自己抄了一份 `scripts_digest`。两边一旦漂移，症状是 bootstrap 之后第一次
 `start swarm` 报 DRIFT。`test-swarm-launcher.sh` 里那份参考实现就是钉这个的。
@@ -403,6 +410,76 @@ upstream 的副作用发生。翻案只需改 `swarmforge.conf` 里那三行的 
 ---
 
 ## `main` 的 merge 记录
+
+### 2026-09-14：upstream 8 个 commit（README landing page + get-swarm-forge 产品化）
+
+`b398a68` → upstream `f4f5fbc`。**3 个文件**，+366 / −470。主线两条：`275f0c9` 把 `README.md`
+重写成 GitHub landing page（459 行 → 215 行，21 个章节换成 10 个全新章节），`f992132` +
+`8f31fdd` 把 `get-swarm-forge` 产品化（必须给一个 product 参数，新增 `project-manager` 与
+`lieutenant` 两个 forge product，砍掉 project-manager 退回 main 的 host fallback）。
+
+**`.bb` 脚本一个都没被碰。** `git diff --name-only 95e95e4..upstream/main` 只有三条：
+`README.md`、`get-swarm-forge`、`swarmforge/constitution/articles/engineering.prompt`。
+所以 D-1…D-6、D-10 这一轮在**文件层面**就安全，不需要靠比对函数体。
+
+`git merge -X theirs` 零冲突通过。
+
+| 差异 | 被覆盖了吗 | 怎么发现的 |
+|---|---|---|
+| D-1 收件箱按 roles.tsv 解析 | 否 | `handoff_lib.bb` 本轮零改动（文件层面） |
+| D-2 提交键裸回车 / CSI-u | 否 | 同上 |
+| D-3 `notify!` 按 backend 分发 | 否 | 同上 |
+| D-4 helper 集中在 `handoff_lib.bb` | 否 | 同上 |
+| D-5 handoffd 对账与重试 | 否 | `handoffd.bb` 本轮零改动 |
+| D-6 `sync-worktree-scripts!` 完整镜像 | 否 | `test-sync-worktree-scripts.sh` 14 PASS / 0 FAIL |
+| D-7 `swarmforge-operator` skill | 否 | `.agents/` 本轮零改动；抽查 onboard 39、run-issue 204 全绿 |
+| D-8 remote ssh 带 `-n` | 否 | 同上 |
+| **D-9 script snapshot 指向本 fork** | **否，但这次是侥幸** | 见下 |
+| D-10 `start-pack-web!` 读固定端口 | 否 | `swarmforge.bb` 本轮零改动 |
+
+**D-9 这次活下来是因为 upstream 没碰那一行，不是因为我们防住了。** `f992132` 把
+`get-swarm-forge` 改了 199+/61−，唯独 `default_repo_url=` 那一行原样没动，于是 git 正确地
+保留了 fork 的版本——和 2026-08-31 six-pack `hardender` 那次是同一个机制（「只有一侧改过，
+git 就保留 fork 的版本」）。**别把这次的绿当成有测试钉住了**：钉 D-9 的
+`get-swarm-forge-installs-this-fork-by-default` 是文本断言，它能抓住行被改，抓不住
+upstream 新加一条绕过 `repo_url` 的下载路径。本轮手工核对过：新版里 `try_download_branch`
+与 `download_branch` 全部走 `${repo_url}`，没有第二个 URL 默认值，没有 `unclebob` 残留。
+
+**D-9 的暴露面第三次变大，而且这次直接变成一个缺口。** 新的 `get-swarm-forge` 从
+`repo_url` 拉 `project-manager` 与 `lieutenant` 两条 forge 分支，**本 fork 没有这两条分支**
+（`git ls-remote --heads origin` 实测：只有 two-pack / four-pack / six-pack / adversaries /
+squad）。所以合完之后 `get-swarm-forge project-manager` 与 `get-swarm-forge lieutenant`
+对本 fork 必然报 `branch '<name>' was not found`。**有意不在本次 merge 里补分支**：建哪些
+product 是产品决定，不该作为跟随 upstream 的副作用发生。记在 issue #132。
+
+**upstream 弄红了自己的一个测试。** `get-swarm-forge-copies-only-swarmforge-owned-paths`
+（`5f23afb`，Robert C. Martin，在 `upstream/main` 里逐字还在）不带参数调
+`get-swarm-forge`，而 `f992132` 把 product 参数改成必填，于是 exit 1。这不是 fork 差异被
+覆盖，是 upstream 自己没跟着改测试。修法是给那次调用补一个 `"project-manager"`——测试断言
+的是 `packs/{two,four,six}-pack/`、`projects/`、`swarmforge/roles/lieutenant.prompt`，正是
+`install_named_packs` 那条分支，也就是 `project-manager`。
+
+**README 的 232 行中文 operator 文档被 `-X theirs` 吃掉了，靠 merge 前存档还原。** 它是
+0 删除的纯追加，与 upstream 的新内容零重叠，所以 git 没有任何理由报冲突——**这正是这张表
+存在的那种丢失，这一轮真的发生了一次。** 还原后没有放回 README，而是搬到
+`docs/operator-runbook.md`，README 末尾留六行英文指路。决定与理由见
+[`docs/adr/0005-operator-runbook-lives-outside-the-readme.md`](../docs/adr/0005-operator-runbook-lives-outside-the-readme.md)。
+**下次 merge 起，这一块不再参与 README 冲突。**
+
+**`8f31fdd` 是概念回退，不只是代码。** upstream 现在明写 `main` 不是 forge，`main` 只拥有
+`get-swarm-forge`、`swarmforge/scripts/`、`swarmforge/constitution/articles/`、
+`handoff-protocol.md`、`test/`。本 fork 的路线（`onboard project` 从 Pack 分支装，D-7）不受
+影响，但**引用旧 README「`./swarm` 起 forge、New Project 建项目」那套说法的地方都已经过期**。
+`CONTEXT.md` 本来就没有 forge / `projects/` / New Project 的词条，这个缺口仍然没补。
+
+**upstream 采纳了本 fork 的一条规矩，但没有采纳实现。** 新 README 写着 “Do not pin prompt
+prose with automated tests.”，与本仓 `AGENTS.md` 第一条同义。表里没有因此可删的条目。
+
+**这一轮的钉子数：** `bb test` 265 tests / 1173 assertions 0 failures（merge 前基线
+264 / 1167；+1 test 来自 upstream，assertions 的差是那条被修好的测试重新跑满）；
+`test-sync-worktree-scripts.sh` 14 PASS / 0 FAIL；抽查两个 operator 套件
+（onboard 39、run-issue 204）全绿。**A 类的另外九个套件本轮没跑**——`.agents/` 与
+`swarmforge/scripts/` 文件层面零改动，跑它们证明不了新东西。
 
 ### 2026-08-31：upstream 9 个 commit（forge 重构）
 

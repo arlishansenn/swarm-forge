@@ -213,3 +213,13 @@ auditing, delivery, retry, merge, and lifecycle details.
 
 The `simple-windows` tag marks the last `main` snapshot before the dashboard
 cockpit. It is historical and is not a `get-swarm-forge` product.
+
+## Operating a running swarm from your laptop (this fork)
+
+This fork ships `.agents/skills/swarmforge-operator/`, a control-surface skill
+for a local agent session that drives a running SwarmForge project over ssh:
+twelve verbs, a single exit-code table, dashboard port allocation, and the
+two-pass `run issue` pipeline. It is not part of upstream.
+
+See [the operator runbook](docs/operator-runbook.md). The runbook is written in
+Chinese; the skill itself is the executable contract.
