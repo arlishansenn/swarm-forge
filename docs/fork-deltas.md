@@ -86,6 +86,12 @@ launcher 与角色拓扑，从不合进 `main`，要各自 merge upstream 的同
 `bb test` 里**，而且每次都要跑一遍 RED 探针：把 `swarm` 换成 upstream 同名分支的版本，
 测试必须红。详见 D-9。
 
+**2026-09-14 起多一条：`project-manager`（issue #134）。** 它是 forge product，树 = 本 fork
+`main` 的树 + 一份产品 README，所以 `swarmforge/scripts/` 的全部 fork 差异跟着 `main`
+走，不需要在它上面重复一遍。**它与 Pack 分支不同的地方是：每次合完 `main` 之后都要把
+`main` 合进它**，否则装出来的 forge 拿到的是旧脚本。`lieutenant` 本 fork 还没建，原因
+与判据在 issue #135。
+
 A 类差异的钉子在 `.agents/skills/swarmforge-operator/scripts/test-*.sh`，也不在
 `bb test` 里。**跑它们时把输出重定向到文件，不要用 `$(...)` 捕获**：
 `test-start-swarm.sh` 一类会留下后台进程持有那根管道，命令替换等不到 EOF，会一直挂着，
@@ -402,6 +408,18 @@ upstream 的副作用发生。翻案只需改 `swarmforge.conf` 里那三行的 
 **代价：** upstream 对 `swarmforge/scripts/` 的更新不再自动到达 managed project，需要
 人主动同步进本 fork 的 `main`——**也就是本文档描述的这件事**。Pack 分支是**另一件事**：
 它们供的是 swarm launcher 与角色拓扑，从不合进 `main`，要各自跟 upstream 同名分支同步。
+
+**forge product 的 README 是同一条理由的第二面（issue #134，2026-09-14）。** upstream 的
+`project-manager` 产品 README 里六条链接全指 `unclebob/swarm-forge`（main、main 的
+README、三条 pack、handoff-protocol）。本 fork 的同名分支把它们全改指本 fork：
+`get-swarm-forge project-manager` 装的是本 fork 的 `main` 树，并从本 fork 拉三条 pack
+分支，指向 upstream 的页面描述的是另一棵树。三条 pack 链接指 `/tree/<branch>` 而不是
+`/blob/<branch>/README.md`，因为**本 fork 的 `four-pack` 与 `six-pack` 分支没有 `README.md`**
+（只有 `two-pack` 有）。
+
+**merge 注意：这条差异没有测试钉得住。** upstream 下次重写产品 README，`-X theirs` 会静默
+把六条 unclebob 链接换回来，而 `bb test` 看不见。合完跑一句
+`grep -c unclebob README.md`，应为 0。
 
 **遗留：** `update SwarmForge scripts` 保留它自己那份 `ARCHIVE_URL` 改写与回滚逻辑，
 **有意不删**：那是给本次改动之前 onboard 的项目用的 legacy 修复路径，那批项目的 launcher
