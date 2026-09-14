@@ -4,688 +4,212 @@ Do not spend any money on a bankrbot SWARM token.
 
 # SwarmForge
 
-**A disciplined tmux-based agent orchestration platform that turns swarms of AI agents into reliable, professional software engineers.**
+SwarmForge coordinates AI agents in isolated git worktrees and tmux sessions.
+Agents exchange committed work through durable handoffs, while the operator
+uses a local dashboard to start work, inspect agents, handle approval gates,
+answer clarifications, and stop the swarm.
 
-## Intent
+![SwarmForge dashboard](project-swarm.jpg)
 
-This `main` branch is documentary: it explains the system and carries the shared operational scripts and default constitution articles. Pack branches (`two-pack`, `four-pack`, `six-pack`) are templates. `get-swarm-forge` installs all of them into a forge `packs/` directory; **New Project** instantiates one pack into `projects/<name>/`.
+This repository's master branch is named `main`. It is the landing page,
+installer source, shared runtime, and shared engineering law. It is not itself
+a runnable SwarmForge product.
 
-SwarmForge is an agent coordination system that facilitates communication between agents working in different git worktrees.
+## Products
 
-It provides a shared structure for role-specific prompts, worktree assignment, tmux sessions, and message passing so multiple agents can collaborate on the same project without stepping on each other.
+| Command | Branch | Shape |
+|---|---|---|
+| `get-swarm-forge two-pack` | [`two-pack`](https://github.com/unclebob/swarm-forge/blob/two-pack/README.md) | Pack installed into the current project: `coder` → `cleaner`. |
+| `get-swarm-forge four-pack` | [`four-pack`](https://github.com/unclebob/swarm-forge/blob/four-pack/README.md) | Pack installed into the current project: `specifier` → `coder` → `refactorer` → `architect`. |
+| `get-swarm-forge six-pack` | [`six-pack`](https://github.com/unclebob/swarm-forge/blob/six-pack/README.md) | Pack installed into the current project: six separate specification, implementation, cleanup, architecture, hardening, and QA roles. |
+| `get-swarm-forge project-manager` | [`project-manager`](https://github.com/unclebob/swarm-forge/blob/project-manager/README.md) | Multi-project forge with selectable two-, four-, and six-pack templates and a host lieutenant. |
+| `get-swarm-forge lieutenant` | [`lieutenant`](https://github.com/unclebob/swarm-forge/blob/lieutenant/README.md) | Multi-project forge with one configurable project template and a planning lieutenant. |
 
-## Branches
+A **pack** is composed into an existing project. Running `./swarm` starts that
+project's configured roles.
 
-Pack templates live on dedicated branches. Each branch contains the `swarmforge/swarmforge.conf`, local constitution articles, and role prompts for one workflow. `get-swarm-forge` copies all of them into `packs/` along with host scripts from `main`.
+A **forge** is installed into an empty host directory. Running `./swarm` starts
+the forge dashboard and host lieutenant; project swarms start when the operator
+creates or opens projects beneath `projects/`.
 
-### `two-pack`
-
-`two-pack` is the quick backend workflow. Use it for small tasks that benefit from fast coding without the overhead of Gherkin and acceptance testing, while still preserving backend refactoring and hardening.
-
-- `coder` implements requested behavior with TDD and unit tests.
-- `cleaner` batches coder handoffs and performs cleanup, CRAP and DRY review, architectural review, encapsulation and separation-of-concerns fixes, and language mutation hardening.
-
-The card moves `coder` -> `cleaner`, then to Done. Cleaner also sends a merge-only copy back to coder. Use this branch when you want a tight implementation/refinement loop without specification, QA, property-test, or acceptance-test roles.
-
-### `four-pack`
-
-`four-pack` is the compact specification workflow. Use it for moderate projects that require Gherkin specification and some architectural consideration without splitting every quality gate into its own agent:
-
-- `specifier` turns user intent into precise Gherkin acceptance specifications and asks for approval before handoff.
-- `coder` implements approved behavior slices with TDD, unit tests, and generated acceptance tests.
-- `refactorer` performs behavior-preserving cleanup, coverage improvement, CRAP and DRY review, mutation-site scans, and property-test support.
-- `architect` owns high-level structure, dependency direction, mutation hardening, DRY review, soft Gherkin mutation, and final completion notification.
-
-The card moves `specifier` -> `coder` -> `refactorer` -> `architect`, then to Done. Refactorer also sends a merge-only copy back to coder. Architect also sends merge-only copies to every earlier role. Use this branch when you want disciplined development without splitting cleanup, architecture, hardening, and QA into separate agents.
-
-### `six-pack`
-
-`six-pack` is the full workflow. Use it for major projects that require full specification, up-front QA, backend verification, and significant architectural consideration. It separates each major quality gate into its own role:
-
-- `specifier` turns user intent into accepted Gherkin specifications and end-to-end QA procedures.
-- `coder` implements approved behavior slices with TDD, unit tests, and generated acceptance tests.
-- `cleaner` performs local behavior-preserving cleanup, coverage improvement, CRAP and DRY review, and mutation-site scans.
-- `architect` reviews module structure, boundaries, dependency direction, and property-test coverage.
-- `hardender` performs mutation hardening, language mutation, CRAP and DRY verification, and soft Gherkin mutation.
-- `QA` converts the specifier's QA procedures into executable scripts, runs final user-interface verification, checks handoff consistency, and sends completion notifications.
-
-The card moves `specifier` -> `coder` -> `cleaner` -> `architect` -> `hardender` -> `QA`, then to Done. Cleaner also sends a merge-only copy back to coder. Architect and QA also send merge-only copies to every earlier role. Use this branch when you want each review and verification concern owned by a separate agent.
-
-### `simple-windows`
-
-`simple-windows` is a tag on `main`, not a workflow branch. It marks the last commit before the pack cockpit: one Terminal window per role, no dashboard, and no `window-invisible`. It does not sit on `squad` or the other squad branches.
-
-```sh
-git fetch origin tag simple-windows
-git checkout simple-windows
-```
-
-Or download that snapshot:
-
-```sh
-curl -L "https://github.com/unclebob/swarm-forge/archive/refs/tags/simple-windows.tar.gz" | tar -xz --strip-components=1
-```
-
-Do not use `simple-windows` as `BRANCH=` in the pack getting-started command below; that command is for `two-pack`, `four-pack`, and `six-pack`.
+The `squad`, `sprint-module-squad`, and `adversaries` branches are separate
+experimental workflows. They are not `get-swarm-forge` products.
 
 ## Prerequisites
-
-SwarmForge runs locally. Before starting a runnable branch, make sure the target machine has:
 
 - `zsh`
 - `git`
 - `tmux`
 - Babashka (`bb`)
-- At least one configured agent backend, such as `codex`, `claude`, `copilot`, or `grok`
+- At least one configured agent backend: `grok`, `codex`, `claude`, or
+  `copilot`
 
-## Getting Started
+## Install the helper
 
-Install the `get-swarm-forge` helper somewhere on your `PATH`, such as `~/cmds` or `~/bin`:
+Put `get-swarm-forge` somewhere on `PATH`:
 
 ```sh
 mkdir -p ~/cmds
-cp get-swarm-forge ~/cmds/get-swarm-forge
+curl -L -o ~/cmds/get-swarm-forge \
+  https://raw.githubusercontent.com/unclebob/swarm-forge/main/get-swarm-forge
 chmod +x ~/cmds/get-swarm-forge
 ```
 
-Make sure that utility directory is on your shell `PATH`, then run the helper in
-the directory that will be the **forge** (not a single project):
+Add `~/cmds` to `PATH`, then recopy the helper when it changes. The helper is
+the supported entry point because it composes files from more than one branch.
 
-```sh
-get-swarm-forge
+## Composition
+
+For a pack install, the helper downloads two branches:
+
+```text
+main
+  swarmforge/scripts/                    shared runtime and dashboard
+  swarmforge/constitution/articles/      shared engineering, workflow, handoffs
+
+<pack branch>
+  swarm                                  launcher
+  swarmforge/swarmforge.conf             roles, agents, and worktrees
+  swarmforge/constitution.prompt         constitution entry point
+  swarmforge/constitution/articles/      pack-local additions
+  swarmforge/roles/                       role ownership
 ```
 
-`get-swarm-forge` downloads `main` and every pack branch (`two-pack`,
-`four-pack`, `six-pack`). It installs host scripts under `swarmforge/`, pack
-templates under `packs/`, and an empty `projects/` directory. It does not
-turn the current directory into one pack.
+The result is written into the current project. Shared article names
+`engineering.prompt`, `workflow.prompt`, and `handoffs.prompt` always come from
+`main`; a pack specializes them with `project.prompt` and `local-*.prompt`
+files.
 
-Start the host dashboard:
+For a forge install, the named forge branch supplies the host runtime,
+lieutenant, and dashboard. `project-manager` also downloads the three pack
+branches into `packs/`; `lieutenant` carries its one template under
+`.swarmforge/project-pack/`.
+
+## Configuration contract
+
+Every running project has a `swarmforge/swarmforge.conf`. For the fixed packs,
+each non-comment line has this shape:
+
+```text
+window[-invisible] <role> <backend> <worktree> [task|batch] [forward-only|back-one|back-all] [backend arguments...]
+```
+
+- File order is the default forward pipeline. Exactly one role must use the
+  `master` worktree; that sentinel means the project's main checkout on its
+  current branch. Other names become `.worktrees/<name>` checkouts.
+- `window` opens a terminal surface; `window-invisible` runs only in tmux and
+  is opened from the dashboard when needed.
+- Receive mode defaults to `task`. `batch` lets a role accept a compatible
+  group of queued handoffs together.
+- Propagation defaults to `forward-only`. `back-one` and `back-all` arrange
+  merge-only copies for earlier roles after downstream work.
+- Supported backends are `codex`, `grok`, `claude`, and `copilot`; remaining
+  tokens are passed to that backend.
+
+Forge hosts instead use `Lieutenant <backend> [backend arguments...]`.
+Branches may extend the grammar for their own control plane—for example,
+`lieutenant` adds typed `card` routes and the squad branches add
+`swarmforge/squad.conf`. The selected branch README and its parser are the
+authority for those extensions.
+
+## Constitution and role prompts
+
+The installer composes instructions as data; it does not bake every product's
+rules into the launcher. A normal pack agent is started with instructions to
+read `swarmforge/constitution.prompt`, recursively read what it names, and then
+read `swarmforge/roles/<role>.prompt`.
+
+The three article names owned by `main` are:
+
+| Article | Shared responsibility |
+|---|---|
+| [`engineering.prompt`](swarmforge/constitution/articles/engineering.prompt) | Language defaults, testability, acceptance-pipeline tooling, verification, and quality-tool guardrails. |
+| [`workflow.prompt`](swarmforge/constitution/articles/workflow.prompt) | Worktree discipline, commit attribution, temporary files, and failure conditions. |
+| [`handoffs.prompt`](swarmforge/constitution/articles/handoffs.prompt) | The structured send, receive, merge, retry, and completion protocol. |
+
+A product branch contributes its constitution entry point and any differently
+named local articles, such as `project.prompt`, `local-engineering.prompt`, or
+`local-workflow.prompt`. The composer reserves the three shared names above for
+`main`, so a pack cannot silently replace common law. The product's README
+describes what its local articles add without repeating these shared rules.
+
+Role prompts divide ownership inside that law: what a role may change, what it
+must verify, what it must leave to another role, and where its next handoff
+goes. There must be a matching prompt for every configured role. A forge
+lieutenant is the exception: the shared
+[`lieutenant.prompt`](swarmforge/roles/lieutenant.prompt) explicitly keeps it
+outside the project engineering constitution.
+
+## Use a product
+
+Install a pack in an existing software repository:
 
 ```sh
+get-swarm-forge six-pack
 ./swarm
 ```
 
-`./swarm` starts the dashboard and the **lieutenant** only. It does not start
-project agents. Startup prints a **Dashboard:** URL (also written to
-`.swarmforge/dashboard-url`) and opens it in the browser when `open` is
-available.
-
-Create a project from the dashboard with **New Project** (name, mission,
-pack, optional GitHub `owner/repo`, editable conf). That writes
-`projects/<name>/` including `mission.md`, gives that directory its own
-git repo (or uses the clone), and starts that pack. The pack's `master`
-role works in that repo. **Open Project** starts an existing directory
-under `projects/`. **Close** on a project header stops that pack and
-leaves the directory.
-
-Set `SWARMFORGE_OPEN_BROWSER=0` before `./swarm` to skip the browser open. The dashboard still starts; visit the printed URL.
-
-To stop everything, click **Teardown** in the dashboard header and confirm.
-That closes every open project, then kills the lieutenant, tmux, and the
-dashboard. Directories under `projects/` stay on disk. After a later
-`./swarm`, nothing is running until you Open Project.
-
-While a swarm is active, SwarmForge tries to prevent the host from sleeping. On macOS it uses `caffeinate`; on Linux it uses `systemd-inhibit` when available. Display lock or manual sleep can still interrupt agents depending on the OS. Set `SWARMFORGE_PREVENT_SLEEP=0` before `./swarm` to disable this behavior.
-
-## Pack Cockpit
-
-![SwarmForge dashboard](project-swarm.jpg)
-
-The pack cockpit is a local web dashboard served from `main`'s scripts
-(`pack_web`). It is the forge operator surface: several projects can run at
-once. Chat talks to the **lieutenant**, who oversees the whole swarm, not to
-a project agent.
-
-Layout, top to bottom then left to right:
-
-- **Header** — SwarmForge, live marker, **New Project**, **Open Project**, **Teardown**.
-- **Attention** — human gates from every open project. Each row names the work as underlined **`project`/`task`** (project bold).
-- **Board** — one band per open project, split by a horizontal bar. Each band has a header (**New Task**, **Close**) and that pack's swimlanes plus **Done**.
-- **Work Queue** — the same project stack on the right; the two sides scroll independently.
-- **Chat** — follow-ups to the lieutenant. Pending replies show live green `|` status under the request.
-
-### Operating the dashboard
-
-**New Project.** Name, mission (`mission.md` at the project top), pack radios,
-editable conf. Check **github repo** and type `owner/repo` to clone first.
-The directory is the last path segment. Existing names get an alert.
-
-**Open Project.** Menu of directories under `projects/`. Opening refreshes
-scripts from `packs/` (keeps `mission.md` and the project's conf) and starts
-that pack. Already-open names get an alert.
-
-**Start a task.** Click **New Task** on that project's header bar, give a
-short stable **name** and the **task** text, then **OK**. That creates a card
-in the project's master lane and queues a `(New Task)` note to that agent.
-
-**Talk to the lieutenant.** Type in the chat composer (Enter sends,
-Shift+Enter newline). The dashboard stores a durable request and injects
-`[id] text` into the lieutenant pane. While the reply is pending, up to
-two green `|` status lines appear under the request (same filtering as
-card status) and replace each other as the lieutenant thinks. The chat
-rail stays put unless the scroller is already at the bottom; then new
-lines stay pinned to the bottom. The lieutenant is grok unless host
-`swarmforge/swarmforge.conf` has a line like `Lieutenant grok --yolo`.
-
-**Approve a specifier handoff.** When the specifier queues work for the next role, Attention shows **Approval**, the underlined **`project`/`task`** pair, a **Documents** menu for artifacts, **Approve**, and **Reject**. A new Attention row plays a short chime. Approve delivers the handoff and moves the card. Reject leaves the card with the specifier and notifies that agent. Two-pack has no specifier gate; those handoffs deliver immediately.
-
-**Answer a clarification.** If an agent needs a human answer, Attention shows **Request clarification**, the question, and a text box. Submit injects the answer into that agent's pane. Do not use Approve/Reject for this.
-
-**Watch the board.** Cards move when `handoffd` delivers a forward `git_handoff`. Click a card to open its task body in a resizable window. The card can show the agent's latest status sentence (the last pane line that contains `I'm`). Merge-only copies from `back-one` or `back-all` do not move the card. The last role in every pack sends the **terminal** handoff: `to:` every other role. That, not merely several names, moves the card to **Done**. The Done well is always on the board; it fills when that handoff is delivered.
-
-**Inspect an agent.** Click a Work Queue role name, or **Open** in the header / chat rail, to pop a live pane capture. Those windows are growable. Agents themselves stay in tmux; these views do not replace the dashboard.
-
-**Stop.** **Teardown** asks for confirmation, then kills the swarm. If the dashboard says **Swarm disconnected**, the UI is no longer talking to a live pack.
-
-## What SwarmForge Does
-
-SwarmForge is a lightweight, tmux-based orchestration layer that:
-
-- Launches a **config-driven swarm** from a project-local `swarmforge/swarmforge.conf`
-- Creates one tmux session per configured role
-- Serves a **pack cockpit** in the browser and, by default on the pack branches, skips a Terminal window per role (`window-invisible`)
-- Reads behavior from project-local `swarmforge/roles/<role>.prompt` files plus a layered `swarmforge/constitution.prompt`
-- Supports per-role backends such as `claude`, `codex`, `copilot`, or `grok`
-- Puts the shared `swarmforge/scripts/` directory on each agent's `PATH`, including handoff helpers for active swarm communication
-- Creates git worktrees under `.worktrees/` for roles assigned to dedicated worktree names
-- Initializes a git repository in a new working directory when needed
-- Keeps all swarm state local to the working directory in `.swarmforge/`
-
-## Core Features
-
-- **Config-Driven Topology** — The swarm shape comes from `swarmforge/swarmforge.conf`, not hardcoded shell variables.
-- **Project-Local Roles** — Each role is defined by `swarmforge/roles/<role>.prompt` in the working tree being orchestrated.
-- **Layered Constitution** — `swarmforge/constitution.prompt` directs agents to read article files under `swarmforge/constitution/articles/`.
-- **Backend Selection Per Role** — A role can launch `claude`, `codex`, `copilot`, or `grok`.
-- **Pack Cockpit** — A local dashboard for New Task, Attention, the board, Work Queue, master-agent chat, and Teardown.
-- **Observable Swarm** — Watch agents from the dashboard; open a live pane when you need the raw session. Optional `window` lines still open a Terminal surface per role.
-- **Self-Hosted & Lightweight** — Runs locally in tmux and a browser, with optional Terminal windows.
-
-## Constitution Structure
-
-Each runnable branch contains a `swarmforge/` directory with this general layout:
-
-```text
-swarmforge/
-  swarmforge.conf
-  constitution.prompt
-  constitution/
-    articles/
-      project.prompt
-      local-engineering.prompt
-      local-workflow.prompt
-      ...
-  roles/
-    <role>.prompt
-    ...
-```
-
-`constitution.prompt` is the entry point. Runnable branches normally use it to tell agents to read every file in `swarmforge/constitution/articles/`.
-
-Shared default articles live on `main` under:
-
-```text
-swarmforge/constitution/articles/
-  engineering.prompt
-  handoffs.prompt
-  workflow.prompt
-```
-
-`get-swarm-forge` always copies shared articles from `main` (or `SWARMFORGE_BASE_BRANCH`). Packs must not ship `engineering.prompt`, `workflow.prompt`, or `handoffs.prompt`. Those filenames are law from `main`.
-
-Pack-specific additions and exceptions use explicit local filenames:
-
-- `project.prompt` for the workflow's project shape and local topology.
-- `local-engineering.prompt` for workflow-specific engineering rules.
-- `local-workflow.prompt` for workflow-specific flow rules.
-
-The `local-*.prompt` naming convention means "add to or specialize the shared default article for this pack." Use it for extra requirements, exceptions, or narrower instructions. Do not replace a shared article by committing the same filename.
-
-For example, `main` provides `workflow.prompt`, while `six-pack` adds `local-workflow.prompt` for QA-specific handoff behavior.
-
-## Roles
-
-Each role in `swarmforge/swarmforge.conf` maps to a corresponding `swarmforge/roles/<role>.prompt` file.
-
-## How It Works
-
-In a runnable branch:
-
-1. SwarmForge reads `swarmforge/swarmforge.conf`.
-2. The project is already composed by `get-swarm-forge`: shared helper scripts and `engineering.prompt` / `workflow.prompt` / `handoffs.prompt` from `main`, plus pack-owned files (`swarm`, `swarmforge.conf`, role prompts, `constitution.prompt`, `project.prompt`, `local-*.prompt`). Shared article filenames are never taken from the pack.
-3. Startup uses that composed `swarmforge/constitution/articles/` tree. Pack specialization is `local-*.prompt` and other pack-owned files, not a same-name override of a shared article.
-4. Startup validates the configured role prompts, helper scripts, and terminal adapters.
-5. If the target directory is not already a git repository, startup initializes one and creates the first commit.
-6. Startup creates one git worktree per configured role under `.worktrees/`, unless the role is assigned to `master` or `none`.
-7. Startup copies the composed `swarmforge/scripts/` and `swarmforge/constitution/` trees into each role worktree and puts that local scripts directory on each agent's `PATH`, so agents use local handoff helpers without reaching back into the master checkout.
-8. SwarmForge creates tmux sessions, launches each configured backend in its assigned worktree, starts the pack dashboard, and opens a Terminal surface only for `window` (visible) roles.
-9. Startup starts an OS-specific sleep inhibitor when one is available, and cleanup stops it with the swarm.
-10. Roles communicate through daemon-delivered handoff files. Agents create validated drafts with `swarm_handoff.sh`, accept work with `ready_for_next.sh`, and complete work with `done_with_current.sh`.
-
-## Handoff Protocol
-
-Startup syncs the shared helper scripts into every role worktree under `swarmforge/scripts/` and puts that local directory on the agent's `PATH`. Agents do not send tmux messages directly. The launcher starts `handoffd.bb`, which owns tmux socket access, watches each agent outbox, copies validated handoff files into recipient inboxes, and sends only generic wake-up notifications.
-
-Agents interact with handoffs through three helper scripts:
-
-- `swarm_handoff.sh <draft-file>` validates outbound handoffs. Notes queue
-  immediately; Git handoffs use the audit gate described below.
-- `ready_for_next.sh` accepts work using the role's configured receive mode.
-- `done_with_current.sh` completes the current task or batch using the role's configured receive mode.
-
-Outbound drafts use one of two message types. A git handoff points the recipient at a committed state. The commit abbreviation must be exactly 10 hexadecimal characters; `swarm_handoff.sh` validates that it resolves to a single commit and canonicalizes it before queuing the handoff. The first valid Git handoff call returns `AUDIT_REQUIRED` without queueing or completing the sender's current inbox item, and increments the task card's audit counter. The sender must re-read the complete task and referenced sources, trace every requirement and constraint to role-appropriate work and evidence, examine boundaries and failure cases, fix every finding, rerun applicable checks, and repeat the audit. Only an unchanged second call queues the handoff without another increment, after which any required approval is requested. A changed draft, task, sender, recipient set, or commit invalidates the earlier audit and creates a new counted challenge.
-
-```text
-type: git_handoff
-to: <role>[,<role>...]
-priority: NN
-task: <short-stable-task-name>
-commit: <10-character-commit-abbrev>
-```
-
-A note is one short freeform message:
-
-```text
-type: note
-to: <role>[,<role>...]
-priority: NN
-message: <one line, max 80 chars>
-```
-
-The helper generates the delivered payload. Agents do not write long handoff bodies, branch names, queue filenames, or tmux commands. If the sender's conf has `back-one` or `back-all`, the helper also writes the merge-only copies; agents do not list those earlier roles on `to:`.
-
-Recipient agents run `ready_for_next.sh` when notified or after restart. It dispatches to the task or batch helper configured for that role. If it prints `NO_TASK`, they stop waiting for work. If it prints `TASK: <path>`, they treat the printed `TASK_NAME` and `PAYLOAD` as the task. If it prints `BATCH: <path>`, they process the printed `BATCH_ITEM` entries in helper-delivered order. If a wake-up arrives while an agent is already working, it can ignore the wake-up. `done_with_current.sh` completes the current item only: it prints `MAIL_WAITING` when more mail is queued, or `NO_TASK`. The agent then runs `ready_for_next.sh` if mail is waiting.
-
-The durable handoff files and lifecycle headers replace the old logbook and resend queue. Runtime handoff state lives under `.swarmforge/handoffs/` in each worktree, with `outbox`, `sent`, `failed`, and `inbox` subdirectories. Agents should not hand-edit, merge, stage, or commit handoff runtime state. See [swarmforge/handoff-protocol.md](swarmforge/handoff-protocol.md) for the full protocol.
-
-## The `swarmforge.conf` File
-
-`swarmforge/swarmforge.conf` defines the swarm window-by-window. Each line has this form:
-
-```conf
-window-invisible <role> <agent> <worktree> [task|batch] [forward-only|back-one|back-all] [extra-cli-args...]
-window <role> <agent> <worktree> [task|batch] [forward-only|back-one|back-all] [extra-cli-args...]
-```
-
-`window-invisible` starts the agent in tmux without a Terminal window (the pack default). `window` also opens a Terminal surface for that role.
-
-The optional receive mode defaults to `task`. Use `batch` for roles that should consume all currently queued equal-priority handoffs as one batch.
-
-The optional propagation token defaults to `forward-only`. The card still follows the forward send to the next window.
-
-- `forward-only` — no extra copies.
-- `back-one` — also queue a merge-only copy to the previous window.
-- `back-all` — also queue merge-only copies to every earlier window.
-
-Those extra copies do not move the card. The recipient merges the copy and keeps working; it does not hand that copy onward. The card goes Done only when the last window sends a `git_handoff`.
-
-The **host** conf may include a lieutenant line instead of windows:
-
-```conf
-Lieutenant grok --yolo
-```
-
-If that line is omitted, the lieutenant is grok with no extra args.
-
-Pack defaults (roles not listed here are `forward-only`):
-
-- `two-pack`: coder grok, cleaner codex `batch back-one`
-- `four-pack`: specifier codex, coder grok, refactorer grok, architect
-  codex `batch back-all`; refactorer `back-one`
-- `six-pack`: specifier codex, coder grok, cleaner grok `batch back-one`,
-  architect grok `batch back-all`, hardender codex, QA grok `batch back-all`
-
-Any fields after receive-mode and the propagation token are passed directly to the agent CLI as additional arguments. If you omit those tokens, extra arguments may start at the fifth field:
-
-```conf
-window coder copilot wt-coder --yolo
-window architect claude wt-arch task --dangerously-skip-permissions
-```
-
-You can define as many windows as your project needs. Each `role` maps to a corresponding prompt file at `swarmforge/roles/<role>.prompt`, so a config containing `architect`, `coder`, `reviewer`, `research`, and `release` windows would expect:
-
-- `swarmforge/roles/architect.prompt`
-- `swarmforge/roles/coder.prompt`
-- `swarmforge/roles/reviewer.prompt`
-- `swarmforge/roles/research.prompt`
-- `swarmforge/roles/release.prompt`
-
-This lets each project choose its own swarm shape instead of being locked to a fixed set of roles.
-
-Example config (four-pack shape, pack default is invisible):
-
-```conf
-window-invisible specifier codex master --yolo
-window-invisible coder grok coder
-window-invisible refactorer grok refactorer back-one
-window-invisible architect codex architect batch back-all --yolo
-```
-
-In the example above, the agents run in these worktrees:
-
-- `specifier` -> main working directory on `master` (master agent: New Task and chat)
-- `coder` -> `.worktrees/coder`
-- `refactorer` -> `.worktrees/refactorer`
-- `architect` -> `.worktrees/architect`
-
-If a window uses `master` as its worktree name, SwarmForge does not create `.worktrees/master`; that role runs in the main working directory on the `master` branch.
-
-## tmux Behavior
-
-SwarmForge uses a project-specific tmux socket recorded in `.swarmforge/tmux-socket`, so each project swarm is isolated from other tmux sessions. It also honors tmux `base-index` and `pane-base-index` settings when launching agents and sending notifications, so configurations that number windows or panes from `1` work without requiring users to change their tmux preferences.
-
-## Terminal Behavior
-
-Pack branches use `window-invisible`, so this adapter does not open a window per role. Visible `window` lines still open trackable terminal windows or tabs through a small terminal backend adapter.
-
-Default detection:
-
-- If AppleScript is available, SwarmForge opens macOS Terminal.app windows.
-- Otherwise, if `wt.exe` is available, SwarmForge opens Windows Terminal windows.
-- Otherwise, SwarmForge attaches the cleanup tmux session in the current shell.
-
-After copying a runnable branch, set `SWARMFORGE_TERMINAL` to override detection:
+Or install a forge in an empty directory:
 
 ```sh
-SWARMFORGE_TERMINAL=ghostty ./swarm
-SWARMFORGE_TERMINAL=terminal-app ./swarm
-SWARMFORGE_TERMINAL=windows-terminal ./swarm
-SWARMFORGE_TERMINAL=none ./swarm
+get-swarm-forge lieutenant
+./swarm
 ```
 
-Use `ghostty` when you want SwarmForge to open Ghostty tabs instead of the default Terminal.app windows. Use `windows-terminal` when you want SwarmForge to open Windows Terminal windows from WSL. Use `none` when you want SwarmForge to skip terminal automation and attach the cleanup tmux session in the current shell.
+The selected product's README describes its routes, roles, worktrees, project
+lifecycle, and dashboard behavior. The branch configuration—not this README—is
+the authority for current backend assignments and topology.
 
-### Adding A Terminal Backend
-
-The shared terminal backends are carried on `main` under `swarmforge/scripts/terminal-adapters/`. Runnable branches copy those scripts at startup. To add a new backend, update `main` by creating one file named after the backend:
+## What `main` owns
 
 ```text
-swarmforge/scripts/terminal-adapters/wezterm.sh
+get-swarm-forge                         product composer
+swarmforge/scripts/                    launcher, dashboard, board, handoffs
+swarmforge/constitution/articles/      shared agent rules
+swarmforge/handoff-protocol.md         durable handoff protocol
+test/                                  shared runtime tests
 ```
 
-The file must define this small contract:
+Changes to shared launch, dashboard, terminal, worktree, board, or handoff
+behavior belong on `main` first. Pack branches own only their configuration,
+local constitution additions, role prompts, and launcher. Forge branches carry
+the common files needed for standalone installation and should be refreshed
+from `main` when those files change.
 
-```sh
-terminal_backend_label() {
-  echo "WezTerm"
-}
+Do not pin prompt prose with automated tests. Test observable runtime behavior
+instead.
 
-terminal_backend_can_open_sessions() {
-  return 0
-}
+## Runtime components and generated state
 
-terminal_backend_tracks_windows() {
-  return 0
-}
+The shared runtime is divided by responsibility:
 
-terminal_open_session() {
-  local session="$1"
-  local title="$2"
-  local sibling_id="${3:-}"
-
-  # Open a terminal surface that runs:
-  # cd "$WORKING_DIR" && exec tmux -S "$TMUX_SOCKET" attach-session -t "$session"
-  #
-  # Print a stable window/tab id to stdout.
-}
-
-terminal_window_exists() {
-  local window_id="$1"
-
-  # Return 0 if the id from terminal_open_session still exists.
-  # Return nonzero otherwise.
-}
-
-terminal_close_window() {
-  local window_id="$1"
-
-  # Close the id from terminal_open_session.
-}
-```
-
-If the terminal can open sessions but cannot return stable ids for open/check/close, keep `terminal_backend_can_open_sessions` as `return 0` and set `terminal_backend_tracks_windows` to `return 1`. SwarmForge will open one surface per session and skip the watchdog for that backend. `swarmforge/scripts/terminal-adapters/windows-terminal.sh` is an example of this launch-only style.
-
-If the backend cannot open sessions at all, set both capability functions to `return 1`; SwarmForge will attach the cleanup tmux session in the current shell. Only edit `swarmforge/scripts/swarm-terminal-adapter.sh` when adding aliases or changing default auto-detection.
-
-## 从本地操作运行中的 Swarm（swarmforge-operator）
-
-本仓库自带 `.agents/skills/swarmforge-operator/`：一个供本地 agent 会话（工作目录在本仓库，cmux/macBook 侧）操作运行中 SwarmForge project 的操作面 skill。它面向任意 topology：两包、四包、六包或自定义角色数，一切以目标 project 的 runtime state（`.swarmforge/` 下的 `tmux-socket`、`sessions.tsv`、`roles.tsv`）为准，不按 pack 名或固定角色列表分支。
-
-使用前提：skill 的使用者工作目录是本仓库。放在被操作 project 里时，本仓库会话调不到它。
-
-### 十二个 verb
-
-| 动词 | 作用 |
+| Component | Responsibility |
 |---|---|
-| `start swarm <root> --terminal <值>` | 从停机状态显式启动 swarm；`--dashboard-port <N>` 可选，转成 `SWARMFORGE_DASHBOARD_PORT` 让 pack_web 绑固定端口（不传则一字不变地保持随机端口；只校验是数字，不校验范围；与 `--terminal` 累积进同一个 `env` 前缀，两者同时生效）；`--terminal` 必传（`ghostty`/`iterm2`/`none`/`terminal-app`/`windows-terminal`/`auto`），杜绝 #10 那次靠自动探测踩中 watchdog 拆除的坑；已在跑（socket 探活成功）拒绝重复启动（退出 6，无 override）；启动前还会取 project lock 并比对已装 `swarmforge/scripts` 与其 manifest 的 digest，manifest 缺失或不一致报 `STATUS=DRIFT`（退出 4），锁被 `update SwarmForge scripts` 占用同样报 `UNSAFE`（退出 6）——`--force` 可越过锁占用与 DRIFT，但越不过「已在跑」；本地/远端都走 `nohup` 脱离终端启动，回读 runtime 文件确认后才报 `STATUS=STARTED` |
-| `update SwarmForge scripts <root>` | **被管项目自己版本控制了 `swarmforge/` 就拒绝**（退出 `8` `OWNED`，列出会被覆盖的每一处，含角色 worktree；`--overwrite-tracked` 才是有意的覆盖，与 `--force` 分开——`--force` 只管过期的锁）；成功时报 `WROTE=` 写了哪棵树、`MIRRORS=` 有几个角色 worktree 会在下次启动时被镜像；把 operator 自己这份源码checkout 的 `swarmforge/scripts` 装进被管项目，替换前先落地临时目录并按 `swarmforge.bb` 同款 required-helpers/terminal-adapters 清单校验，三件套（scripts 树、manifest、旧版 `./swarm` 启动器）原子替换、任一步失败整体回滚；已在跑拒绝（退出 6，无 override），源码checkout 有未提交改动同样拒绝（退出 5，无 override，永不可越过）；抢同一把 project lock，被 `start swarm` 占用报 `UNSAFE`，`--force` 只越过锁占用；成功报 `STATUS=UPDATED` 并带 `DIGEST=`/`SOURCE_COMMIT=` |
-| `open swarm <root>` | 把运行中的 swarm 以 cmux workspace 打开；停机时报原因，命中 window watchdog 拆除会点名，绝不代人启动 |
-| `dashboard <root>` | 开 browser workspace 连 pack_web 看板；默认建 SSH 隧道，`--tailnet` 则不建隧道、直接打 target 的 tailscale IP（笔记本一睡隧道就断，且只有那台机器能看；tailnet URL 手机平板都能开）；**每次先读 `dashboard-url` 的端口决定走哪条**——在 `7780-7789` 段内就加 `--tailnet`，是随机端口就不加并把切换步骤报给用户（切换要停 swarm，不自作主张）；额外校验端口后面真是本项目的 `pack_web`（`--serve` 参数比对），不是同机别的项目撞上来的；**跑完要把报文里的 `URL=` 转述给用户，不能只回「已打开」** |
-| `attach <role>` | 临时附加到某个角色的 tmux session |
-| `read swarm` | 逐角色截屏，三态分类 `IDLE`/`BUSY`/`UNKNOWN`（认不出就是 UNKNOWN，不猜成 idle），每行都附原始 pane 文本 |
-| `wake <role>` | 唤醒：注入 `ready_for_next.sh`，按 backend 编码提交后**验证真的被消费**，没提交成功报错并点名 backend 不匹配 |
-| `talk <role>` | 给指定角色发一条行为切片，同样验证送达且被提交，不是发了就算 |
-| `onboard project` | 把 upstream 的 two-pack/four-pack/six-pack 装进一个项目目录；拒绝 `main`，目标非空时零写入拒绝；改写 `ARCHIVE_URL` 默认值指向本 fork，装完不启动 |
-| `accept work` | 人工验收：**只读 master worktree**（按 `roles.tsv` 第 2 列 `worktree-name == master` 定位，不认 role 名，不是恰好一条就报错）的终端 handoff 报 `task`/`commit`，别的 worktree 的中间跳不再被当成结果；缺字段的记录 `WARN=` 点名而不静默丢弃；同时扫 `inbox/new`/`inbox/in_process` 的滞留，卡链了会 `WARN=` 报出来，不再跟"没活干"读起来一样 |
-| `run issue <root> --issue <N>` | 把**一张** issue 走完「投 task → 轮询 → 开 PR」：读 `dashboard-url`（端口每次起 server 会变，永远现读）→ `gh issue view` 取 slug，分支 `feat/issue-<N>-<slug>` 与 task name `issue-<N>-<slug>` 同源 → BASE 取最新 open PR 的 head branch（无则 `main`，**stacked 在上一张票上，`main` 只被人 merge 推进**）→ **建分支前先 `git fetch origin` 并把 BASE 对齐到远端**（本地 BASE 不是 `origin/BASE` 的祖先就拒绝，退出 6，绝不 `-B` 把本地 commit 甩成孤儿；stacked 的 head 分支本地可能不存在，直接从远端建，issue #122）→ 读 **card 与分支两个标记**决定走哪条路，四格都有出口：两个都没有是首次运行；两个都在是 **resume**（跳过建分支与 POST，直接接着轮询）；只有分支没有 card，说明上次死在建分支与 POST 之间，**resume 但补做 POST**（issue #76，旧代码在这一格必然 `5` ERROR 且每次重跑都一样）；只有 card 没分支，那不是这个动词的 card，拒绝（退出 6，零 POST、零写入，因为 `pack_web` 的 `create-task!` 不去重）→ `/api/state` 有 pending clarification/approval 拒绝（退出 6，报出 id 与问题原文，**这是连投时唯一会自动停的人闸**）→ POST 一次 task（目标有 `openspec/seams.md` 就点名这份名单、要求动手前先读，**只给信息不给流程**，pi-governance#455）→ 轮询 board lane 到 `done`（**只认 lane，不看 `work_in_flight` 的 idle**，链路中途 coder 会短暂 idle）→ `accept work` 拿 commit（**重试到 delivery record 真的可见为止**，board `done` 只代表 handoff 已送达，master 还可能在处理，issue #63）→ push → **停在 `NEEDS_PR_BODY`（退出 8）把 commit 交回给调用方**，正文由调用方写（建议派子代理用 `to-pr` skill，让 diff 落在子代理而不是编排者），带 `--body-file` 重跑第二趟才开 PR（issue #118）→ `gh pr create` 显式 `--title/--body`（body = `Closes #N` 等字段由脚本拼 + 小节由调用方给；**从不** `--merge`/`--auto`/`--fill`）；超时报 `ERROR`（退出 5）并明说可能还在跑，**绝不重投** |
-| `onboard project <root> --pack <N>` | 装一个 fork Pack 进被管项目；**装完往 `$ROOT/.gitignore` 追加一段 SwarmForge 装机产物的忽略清单**（条目从刚装的 artifact 派生，不硬编码；`.gitignore` 与 `README.md` 除外，那两个归项目所有，装之前先存、装完还原，不让 tar 覆盖），否则那些文件永远以未跟踪身份让 `stop swarm` 的 DIRTY 闸常亮（issue #87）；已经装好的老项目要人工补一次同样的块 |
-| `stop swarm` | 停机前先 preflight：有角色 `BUSY`/`UNKNOWN` 或 worktree 有未提交改动就拒绝停机（退出 6），全干净才走 `close-swarm`，**并检查它真的停成了**——`close-swarm` 失败就报 `5` ERROR 带上它自己的 stderr，绝不报 `STOPPED`（issue #82，此前对非 operator 机器会假报 `STOPPED` 且退出 0）；停完顺带按 `pack_web.pid` 停掉 dashboard 并报 `PACK_WEB=stopped\|absent`；`close-swarm` 跑在 **target** 上而默认路径是 operator 自己那台机器，被管项目里没有这个脚本，所以别的机器要用 `--close-swarm <target 上的路径>` 指明；`--force` 只跳过 preflight，不跳过"停没停成"的检查 |
+| `swarmforge.sh` / `swarmforge.bb` | Parse configuration, create worktrees and tmux sessions, synchronize managed files, and launch agents. |
+| `swarm_handoff.*`, `ready_for_next.*`, `done_with_current.*` | Create, accept, merge, audit, and complete durable work items. |
+| `handoffd.*` | Deliver queued handoffs and notify receiving sessions. |
+| `pack_board.*`, `pack_web.*`, `pack/dashboard.html` | Persist and present cards, approvals, clarifications, agent panes, and controls. |
+| `forge.*` | Create, open, refresh, and stop projects inside a forge product. |
+| Terminal adapters, watchdog, and cleanup scripts | Expose panes, monitor sessions, and shut the swarm down cleanly. |
 
-默认远端是 `admin@100.64.0.4`，可用 `--target`/`--key` 覆盖；`--local` 改走本地文件系统。
+At startup the composed runtime validates the configuration, initializes git
+when necessary, creates role worktrees, mirrors the managed SwarmForge files
+into them, creates isolated tmux sessions, starts the handoff daemon and local
+dashboard, and launches each configured agent backend.
 
-`onboard project`/`start swarm`/`update SwarmForge scripts`/`accept work` 这四个 verb 正在按 issue #35、#38、#39 重构 fresh-bootstrap、drift-repair 与 delivery-report 三条路径，架构图见 [Onboard, Start, and Repair](https://claude.ai/code/artifact/f45abf63-064e-428d-918b-02ba10be0f6c)。
+`master` in a role configuration means the project's main checkout on its
+current branch; it is a worktree sentinel, not a required git branch name.
+Generated transport and process state lives under `.swarmforge/`; generated
+role checkouts live under `.worktrees/`. `.swarmforge/` contains such runtime
+records as role/session maps, the tmux socket, handoff inboxes and outboxes,
+board data, approvals, clarifications, daemon state, and dashboard state. It is
+not product source and agents must not edit it as a substitute for the helper
+commands.
 
-### `open swarm` 契约
+Agents send committed work with `swarm_handoff.sh`, accept it with
+`ready_for_next.sh`, and finish the current item with `done_with_current.sh`.
+See [the handoff protocol](swarmforge/handoff-protocol.md) for message format,
+auditing, delivery, retry, merge, and lifecycle details.
 
-```sh
-.agents/skills/swarmforge-operator/scripts/open-swarm.sh \
-  --root <远端 project 根> [--window <ref>] [--target host] [--key path] [--local]
-```
-
-脚本负责全部 cmux 机制：runtime gate、相邻角色配对成双 pane workspace（奇数尾部单 pane）、以 description `swarmforge:<basename>@<host>` 认领与复用、逐 surface 验证 attach、失效 surface 最多重发一次 attach。Agent 只跑脚本、读退出码、汇报。
-
-退出码：`0` OPENED/REUSED 成功；`3` STOPPED（swarm 未运行，拒绝启动）；`4` DRIFT（workspace 与 runtime 不符，零变更，需用户授权后重建）；`5` ERROR。
-
-看板本身是 `pack_web`：`./swarm` 启动时随 swarm 一起起的本地 HTTP 服务，页面展示并可操作 swarm 状态（agent 状态、任务/交接、approvals、chat、teardown），只监听远端 `127.0.0.1`，所以远程访问必须走隧道。
-
-`dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上，另加 `--tailnet`）：按顺序问四件事，第一个「否」就停——**swarm 在不在跑**（读 `tmux-socket` 探 `list-sessions`，与 `open`/`start`/`stop`/`read swarm`、`wake`/`talk role`、`update SwarmForge scripts` 用的是同一条判定）→ 有没有 `dashboard-url` → 那个端口是不是本项目自己的 `pack_web` → 最后才是能不能连上。然后在当前 window 开/复用 `Dashboard · <basename>` workspace。**复用时会校验那个 browser surface 现在指向哪**（issue #99）：不是本次的 URL 就 `goto` 过去，已经一致则一个 cmux mutation 都不做。此前只在 surface **缺失**时才修，于是报文打印新 URL 而画面停在上一个已死端口——而这是常态不是例外，`pack_web` 每次启动都换端口（除非用了 `--dashboard-port`）。报文里的 `URL=` 与 surface 实际指向的一致，否则不报成功。
-
-**顺序是修过的（issue #100）。** `stop swarm` 会删 `pack_web.pid`，但**没有任何动词删 `dashboard-url`**，所以停机后这两个输入互相矛盾；而可达性检查排在前面时，一个只是停机的项目会报 `5` ERROR（「隧道坏了」）而不是 `3` STOPPED，`--tailnet` 那条还会让人去跑一条**已经跑过**的 `tailscale serve`。**有意的取舍**：swarm 停了而 `pack_web` 仍独活的项目现在会被 `3` 拒绝——这个动词开的是某个 swarm 的看板，swarm 不在就没有可看的东西。退出码语义同上；`3` 表示 dashboard-url 缺失，绝不自己起 `pack_web.sh --serve`。报文里的 `TUNNEL=` 说明走了哪条路：`created`/`reused`/`tailnet`/`local`。
-
-**不带 `--tailnet`：** 建 `-N -L` 本地转发（已有可用隧道则复用；端口被占则换空闲端口），browser surface 指向隧道 URL。这条路径行为未变。
-
-**带 `--tailnet`（issue #78）：** 完全不建隧道。隧道挂在操作者笔记本上，**笔记本一睡就断**，而且只有那台机器能看。managed host 本来就在 tailnet 里，所以脚本直接从 `--target` 取 tailscale IP，确认 `http://<ip>:<port>/` 答 200，browser surface 指向它。它需要端口固定、且该端口已发布——两件事的命令都在下面「切到固定端口」一节，只写在那一处。
-
-**这个动词不执行任何 `tailscale` 命令**——不下发、不修复、不清理那份 serve 配置，只用 HTTP 观测结果。端口不答 200 时干净退出 `5` ERROR，报文里给出目标 URL 与该敲的命令原文，不建 workspace、不建隧道。`--tailnet` 配 `--local` 是 `2` USAGE（本机没有可走 tailnet 的 target）。归属检查在 `--tailnet` 这条路上照跑，而且更重要：固定端口比随机端口更容易被同机别的项目撞上。
-
-**跑完把报文里的 `URL=` 说给用户。** 每次都打印，但只回一句「已打开」不算做完——tailnet 那个地址在任何设备上都能开，那才是操作者要拿走的东西。
-
-**每次先判断走哪条路，别猜。** 读 `<root>/.swarmforge/dashboard-url` 的端口：在 `7780-7789` 段内 → 加 `--tailnet`；其他端口（内核随机分的）→ **不要加**，加了会正确地退 `5` ERROR，改为不带 flag 跑，并在同一条回复里告诉用户这个地址只在本机有效、笔记本一睡就断，以及下面的切换步骤。**别自己去跑切换**，第二步会停掉在跑的 swarm。过去的报文、别人引用的 URL、flag 存在与否，都不能用来推断当前端口是不是固定的。
-
-#### 切到固定端口
-
-四步，顺序不能变。第三步不能并进第二步：**`start swarm` 对已在跑的 swarm 退 `6` UNSAFE 且无 override**，所以不停就换不了端口。
-
-```sh
-# 1. 在 target 上发布整个 dashboard 端口段。每台 host 一次性。
-#    `tailscale serve` 没有 range 语法（`--tcp` 只收单个端口），所以一个端口一条；
-#    `--bg` 的映射在重启与 `tailscale down`/`up` 之后自动恢复，
-#    所以是**每个端口一辈子一次**，不是每次运行一次。
-#    Linux target 上写 serve 配置要 root（读不用）：报
-#    `Access denied: serve config denied` 就整条加 `sudo`，
-#    或先 `sudo tailscale set --operator=$USER` 一次再以自己身份跑。
-ssh -i <key> <target> \
-  'for p in $(seq 7780 7789); do tailscale serve --bg --tcp $p tcp://127.0.0.1:$p; done'
-ssh -i <key> <target> 'tailscale serve status'    # 确认十个都在
-
-# 2. 停 swarm。  ← 会打断在跑的活，先问人。
-scripts/stop-swarm.sh --root <root> --target <target> --key <key>
-
-# 3. 用本项目分配到的端口重新起
-scripts/start-swarm.sh --root <root> --target <target> --key <key> \
-  --terminal <值> --dashboard-port 7780
-
-# 4. 到这一步 flag 才有意义
-scripts/open-dashboard.sh --root <root> --target <target> --key <key> --tailnet
-```
-
-**绝不用别的方式暴露 dashboard。** 第 1 步的 `tailscale serve` 是唯一被认可的路径：不要自己写端口转发或 proxy，不要自己加 `ssh -L`，不要改 `pack_web` 绑定的地址。它绑 `127.0.0.1` 是刻意的，好让没有 tailscale 的环境行为不变；在它前面加任何东西，都等于把一块带 Teardown 按钮的看板发布给所有能连到的人。上面这几步走不通就说走不通，不要临时发明一条路。
-
-**第 2 步会打断 swarm 正在做的事，动手前必须问人**，并说清会打断什么（`read swarm` 能看到哪些 role 是 `BUSY`）。固定端口是便利，别人跑到一半的链路不是。第 1 步每台 host 只做一次，`tailscale serve status` 里已经有这个段就直接跳到第 2 步。
-
-#### dashboard 端口分配
-
-`7780-7789` 留给 dashboard，一个项目一个号，好让 URL 自己说明是哪个项目：
-
-| 项目 | 端口 |
-|---|---|
-| podsum | `7780` |
-| pi-governance（coder2） | `7781` |
-| 未分配 | `7782`-`7789` |
-
-跨 host 其实不冲突，这张表是给人看 URL 用的。它是本 fork 操作者手工维护的约定：没有任何代码推导它，也没有任何检查强制它，`--dashboard-port` 不会拿它做范围校验。新项目取下一个空号，并在这里补一行。
-
-三条硬性禁令，agent 不越过：
-
-1. 绝不执行 `./swarm` 或任何启动已停机 swarm 的命令；`open` 只连接运行中的 swarm。
-2. 默认在 caller 当前 cmux window 建 workspace，不新建 macOS window；用户明说 new window 时才建，并传 `--window`。
-3. 绝不自动 close 任何 workspace/surface/window 作为清理；残留对象由用户逐项授权处置。
-
-直接操作 cmux 前需先加载 `cmux` skill（REQUIRED SUB-SKILL），handle、settle、ownership、destructive guardrail 是 cmux skill 的契约，本 skill 不重复。
-
-### `run issue` 契约
-
-```sh
-.agents/skills/swarmforge-operator/scripts/run-issue.sh \
-  --root <远端 project 根> --issue <N> [--target host] [--key path] [--local]
-```
-
-一次一张票。要连投多张，`|| break` 那三个字符就是列表版里全部的错误处理逻辑：
-
-```sh
-for n in 28 29 30; do run-issue.sh --root <root> --issue "$n" || break; done
-```
-
-退出码：`0` PR_OPENED（输出带 `issue:`/`task:`/`branch:`/`base:`/`commit:`/`url:`）；
-`2` USAGE（缺 `--root`/`--issue`，或 `--issue`/`--max-wait` 不是数字，什么都不做）；
-`5` ERROR（runtime 文件缺失、`gh`/`git`/`curl` 失败、轮询超时、或 board 说 `done` 后
-delivery record 在整个等待窗口里始终对 `accept work` 不可见）；`6` UNSAFE（同名 card
-存在**但分支不在**，即那不是本动词的 card；或有 pending clarification/approval，两者都
-点名要清什么）；`7` STILL_RUNNING（`--max-wait` 到点，task 已投、swarm 还在跑，输出带
-`lane:`/`waiting_for:`，原样重跑即续）。**所有超时都不会 push、不会开 PR、不会重投 task。**
-`7` 刻意不复用 `5`：`|| break` 那条链两种都会 break，但「还在跑，再叫我一次」和「出事了」
-要的反应不同——GNU `timeout` 用 124 而不复用被测命令退出码，是同一个理由。成功输出里的
-`resumed:` 说明这次是首次运行还是续跑。
-
-**PR body 的四个小节由模型写，`Closes #N` 这些字段由脚本拼。** 在 issue #118 之前 body 是
-四行 `printf`，podsum#149 就是那个样子——没有一个字是模型写的。现在分工是：脚本拼下游要
-解析的字段（`Closes #N`、`task:`、`commit:`、`completed_at:`），模型写四个 `##` 小节。
-
-**小节写在哪里、要求是什么，这份文档不复述**——那是 `to-pr` skill 的正文
-（`skills` 仓 `engineering/to-pr`）。在这里抄一份，就是又造一个改 skill 时会忘记同步的
-副本，正是这层间接要消掉的东西。要看形状就读那个 skill。
-
-只说两件与本动词有关的：形状取自 `show-me`，**不是** `github-workflow.md` 的四问；
-以及调它的模型**没有跑过任何命令**，所以 skill 里明文禁止编造命令输出、通过条数、耗时
-与覆盖率——「TDD 证据」这一节不堵就是幻觉邀请函。
-
-- **开分支之前先对齐 BASE。** `BASE` 的名字来自 `gh pr list`（远端），内容是那台机器上次
-  checkout 留下的；原本没有任何东西对账，于是人合并之后被管 project 的 `main` 留在原地，
-  下一轮从旧代码开分支——**这个动词自己的注释就把这条记作 podsum 两种丢法之一**。实测：
-  podsum#155 合并后那台机器落后 `origin/main` **4 个 commit**。现在 `git fetch origin`
-  之后，本地已有的 BASE 走 `merge --ff-only`，**不是祖先就拒绝**（`UNSAFE`，退出 `6`，零
-  POST 零 push）；stacked 的 head 分支本地可能不存在，走 `checkout -B <BASE> origin/<BASE>`。
-  两种形状不能合并成一条 `-B`——对 `main` 用 `-B` 会静默把本地 commit 甩成孤儿。
-- **缝名单跟着目标 project 走，但只给信息不给流程。** 目标有 `openspec/seams.md` 时，task 正文
-  点名这份名单并要求动手前先读；没有时正文与之前逐字节相同。**正文不规定什么时候停、要不要新
-  立一条缝、缝切在哪**——那些是判断，判断错了由 `code-review` 的 seam baseline 兜着（它本来就报
-  「新引入的外部依赖没登记成 seam」与「测试替身的对象不在名单里」）。早先有一版把这些写成流程，
-  触发条件是「模块不在名单里」，而**在多数被管 project 里那是常态不是例外**——每一轮都被变成
-  要人回一趟。**停也不靠这段正文**：constitution 已经告诉每个角色卡住就问操作员，`refuse_if_blocked()`
-  会把任何 pending clarification 变成硬退出 `6`，两半都早于这段话存在且对所有事有效。
-- **形状不在脚本里，也不由脚本去要。** 这个 verb 分两趟：第一趟做完机械活（投 task、
-  轮询、`accept work`、`git push`）就停在 `STATUS=NEEDS_PR_BODY`（退出 `8`），把
-  issue/task/branch/base/commit 交回给调用方；调用方写好正文，带 `--body-file <path>`
-  重跑，第二趟直接走到 `gh pr create`。
-- **脚本零模型依赖。** 它曾内嵌 `pi -p`，那把一个 operator verb 绑死在一个 harness 上——
-  Claude Code 编排者在没装 `pi` 的机器上根本跑不起来。现在一个模型调用都不发。
-- **正文该由子代理写，不该由编排者自己读 diff。** 一次改动几十 KB，而这个动词的常规用法
-  是连投（`for n in 28 29 30; ...`）；让 diff 进编排者的上下文是每张票几十 KB 地累加，
-  交给带 `to-pr` skill 的子代理，编排者只收回正文。
-- **失败即停**，两种都是 `STATUS=ERROR` 退出 `5`，**绝不回退到旧模板**：`--body-file`
-  的路径不存在，或那个文件是空的。空正文的 PR 看起来完成了却什么都没说。
-- **第一趟停下时分支已 push、PR 未开**，原样带 `--body-file` 重跑不会开出第二个 PR——
-  幂等判断仍在脚本里。
-- **resume 不付这笔钱**：模型调用排在「本 head 是否已有 open PR」之后，续跑不会重复调。
-
-**它会阻塞整条链路，几分钟到几小时，这不是卡死。** 默认每 15 秒轮一次
-（`SF_RUN_ISSUE_POLL_SECONDS`），上界 7200 秒（`SF_RUN_ISSUE_TIMEOUT_SECONDS`）；
-board 变 `done` 之后还会再等 delivery record 最多 600 秒
-（`SF_RUN_ISSUE_DELIVERY_SECONDS`）。
-轮询是纯 shell，每轮两次短往返、**不调用任何 LLM**，等多久都不烧 token。
-**但整个动词不再是零 LLM 的**：开 PR 之前会调**恰好一次**模型写 body（见下）。等待再久，
-模型调用也只有那一次，与轮询时长无关。
-
-**从 agent 会话里发起时，先弄清你的 harness 上限并显式传 timeout。** 咬人的是
-**client 注入的默认值**，不是 shell tool 自己的天花板：
-
-- **pi 的 `bash`**：不传 `timeout` 就一个定时器都不 arm（`dist/core/tools/bash.js:75-80`，
-  `pi-agent-core` 的 `dist/harness/tools/bash.js:11-19` 是同一份逻辑），上限
-  `MAX_TIMEOUT_MS = 2_147_483_647` 毫秒，约 **24.8 天**（`dist/core/tools/bash.js:16`）。
-  全树没有针对 tool call 的定时 abort，`AbortController` 只被 user abort 与 session dispose
-  触发，报错文案由调用方传进来的 `timeout` 拼成，只可能打印别人送进去的数。所以 issue #65 记的
-  **120 秒不是 pi 的**，是 client 注入的默认值，显式传 `timeout` 即解除。（`@earendil-works/pi-coding-agent@0.84.3`
-  实测：不传 timeout，`sleep 150` 在 120 秒被杀；传 `timeout: 300`，同一条 `sleep 150` 跑满。）
-- **Claude Code 的 `Bash`**：默认 2 分钟（`BASH_DEFAULT_TIMEOUT_MS`），**硬上限 10 分钟**
-  （`BASH_MAX_TIMEOUT_MS`），没有参数能抬高它。
-
-按顺序：**①** 工具收 timeout 就显式传一个大的（pi 的 `bash` 收秒数）；**②** 硬上限低于一条
-真实链路时（Claude Code 的 10 分钟就是），传 **`--max-wait`** 卡在上限之下，让它干净地退
-`7` STILL_RUNNING 而不是被 SIGKILL，再叫一次——干净退出会报出停在哪个 lane，被杀则什么都不报；
-**③** 有后台模式就用（Claude Code 的 `Bash` 收 `run_in_background`）；**④** 都不行就让它被杀，
-然后**原样重跑**——那是支持的路径，不是抢修。
-
-**`--max-wait <秒>` 是调用方的 deadline**，语义照抄 `kubectl wait --timeout`，不自创第四种含义：
-正数是**整条命令**的 wall-clock 预算（同时覆盖轮询与 delivery 等待），到点退 `7` STILL_RUNNING；
-`0` 只查一次就返回（该投的 task 还是会投，然后报当前 lane）；负数沿用现有上限，默认 `-1`，
-所以不传这个 flag 的行为与从前完全一致。到点是干净退出：不 push、不开 PR、绝不重投 task。
-
-**别用 `nohup ... &` 绕上限**：在 pi 里取消会杀整棵进程树，把脱离出去的 job 一起带走，
-而且脱离后的输出没人看。
-
-**被杀之后：原样重跑同一条命令。** 动词会认出自己上次的运行并接着做：不会投第二张 task、
-不会建第二条分支、不会开第二个 PR，resume 的那次会在输出里打 `resumed: yes`。判据是
-**board 有没有 card × 同名分支在不在**，四格全部有定义：
-
-| Board card | 分支 | 行为 |
-|---|---|---|
-| 无 | 无 | 首次运行 |
-| 无 | **有** | **resume**：跳过建分支，补做那次没做成的 POST |
-| 有 | 有 | **resume**：跳过建分支与 POST，直接接着轮询 |
-| 有 | 无 | `6` UNSAFE：那不是这个动词建的（人在 Dashboard 手敲的），什么都不碰 |
-
-第二格正是建分支与 POST 之间那个约两次 ssh 往返宽的窗口。issue #76 之前它没有出口：没 card
-就走 fresh，`git checkout -b` 撞上已存在的分支，`5` ERROR，且每次重跑都一样，只能人工删分支。
-现在两个标记每次都读，「建不建分支」与「投不投 task」各自认自己的标记，两次写入的任何中断
-顺序都不会再产生无出口的状态。
-
-### 测试
-
-改脚本或 stub 契约后运行：
-
-```sh
-bash .agents/skills/swarmforge-operator/scripts/test-open-swarm.sh
-```
-
-stub cmux 全链路覆盖：two/four/six-pack、自定义 5 角色、复用、stale attach 修复、停机拒启、socket 失活、drift、mutation 输出不可解析不重复创建；dashboard 套件另覆盖隧道复用与端口冲突回退。
-
-## Window Behavior
-
-The usual shutdown path for a pack is **Teardown** on the dashboard, not closing a Terminal window.
-
-If you use visible `window` lines, each agent window is attached to a tmux session. Terminal selection, copy, and paste may follow tmux and terminal-emulator rules rather than ordinary text-field behavior. If copy or paste feels unusual, check whether tmux copy mode is active before assuming the agent is stuck.
-
-The first **visible** window in `swarmforge.conf` is the cleanup window. Closing that window shuts down tmux sessions, remaining tracked windows, and the swarm.
-
-Closing any other tracked window is non-destructive. The watchdog reopens that window and attaches it back to the same tmux session, so the agent state and terminal history remain intact. This is often the simplest way to recover a window that has landed in an unfamiliar tmux mode or otherwise feels stuck.
+The `simple-windows` tag marks the last `main` snapshot before the dashboard
+cockpit. It is historical and is not a `get-swarm-forge` product.
