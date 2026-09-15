@@ -8,26 +8,43 @@ Pinned refs：`upstream/main@f4f5fbcae0de6f7dcc26e82400334227647cfdb2`（2026-09
 
 ---
 
-**`lieutenant` 是两个东西：一个是 upstream `main` 上已经存在的 host 角色（forge 的规划/调度
-LLM，明确禁止实施 project 活，dashboard 上有两条彼此独立的数据链路喂它——chat 的 pending/done
-应答文件，和 pane 文本抽取出的 `lieutenant_status`——但只汇合渲染在同一个 chat 气泡里），一个是
-upstream 的第五个 `get-swarm-forge` 产品分支（本 fork 没有，issue #135 已判定为产品决定而非
-工程判断）；本 fork 的 `swarmforge-operator` skill 与 host lieutenant 干的是同一类活（从 pack
-外部操作 forge/project），但一个是确定性脚本、一个是会替 project 干活边界含糊的 LLM 角色。**
+**`lieutenant` 是三层，不是两个：同一个角色名字 `swarmforge/roles/lieutenant.prompt`，在
+`upstream/main` 上只有 11 行、是被动参谋（禁止实施 project 活，只能总结/建议/指点
+`mission.md`），在 `upstream/lieutenant` 分支上被改写成 90+ 行的 planner & dispatcher（
+「You are the planner and dispatcher. ... You cut cards.」，靠 `pack_board create/move/stop`
+主动切卡、起卡、停卡，靠 `.swarmforge/routes.tsv` 决定一张卡经过哪些 role）；而
+`upstream/lieutenant` 本身又是 upstream 的第五个 `get-swarm-forge` 产品分支（本 fork 没有）。
+对本 fork 而言，`swarmforge-operator` skill（尤其 `run-issue.sh`）扮演的正是分支版
+dispatcher lieutenant 的角色，两者是**替代关系**，不是互补关系——`main` 版被动参谋才是与
+operator skill 边界互补的那一个。**
 
 ## Summary
 
-读了：`swarmforge/roles/lieutenant.prompt`、`swarmforge/scripts/swarmforge.bb`（parse/launch/
-run-host! 相关函数）、`swarmforge/scripts/pack_web.bb`（chat/inject/dashboard-state 相关函数）、
-`swarmforge/scripts/pack_dashboard_request.bb`、`swarmforge/scripts/pack/dashboard.html`（chat
-渲染片段）、`README.md`、`project-board.md`、`get-swarm-forge`、`upstream/lieutenant:README.md`
-及其 `.swarmforge/project-pack/` 树、`upstream/project-manager:README.md`（对照用）、本 fork
-的 `.agents/skills/swarmforge-operator/SKILL.md`、`docs/fork-deltas.md`（第 92、354、445、475、
-485 行附近）、本 fork issue #135 全文含评论，以及三个真正命中 `lieutenant` 的测试文件——
+读了：`upstream/main` 上的 `swarmforge/roles/lieutenant.prompt`、`swarmforge/scripts/
+swarmforge.bb`（parse/launch/run-host! 相关函数）、`swarmforge/scripts/pack_web.bb`（chat/
+inject/dashboard-state 相关函数）、`swarmforge/scripts/pack_dashboard_request.bb`、
+`swarmforge/scripts/pack/dashboard.html`（chat 渲染片段）、`README.md`、`project-board.md`、
+`get-swarm-forge`；`upstream/lieutenant` 上的 `README.md`、`.swarmforge/project-pack/` 树、
+**同名但内容完全不同的 `swarmforge/roles/lieutenant.prompt`**（planner & dispatcher 版，
+90 行）、`.swarmforge/project-pack/swarmforge/swarmforge.conf`（四条 `card` 路由）、
+`swarmforge/scripts/pack_board.bb`（`create`/`move`/`stop` 子命令）、`swarmforge/scripts/
+card_type.bb`（路由查表）、`swarmforge/scripts/swarmforge_config.bb`（`card` 行解析、
+`.swarmforge/routes.tsv` 写入）；`upstream/project-manager:README.md`（对照用）；本 fork 的
+`.agents/skills/swarmforge-operator/SKILL.md`、`docs/fork-deltas.md`（第 92、354、445、475、
+485 行附近）、本 fork issue #135 全文含评论；以及三个真正命中 `lieutenant` 的测试文件——
 `test/dashboard/dashboard.spec.js`、`test/swarmforge/pack_ui_test.clj`、
 `test/swarmforge/script_test.clj`（初次按已知事实第 5 条的印象猜文件名，猜成了
 `pack_web_test.bb`/`handoff_test.clj`，两者在 `upstream/main` 上根本不存在；用
 `git grep -ci lieutenant upstream/main` 核实后改读对的三个文件，见 Findings D）。
+
+**本报告第一版把 `swarmforge/roles/lieutenant.prompt` 当成一个跨分支不变的文件，是一处需要
+返工的实质错误：这个路径在两条分支上是同名不同内容的两份 prompt。** `main` 上 11 行，被动
+参谋；`upstream/lieutenant` 上 90+ 行，开头即「You are the planner and dispatcher. Project
+roles do not ask the operator for the next feature. You cut cards.」（`git show
+upstream/lieutenant:swarmforge/roles/lieutenant.prompt` 第 22-23 行）。已知事实第 1 条已经
+把「lieutenant 是 host 角色」和「lieutenant 是产品分支」分成两个不能混为一谈的东西；这里是
+第三层——同一个角色（同一个 `swarmforge/roles/lieutenant.prompt` 路径）在这两条分支上装的
+是两份完全不同的 prompt，行为不能互相代入。
 
 核心发现：
 
@@ -49,23 +66,37 @@ run-host! 相关函数）、`swarmforge/scripts/pack_web.bb`（chat/inject/dashb
 4. **`upstream/lieutenant` 分支不是「再装一份 pack」，是单模板 forge，`.swarmforge/
    project-pack/` 是唯一被提交的项目模板**，与 `project-manager` 下载三条 pack 分支到
    `packs/` 形成整洁对照——已在已知事实第 6 条给出，这次用 upstream README 逐字核对无误。
-5. **host lieutenant 与本 fork 的 `swarmforge-operator` skill 是同一层面的两套东西，但能力
-   边界互补而非重叠：** lieutenant 的 prompt 明文禁止实施 project 活、只能总结/建议/指向
-   `mission.md`；而 operator skill 的 `run issue` verb **恰恰会**驱动一个 issue 走完
-   POST task → 轮询到 done → accept work → push → 开 PR 的全过程。两者都会往 tmux pane 里
-   发字符（lieutenant 靠 dashboard chat 注入；operator skill 靠 `wake-role.sh`/
-   `talk-role.sh`），但后者对 backend 做了 CSI-u/裸回车分支（fork 自己的 D-2 修复），而
-   upstream 的 dashboard chat 注入路径（`inject-target!`）从未做这个区分——这是一个上游
-   自己都没堵上的洞，见 Findings C 与 Gaps。
+5. **`upstream/lieutenant` 分支的 lieutenant 是一套指挥模型，不只是「多几条 prompt 规则」：**
+   人给方向（`mission.md`、New Task 选 LT 是指令而非建卡）→ lieutenant 主动提议下一批卡、
+   求批准（「Do not wait for the operator to name those cards.」）→ 批准后它自己用
+   `pack_board create --type`/`move --caller lieutenant` 切卡起卡 → role 按
+   `.swarmforge/routes.tsv` 走 handoff → `card-done` notify 回到 lieutenant 触发下一轮。
+   卡的类型（`utility`/`component`/`QA`/`review`）直接决定这件事经过哪些 role、按什么顺序，
+   prompt 里的选型硬规则就是路由决策——见 Findings B。
+6. **`main` 版被动参谋与 `swarmforge-operator` skill 边界互补，但 `lieutenant` 分支版
+   dispatcher 与 operator skill 是替代关系，不是互补关系：** 本 fork 的 `run-issue.sh`
+   （POST task → 轮询到 done → accept work → push → 开 PR）扮演的正是 dispatcher lieutenant
+   「决定下一件事做什么、批准后驱动它走完」的角色，只是决策方是调用方而不是一个常驻 LLM——
+   见 Findings C。两者往 pane 里发文本的机制仍有差异：operator skill 的 `wake-role.sh`/
+   `talk-role.sh` 按 backend 分支提交键（CSI-u/裸回车，fork 自己的 D-2 修复），而 `main` 上
+   dashboard 的 `inject-target!` 从未做这个区分（Findings A4、Gaps）。
 
 ## Findings
 
 ### A. 角色层：host lieutenant 的运行时生命周期
 
+**本节全部证据来自 `upstream/main`。** `main` 上的 `lieutenant.prompt` 是被动参谋（Findings
+B 已确认）；`upstream/lieutenant` 分支的同名文件被改写成 planner & dispatcher，运行时脚本也
+被拆成 `swarmforge_config.bb`/`swarmforge_launch.bb`/`swarmforge_terminal.bb` 等，函数签名
+可能同名但实现不同（例如下面 A1 引用的 `forge-root?`，在该分支上判据从「只查 `packs/`」变成
+「`packs/` 或 `projects/` 二选一」——`git show upstream/lieutenant:swarmforge/scripts/
+swarmforge.bb` 里同名函数第 336-338 行）。以下 A1-A5 讲的启动流程、chat 注入链路只在 `main`
+上核实过，不能直接套到 `lieutenant` 分支。
+
 **A1 → 起点是 `./swarm`，落到 `run-host!`，不是 `run-project!`。** 判定依据是 `forge-root?`
-（`swarmforge.bb:934`：`(fs/directory? (fs/path root "packs"))`）——只要 host 目录下有
-`packs/`（`project-manager` 装的）或（`lieutenant` 分支上）单模板 forge 的等价目录结构，
-`swarm` 就走 forge 分支而非单 project 分支。`run-host!` 全文（`swarmforge.bb:936-960`）：
+（`swarmforge.bb:911-912`：`(fs/directory? (fs/path root "packs"))`）——只要 host 目录下有
+`packs/`（`project-manager` 装的），`swarm` 就走 forge 分支而非单 project 分支。`run-host!`
+全文（`swarmforge.bb:936-960`）：
 
 ```clojure
 (defn run-host! [root]
@@ -233,51 +264,121 @@ QA → Done`，不新增行为）。`README.md:109-112`（`upstream/main`）明�
 for their own control plane... The selected branch README and its parser are the authority
 for those extensions.」
 
-**B4 → 与 `project-manager` 逐条对照：**
+**B4 → 分支装出来的不只是「单模板 forge」，是一套不同的指挥模型：人给方向，lieutenant
+排班、切卡、追进度，只在特定动作上停下来找人。** 引用与行号全部来自 `git show
+upstream/lieutenant:swarmforge/roles/lieutenant.prompt`：
+
+- **角色定位**（第 22-23 行）：「You are the planner and dispatcher. Project roles do not
+  ask the operator for the next feature. You cut cards.」——这份文件自己的第 19-20 行还留着
+  一句与 `main` 版几乎同源但用词已经改过的话：「You may summarize status, suggest a project
+  or a card, and point at `mission.md`.」（`main` 版原文是「suggest a **pack or project**」，
+  这里已经改成「a **project or a card**」）。第 22-23 行的「You cut cards」把这句「suggest」
+  从建议改成了指令——同一份文件里前半段还是被动参谋的措辞，后半段已经宣布自己会真的动手切卡，
+  两段不是互相矛盾，是「前半段管日常问答、后半段管排班决策」的分工。
+- **选卡型 = 选路由**（第 25-39 行）：「Choose among the card types configured for that
+  project. The route written to `.swarmforge/routes.tsv` is authoritative」，随后是三条硬性
+  排除规则——第 32 行「Never review for new product behavior」、第 33-34 行「Never utility
+  for a protocol or business rule. Never component for a new button, menu, or visible
+  layout.」把 B3 那四种 card 路由变成一张判定表：新产品行为不许走 `review`（只经
+  `cleaner→architect→hardender→QA`，没有 `specifier`/`coder` 写新行为）、协议/业务规则不许
+  走 `utility`（只有 `coder→cleaner`，没有 `specifier` 写 Gherkin、没有 `architect`/
+  `hardender` 把关）、新按钮/菜单/可见布局不许走 `component`。
+- **提议 → 求批准 → 自己起卡**（第 40-52 行）：「As soon as the next cards are obvious,
+  propose them ... and ask for approval. Do not wait for the operator to name those
+  cards.」批准之后，`create --type … --waiting` 落一张等待卡，某条 starting lane 一空出来，
+  lieutenant 自己用 `pack_board move ... --caller lieutenant` 把它起进去——这一步**不需要**
+  再问一次操作者（`request-allow` 是不允许的路径）。
+- **notify 驱动重新排班**（第 53-61 行）：`git_handoff` 到达记 `<from>-handoff`，卡走完记
+  `card-done`；New Task 记 `new-task`；新开的 project 记 `new-project`（触发读那个
+  project 的 `mission.md` 并行动）；`allow` 记消费一个批准令牌；`reverse-cleared` 记回收
+  逆向集成后重新评估所有等待卡；pack 发的 `clarify` 记「找卡住的地方」。这七种 notify 是
+  lieutenant 重新规划的全部触发点，不是靠轮询。
+- **打扰人类有闸门，起已批准的卡没有：**（第 65-69、84-87 行）Board 的 `done`/`stop`/
+  `increment-audit`，以及移动一张**在跑（live）**的卡，都要求先过 Attention；但「Starting a
+  waiting card into its starting lane does not need Attention」——只有已经在跑的卡被打断才
+  惊动操作者，把一张已批准的等待卡排进空出来的 lane 不需要。
+- **New Task 打了 LT 标记时是指令，不是建卡请求**（第 88-91 行）：「New Task marked LT is a
+  directive: fit that name and text into the plan... It does not create a card.」——与
+  `main` 版把每条 chat 消息都当自由格式请求处理不同，这条路径有专门的语义。
+
+这套模型的运行时支撑不是 prompt 单方面承诺的：`pack_board.sh` 的 `create --type ... [--waiting]
+[--caller lieutenant]`/`move`/`stop` 子命令确有其事（`swarmforge/scripts/pack_board.bb:13-14`
+usage 行，`142-146` 的子命令分发表）；卡型到路由的查表在 `swarmforge/scripts/card_type.bb`
+（`chain`/`next-role`/`last-role` 等函数读 `.swarmforge/routes.tsv`）；`.swarmforge/
+routes.tsv` 本身由 `swarmforge/scripts/swarmforge_config.bb` 解析 `swarmforge.conf` 里的
+`card` 行写出（`138` 行判断 `(str/starts-with? line "card ")`，`177` 行 `write-routes-file!`）。
+
+**B5 → 与 `project-manager` 逐条对照，轴换成「谁决定下一件事做什么、谁决定它经过哪些
+role」：**
 
 | 维度 | `project-manager` | `lieutenant` |
 |---|---|---|
 | 项目模板来源 | 安装时下载 3 条独立 pack 分支到 `packs/`，不提交进 forge 自己的树 | 1 个模板提交在 `.swarmforge/project-pack/`，随 forge 分支一起版本控制 |
-| New Project 时选什么 | 从 `packs/` 里选 two/four/six-pack | 只有一个模板，配置在 New Project 对话框里现改（README 用词是「preloads the template configuration into an editable Config field」） |
-| 项目内路由语法 | 沿用 `main` 的固定管线语法（`window` 行，顺序即管线） | 多一层 `card <type> <role>...`，同一份 `swarmforge.conf` 里先声明角色再声明路由，一次装六个角色、四种路由供不同任务形状选用 |
+| New Project 时选什么 | 从 `packs/` 里选 two/four/six-pack，人替每个 project 选定一条固定管线 | 只有一个模板，六个角色、四种路由都装进同一个 project，具体某个任务走哪条路由由 lieutenant 逐卡决定 |
+| 谁决定下一件事做什么 | 人：New Task、New Project 都是人发起的显式动作 | lieutenant 主动提议，人只批准/否决（`main` 版则连提议都不做，见 B4 第一条） |
+| 谁决定经过哪些 role | 人在装 project 时选好 pack，之后固定不变 | lieutenant 逐卡选 card type，即逐卡决定路由（B4 第二条） |
+| 项目内路由语法 | 沿用 `main` 的固定管线语法（`window` 行，顺序即管线） | 多一层 `card <type> <role>...`（`.swarmforge/project-pack/swarmforge/swarmforge.conf:11-14`），同一份 conf 里先声明角色再声明四条路由 |
 | host lieutenant 默认 backend | 无 `Lieutenant` 行时 fallback grok（`project-manager:README.md` 明写） | 提交的默认配置显式写 `Lieutenant codex` |
 | Open Project 刷新什么 | 刷新脚本、shared articles、conf 模板来源 | 同样刷新受管脚本/文章/角色 prompt，但**保留项目自己的 `swarmforge.conf`**（README 原文强调这点） |
 
-**B5 → operator 典型工作流（按 README 顺序）：** `get-swarm-forge lieutenant && ./swarm` →
-只起 dashboard + 一个 lieutenant tmux 会话，`projects/` 是空目录 → operator 在 dashboard 上
-New Project，得到一份预填的、可编辑的 card/window 配置 → Open/Close 管理某个具体项目 →
-跨项目的调度、追问、状态汇总走 Chat，指向 lieutenant——即 A4 描述的那条注入链，在
-`upstream/lieutenant` 上原样成立，因为 host 侧运行时代码（`swarmforge.bb`/`pack_web.bb`）
-就是从 `main` 复制过去的（README 原话：「The runtime scripts... their canonical home... are on
-main; this branch carries the copies required for a standalone lieutenant install.」）。
+**B6 → operator 典型工作流（按 README 与 B4 合并）：** `get-swarm-forge lieutenant && ./swarm`
+→ 只起 dashboard + 一个 lieutenant tmux 会话，`projects/` 是空目录 → operator 在 dashboard 上
+New Project 或用 chat 给方向（写进 `mission.md`）→ lieutenant 读 mission/board，主动提议一批
+卡，operator 在 chat 里批准或否决 → lieutenant 切卡、起卡，role 按 route 走 handoff，卡走完
+notify `card-done` → lieutenant 重新评估、提下一批。Attention 只在卡被打断（stop/live 卡
+移动）或 lieutenant 主动 `clarify` 时出现，日常排班不打扰人。chat 的注入机制（tmux send-keys）
+仍是 A4 描述的那条链——host 侧运行时脚本确实是从 `main` 复制过去的（README 原话：「The
+runtime scripts... their canonical home... are on main; this branch carries the copies
+required for a standalone lieutenant install.」）——但**装进 pane 里跑的 prompt 完全不同**，
+chat 承载的是「给方向、批卡」而不是「问状态」。
 
-### C. 对本 fork 有什么用：lieutenant 角色 vs `swarmforge-operator` skill
+### C. 对本 fork 有什么用：lieutenant vs `swarmforge-operator` skill
 
-两者都是「从 project/pack 外部操作 forge」这类活的实现，但落点不同：lieutenant 是**跑在
-forge 里、随 forge 常驻**的 LLM 角色；`swarmforge-operator` 是**调用方自己临时起意**、跑在
-另一个 agent session 里的确定性脚本集合。逐项对照：
+**这里必须分两版单独回答，因为两版 lieutenant 对 operator skill 的关系正相反。** `main` 版
+被动参谋与 `lieutenant` 分支版 dispatcher 是同一个角色名下两份完全不同的 prompt（Summary 与
+Findings B 已确认）——拿 `main` 版去跟 operator skill 对照、得出「边界互补」，回答的是错误的
+问题：本 fork 实际会拿来对照的候选是分支版 dispatcher，不是 `main` 版参谋。
 
-| 能力 | host lieutenant（upstream/main 的角色 prompt + swarmforge.bb/pack_web.bb） | `swarmforge-operator` skill（本 fork） |
+**C1 → `main` 版被动参谋：与 operator skill 边界互补，各管各的。** 轴线是「谁往 pane 里发
+东西、谁汇总状态」——两者都做这两件事，但机制和精度不同：
+
+| 能力 | `main` 版 host lieutenant（角色 prompt + `swarmforge.bb`/`pack_web.bb`） | `swarmforge-operator` skill（本 fork） |
 |---|---|---|
-| 状态汇总 | dashboard 的 `/api/state` 全量聚合（board/work_in_flight/approvals/clarifications），lieutenant 靠读 pane 与 chat 上下文自己组织语言 | `read-swarm.sh`：逐 role 三态分类（`IDLE`/`BUSY`/`UNKNOWN`），report verb，附原始 pane 文本供人核对（SKILL.md「## Verb: read swarm」） |
-| 往 pane 里发东西 | dashboard chat → `inject-target!`，永远 `-l text` + 裸 `C-m`/`C-j`，**不区分 backend**（Findings A4） | `wake-role.sh`/`talk-role.sh`：按 `sessions.tsv` 记录的 backend 分支提交键（claude 用 CSI-u Enter，其余裸回车），并**验证**输入行确实被清空、提交真的落地，而不是发了就报成功 |
-| 建 project / task | New Project 对话框（dashboard UI），或 lieutenant 建议开哪个 pack/project | `onboard-project.sh`（落文件，绝不启动）；`run-issue.sh` 的 `POST /api/tasks`（对已在跑的 project 建 Board 卡片） |
-| 实施 project 的活 | **明文禁止**——`lieutenant.prompt`：「Do not implement project work. That belongs to pack agents.」只能总结状态、建议开哪个 pack/project、指向 `mission.md` | `run-issue.sh` **正是干这个的**：POST task → 轮询 Board 到 `done` → `accept work` 取 commit → `git push` → 停在 `NEEDS_PR_BODY`，正文由调用方（或它派的子代理）写完再收尾开 PR |
-| 启停 swarm | dashboard 的 New/Open/Close/Teardown 按钮（`project-board.md` 第 6-7 节描述的设计） | `start-swarm.sh`/`stop-swarm.sh`/`open-swarm.sh`，带显式的 drift 检查、锁、`--terminal`/`--dashboard-port` 等必选/可选项，三条硬禁令之一是「绝不代为启动」 |
-| 澄清/审批 | lieutenant **主动发起** `pack_dashboard_request.sh clarify`；approvals 走另一套 `/api/approvals/*` 闸门 | 无对应 verb——operator skill 目前不建模澄清/审批流程，`accept-work.sh` 只读 handoff 完成记录 |
-| 能力形态 | LLM 角色：**没有固定的“正确回答”**，行为由 prompt 与当次上下文决定，出错模式是「说错话」「建议错项目」，不是「脚本报错退出码」 | 确定性脚本：能力边界是脚本能表达的判断（IDLE/BUSY/UNKNOWN、DRIFT、OWNED 等固定退出码），出错模式是可枚举的、可测试的 |
+| 状态汇总 | dashboard 的 `/api/state` 全量聚合，lieutenant 靠读 pane 与 chat 上下文自己组织语言 | `read-swarm.sh`：逐 role 三态分类（`IDLE`/`BUSY`/`UNKNOWN`），report verb，附原始 pane 文本供人核对 |
+| 往 pane 里发东西 | dashboard chat → `inject-target!`，永远 `-l text` + 裸 `C-m`/`C-j`，**不区分 backend**（Findings A4） | `wake-role.sh`/`talk-role.sh`：按 `sessions.tsv` 记录的 backend 分支提交键，并**验证**提交真的落地 |
+| 实施 project 的活 | **明文禁止**——`lieutenant.prompt`（`main`）：「Do not implement project work. That belongs to pack agents.」 | `run-issue.sh` **正是干这个的**：POST task → 轮询 Board 到 `done` → `accept work` 取 commit → `git push` → 开 PR |
+| 能力形态 | LLM 角色，没有固定的「正确回答」 | 确定性脚本，固定退出码 |
 
-这张表说明的是**边界，不是孰优孰劣**：lieutenant 覆盖的是「一个常驻角色对 operator 的自然语言
-需求做即时反应」，operator skill 覆盖的是「一次性、可重复、需要精确验证提交是否落地的脚本化
-操作」。两者目前唯一的字面重叠面是「往 pane 里发文本」和「汇总多角色状态给人看」——但前者上
-lieutenant 依赖的 `inject-target!` 没有本 fork `wake-role.sh`/`talk-role.sh` 那套按 backend
-分支 + 验证提交落地的机制，后者上 lieutenant 是自由格式语言、`read-swarm.sh` 是固定三态分类。
-是否要把 lieutenant 引入本 fork、或者反过来把 operator skill 的验证机制搬进 lieutenant 的
-注入路径，是产品/工程决定，不在本次研究范围内下结论。
+`main` 版止步于「总结、建议、指向 `mission.md`」，从不驱动任何一件事走到底；`run-issue.sh`
+才是那个真正把一件事从提出到 PR 走完的东西。两者管的是不同的事，互不覆盖，这条结论站得住。
+
+**C2 → `lieutenant` 分支版 dispatcher：与 operator skill 是替代关系，不是互补关系。** 轴线
+换成 Findings B4/B5 用的那两条——「谁决定下一件事做什么」「谁决定它经过哪些 role」：
+
+| 决策点 | `lieutenant` 分支的 dispatcher | 本 fork 的 `swarmforge-operator` skill |
+|---|---|---|
+| 谁决定下一件事做什么 | lieutenant 主动提议卡（名字、类型、依赖），操作者只批准/否决（`lieutenant.prompt:40-44`） | 调用方（人或另一个 agent）逐个决定要不要对某个 issue 跑 `run-issue.sh`，脚本自己不提议 |
+| 谁决定它经过哪些 role | lieutenant 逐卡选 card type，即决定路由（`.swarmforge/routes.tsv`，`lieutenant.prompt:25-39` 的选型硬规则） | 路由由 project 自己的固定 pack 配置决定（two-pack/four-pack/six-pack 装的时候就定了），`run-issue.sh` 不改路由，只把一个任务喂给已经固定的管线 |
+| 起下一批工作要不要再问人 | 已批准的等待卡起进空闲 lane **不需要**再过 Attention（`lieutenant.prompt:84-87`） | `run-issue.sh` 每次调用都是一次显式的人工/agent 决策（`--issue N`），没有「自动起下一个」这一层 |
+| 卡住/完成之后谁接手重新规划 | lieutenant 收 `card-done`/`clarify` 等 notify 自己重新排班（`lieutenant.prompt:53-64`） | `accept-work.sh` 只读完成记录报给人看，不自动接着做下一步；下一步仍是调用方决定 |
+| 实现载体 | 常驻 LLM 角色，行为由 prompt 与当次上下文决定，出错模式是「切错卡型」「提议了不该提议的」 | 一次性调用的确定性脚本，出错模式是可枚举、可测试的固定退出码 |
+
+`run-issue.sh` 已经在做「决定一件事该走到 PR」这件事——只是决策权在调用它的人/agent 手上，
+一次一个 issue；`lieutenant` 分支的 dispatcher 把同一件事做成了常驻、批量、主动提议的版本，
+决策权在 lieutenant（受操作者批准约束）手上。这是**同一种能力的两种实现**，不是两种能力，
+所以是替代关系：真要把 dispatcher 模型接进本 fork，`run-issue.sh` 承担的角色会被
+lieutenant 取代或吸收，而不是与它并存互补。
 
 ### D. 测试钉住了 lieutenant 的哪些行为
 
-四条钉子，横跨启动命令、forge state、dashboard UI 三层，逐一读原文核实过行号：
+**本节引用的测试全部来自 `upstream/main` 的测试套件**（`test/swarmforge/`、
+`test/dashboard/`），钉的是 `main` 那版被动参谋的行为。`upstream/lieutenant` 分支的
+dispatcher lieutenant（切卡、`.swarmforge/routes.tsv`、`pack_board create/move/stop`，见
+Findings B）有没有对应的测试、测试住了哪些场景，本次研究没有读那个分支的测试文件，不在这四
+条之内。
+
+五条钉子（D4 打包了两个 deftest），横跨启动命令、forge state、dashboard UI 三层，逐一读原文
+核实过行号：
 
 **D1 → forge state 有一个 lieutenant 专属字段，读的是一个专属会话目录下的 pane 文件，不是
 Work Queue 的一行。** `forge-state-includes-lieutenant-status-lines`
@@ -361,5 +462,8 @@ swarm_handoff.bb` 两个文件**都没有匹配到任何一行**，两份 handof
   是否真的会被提交——如果不会，这是 upstream 自己在两条独立代码路径上留的口子，只有其中一条
   被本 fork 意外堵上；如果会（claude CLI 在某些模式下裸 Enter 也能提交），那这条 Gap 不成立。
   这需要真机验证，不是读源码能确定的。
-- **需要人决定：本 fork 要不要建 `lieutenant` 分支。** 这不是本次研究要回答的问题——issue
-  #135 已经把它定性为产品决定，本文只补充了「有什么用」的技术细节，供那个决定使用。
+- **需要人决定的不是「要不要多供应一个产品分支」，而是要不要把本 fork 的指挥模型从「人直接
+  操作 project（New Task、`run-issue.sh` 逐个喂 issue）」换成「人批准方向，lieutenant 排班、
+  切卡、追进度」（Findings C2）。** 这不是本次研究要回答的问题——issue #135 已经把「要不要
+  跟进 `lieutenant` 分支」定性为产品决定，本文只补充了两版 prompt 的行为细节、以及它和本 fork
+  现有 `run-issue.sh` 是替代而非互补关系这一点，供那个决定使用。
