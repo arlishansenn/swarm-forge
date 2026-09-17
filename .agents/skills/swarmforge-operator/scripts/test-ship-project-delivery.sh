@@ -50,7 +50,13 @@ case "${1:-} ${2:-}" in
     # about header reading, not about the merge window. `<commit> origin/main`
     # asks "was this already shipped", which is what shipped-commits drives.
     commit=$3; ref=$4
-    [ "$ref" = "HEAD" ] && exit 0
+    # `unmerged-commits` lets a case say "this one has NOT reached HEAD yet",
+    # which is the only way to assert gate *'s OUTPUT rather than the report
+    # header. Empty (the default) keeps every fixture's old always-merged
+    # answer.
+    if [ "$ref" = "HEAD" ]; then
+      grep -qxF "$commit" "$STUB/unmerged-commits" 2>/dev/null && exit 1 || exit 0
+    fi
     grep -qxF "$commit" "$STUB/shipped-commits" 2>/dev/null && exit 0 || exit 1 ;;
   "status --porcelain") exit 0 ;;                      # clean worktree
   "fetch origin"|"fetch "*) exit 0 ;;
@@ -87,6 +93,7 @@ chmod +x "$WORK/bin/ssh"
 export STUB=$WORK/stub
 reset_stub() { rm -rf "$STUB"; mkdir -p "$STUB"; : > "$STUB/calls.log"; : > "$STUB/shipped-commits"; }
 ship() { printf '%s\n' "$1" >> "$STUB/shipped-commits"; }  # ship <commit> — marks it already on origin/main
+unmerged() { printf '%s\n' "$1" >> "$STUB/unmerged-commits"; }  # unmerged <commit> — not an ancestor of HEAD yet
 
 # A managed project lives at <forge-root>/projects/<name> (ADR-0007); gate A
 # refuses anything else, so the fixture builds that shape.
@@ -518,6 +525,40 @@ check "note type exit" 0 "$RC"
 ! printf '%s\n' "$OUT" | grep -q '^task: task-note$' \
   && ok "note type: not reported as delivery record" \
   || bad "note type: not reported as delivery record" "$OUT"
+
+# 12c. REMOTE mode, gate * must see EVERY card, not just the first (#172).
+#      `run_remote` used to call ssh without `-n`; ssh then inherited and
+#      drained the `while read ... done <<< "$CARDS"` loop's stdin, so the
+#      loop ran exactly once and gate * -- the ancestor check this verb
+#      exists for -- was applied to the FIRST card only.
+#
+#      Asserting the report header would prove nothing: `cards to ship:` is
+#      built BEFORE that loop, so a truncated run still printed all three.
+#      That is precisely why the live bug was invisible. So the third card is
+#      marked not-yet-in-HEAD and the assertion is that it reaches `blockers:`.
+#
+#      `--local` cannot catch this at all: that branch runs `bash -c`, which
+#      does not drain stdin. The ssh stub here already models the drain (it
+#      `cat >/dev/null`s unless it sees -n), so the harness existed; only the
+#      case was missing.
+reset_fixture; reset_stub
+mk_roles coder master "$ROOT"
+mk_completed - 10_one.handoff   task-one   aaaaaaaaa1 30
+mk_completed - 20_two.handoff   task-two   bbbbbbbbb2 20
+mk_completed - 30_three.handoff task-three ccccccccc3 10
+unmerged ccccccccc3            # only the LAST card is still merging
+run_remote
+check "remote multi exit" 6 "$RC"
+printf '%s\n' "$OUT" | grep -q 'task-three' \
+  && ok "gate * reaches the last card" || bad "gate * reaches the last card" "$OUT"
+# And the mechanism, so a future caller that forgets -n reopens this visibly.
+if grep -q '^ssh ' "$STUB/calls.log"; then
+  ! grep '^ssh ' "$STUB/calls.log" | grep -qv -- ' -n ' \
+    && ok "every ssh call carries -n" \
+    || bad "every ssh call carries -n" "$(grep '^ssh ' "$STUB/calls.log" | head -2)"
+else
+  bad "every ssh call carries -n" "no ssh call was made at all"
+fi
 
 # 13. roles.tsv missing entirely -> STATUS=ERROR exit 5, message names the
 #     file, no guessing.

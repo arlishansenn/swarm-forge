@@ -97,9 +97,16 @@ done
 [ -n "$ROOT" ] || { usage; exit 2; }
 ROOT=${ROOT%/}
 
+# `-n` is load-bearing, not tidiness (issue #172, fork delta D-8). Without it
+# ssh inherits the caller's stdin and drains it, and several callers here sit
+# inside `while read ... done <<< "$LIST"` loops -- so the first remote call
+# swallowed the rest of the list and the loop ran exactly once. That silently
+# reduced gate * to checking only the FIRST delivery record, which is the one
+# check this whole verb exists for. LOCAL mode uses `bash -c`, which does not
+# drain stdin, so every --local test stayed green while the ssh path was broken.
 run_remote() {
   if [ "$LOCAL" = 1 ]; then bash -c "$1"
-  else ssh -i "$KEY" "$TARGET" "$1"; fi
+  else ssh -n -i "$KEY" "$TARGET" "$1"; fi
 }
 in_root() { run_remote "cd '$ROOT' && $1"; }
 
