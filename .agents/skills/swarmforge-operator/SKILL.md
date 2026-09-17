@@ -287,7 +287,7 @@ dashboard 就在你所在的这台机器上,照着 `# local:` 注释走:`REMOTE=
 
 ```sh
 SF=.agents/skills/swarmforge-operator/scripts
-ROOT=/Users/admin/project/podsum          # the MANAGED project's root, on its host
+ROOT=/Users/admin/project/forge/projects/podsum   # <forge-root>/projects/<name>, on its host
 TARGET=admin@100.64.0.4                   # omit for a local root
 KEY=~/.ssh/tailscale_key                  # omit for a local root
 REMOTE=(--target "$TARGET" --key "$KEY")  # local: REMOTE=(--local)
@@ -363,19 +363,18 @@ Teardown 按钮发布给所有够得着它的人。如果这些步骤走不到,�
 
 ### Dashboard 端口分配
 
-`7780`-`7789` 留给 dashboard,一个 project 一个号,这样光看 URL 就知道你在看哪个
-project:
+`7780`-`7789` 留给 dashboard。**一个 forge 一个号,不是一个 project 一个号** —— Forge 下的
+Managed project 没有自己的 dashboard(`swarmforge.bb` 的 `run-project!` 不起 `pack_web`),
+整个 forge 共用一个:
 
-| project | port |
-|---|---|
-| podsum | `7780` |
-| pi-governance (coder2) | `7781` |
-| `provision forge` 的验收 forge (macmini) | `7782` |
-| unassigned | `7783`-`7789` |
+| forge | port | 里面的 project |
+|---|---|---|
+| macmini `~/project/forge` | `7782` | podsum |
+| unassigned | `7780`-`7781`, `7783`-`7789` | |
 
 端口跨主机其实不会真的冲突 —— 这张表存在的意义是让读 URL 的人知道那是什么。它是
 本 fork 的 operator 手工维持的一条约定:没有任何东西推导它,没有任何东西强制它,
-`--dashboard-port` 也不会拿它做范围校验。给新 project 分配下一个空号,并在这里加
+`--dashboard-port` 也不会拿它做范围校验。给新 forge 分配下一个空号,并在这里加
 一行。
 
 ### `--tailnet` 为什么存在

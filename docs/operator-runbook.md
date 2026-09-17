@@ -94,15 +94,14 @@ scripts/open-dashboard.sh --root <root> --target <target> --key <key> --tailnet
 
 #### dashboard 端口分配
 
-`7780-7789` 留给 dashboard，一个项目一个号，好让 URL 自己说明是哪个项目：
+`7780-7789` 留给 dashboard。**一个 forge 一个号，不是一个项目一个号**——Forge 下的被管项目没有自己的 dashboard（`run-project!` 不起 `pack_web`），整个 forge 共用一个：
 
-| 项目 | 端口 |
-|---|---|
-| podsum | `7780` |
-| pi-governance（coder2） | `7781` |
-| 未分配 | `7782`-`7789` |
+| forge | 端口 | 里面的项目 |
+|---|---|---|
+| macmini `~/project/forge` | `7782` | podsum |
+| 未分配 | `7780`-`7781`、`7783`-`7789` | |
 
-跨 host 其实不冲突，这张表是给人看 URL 用的。它是本 fork 操作者手工维护的约定：没有任何代码推导它，也没有任何检查强制它，`--dashboard-port` 不会拿它做范围校验。新项目取下一个空号，并在这里补一行。
+跨 host 其实不冲突，这张表是给人看 URL 用的。它是本 fork 操作者手工维护的约定：没有任何代码推导它，也没有任何检查强制它，`--dashboard-port` 不会拿它做范围校验。新 forge 取下一个空号，并在这里补一行。
 
 三条硬性禁令，agent 不越过：
 
