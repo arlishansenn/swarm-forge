@@ -141,7 +141,6 @@ has "body pass url" "$OUT" 'https://github.com/x/y/pull/7'
 check "exactly one pr create" 1 "$(grep -c 'pr create' "$STUB/gh.log")"
 ARGS=$(cat "$STUB/pr-create.args")
 has "body carries the prose" "$ARGS" 'Some prose about the diff.'
-has "body carries Closes" "$ARGS" 'Closes #42'
 has "body carries the card" "$ARGS" '- issue-42-thing'
 has "body names the base" "$ARGS" "\-\-base main"
 
@@ -280,9 +279,9 @@ check "dry-run exit" 0 "$RC"
 has "dry-run STATUS" "$OUT" 'STATUS=DRY_RUN'
 check "dry-run created no branch" "" "$(git -C "$ROOT" for-each-ref --format='%(refname:short)' refs/heads/ | grep swarm || true)"
 
-# 17. A card whose name is not issue-<N>-<slug> produces NO Closes line.
-#     Lieutenant-cut cards are named by a human; guessing an issue number from
-#     one would close the wrong issue.
+# 17. A card name is never mined for an issue number. Dashboard-cut cards are
+#     named by a human or a model; guessing from one would close the wrong
+#     issue. Even the run-issue shape `issue-<N>-<slug>` produces nothing.
 new_project lieutenantcard
 C=$(add_commit work)
 add_card "harden the importer" done
@@ -292,6 +291,16 @@ check "lieutenant card exit" 0 "$RC"
 ARGS=$(cat "$STUB/pr-create.args")
 hasnt "lieutenant card emits no Closes" "$ARGS" 'Closes #'
 has "lieutenant card still listed" "$ARGS" 'harden the importer'
+
+# 17b. The run-issue-minted shape gets no special treatment either: a card
+#      named issue-42-thing with no card text and no --issue produces no Closes.
+new_project runissueshape
+C=$(add_commit work)
+add_card issue-42-thing done
+add_delivery issue-42-thing "$C"
+run_ship --body-file "$WORK/body.md"
+check "issue-shaped card name exit" 0 "$RC"
+hasnt "issue-shaped card name emits no Closes" "$(cat "$STUB/pr-create.args")" 'Closes #'
 
 # 18. --issue puts Closes lines in the body for a card nobody named after an
 #     issue. This is the path that matters: most cards are cut in the Dashboard

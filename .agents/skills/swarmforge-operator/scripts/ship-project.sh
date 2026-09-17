@@ -2,17 +2,14 @@
 # ship-project.sh — `ship project`: take what the swarm has already finished in
 # a product checkout and stop at a reviewable PR.
 #
-# WHY A SECOND SHIPPING VERB. `run issue` ships one issue that IT dispatched:
-# it created the branch, posted the task, and knows the single task name to
-# accept. Upstream's lieutenant forge dispatches instead — the operator cuts
-# cards in the dashboard or the chat rail, the lieutenant moves them through
-# `.swarmforge/routes.tsv`, and nothing here created a branch or knows a task
-# name in advance. Upstream then stops dead: its work lifecycle ends at "the
-# board moves the card to Done". There is no `git push` and no `gh pr` anywhere
-# in its prompts, scripts or docs, and `lieutenant.prompt` is explicitly denied
-# every git verb it might otherwise reach for. The last mile is outside the
-# forge by design, and this verb is that last mile for lieutenant-dispatched
-# work. `run issue` is untouched and still owns the issue-per-branch shape.
+# WHY THIS VERB EXISTS. The operator cuts cards in the dashboard or the chat
+# rail, the lieutenant moves them through `.swarmforge/routes.tsv`, and nothing
+# here created a branch or knows a task name in advance. Upstream then stops
+# dead: its work lifecycle ends at "the board moves the card to Done". There is
+# no `git push` and no `gh pr` anywhere in its prompts, scripts or docs, and
+# `lieutenant.prompt` is explicitly denied every git verb it might otherwise
+# reach for. The last mile is outside the forge by design, and this verb is
+# that last mile.
 #
 # WHAT IT SHIPS. Whatever terminal handoffs the master worktree has accepted
 # and `origin/<base>` does not already carry — `accept-work.sh`'s report, run
@@ -32,7 +29,7 @@
 # It never merges the PR, never force-pushes, never commits for you, and never
 # pushes from a role worktree under .worktrees/.
 #
-# TWO PASSES, same shape as `run issue`: the first pass reports, gates, creates
+# TWO PASSES: the first pass reports, gates, creates
 # the branch and pushes it, then stops at NEEDS_PR_BODY (exit 8) because the
 # prose belongs to something that read the diff. Send a subagent with the
 # `to-pr` skill, then re-run with --body-file. --dry-run stops before the push
@@ -41,8 +38,8 @@
 # Exit codes / STATUS line:
 #   0 PR_OPENED   0 NOTHING_TO_SHIP   0 DRY_RUN   2 USAGE   5 ERROR
 #   6 BLOCKED     8 NEEDS_PR_BODY
-# BLOCKED is 6 for the same reason run-issue.sh uses 6: a refusal on evidence
-# is not a failure of the verb, and nothing was changed. NOTHING_TO_SHIP and
+# BLOCKED is 6 because a refusal on evidence is not a failure of the verb, and
+# nothing was changed. NOTHING_TO_SHIP and
 # DRY_RUN are 0 because both are the verb doing exactly what was asked; the
 # STATUS word, not the code, is what tells them apart. Contract details live in
 # ../SKILL.md (verb: ship project).
@@ -188,13 +185,11 @@ BASE_SHA=$(in_root "git rev-parse --short $(printf '%q' "origin/$BASE")" 2>/dev/
 BASE_SHA=${BASE_SHA%$'\n'}
 AHEAD=$(in_root "git rev-list --count $(printf '%q' "origin/$BASE")..HEAD" 2>/dev/null || echo 0)
 AHEAD=${AHEAD%$'\n'}
-# Behind is reported, never blocking. `run issue` refuses a stale BASE because
-# it is about to START work there, and building on stale code is the whole
-# cost. Here the work is already finished, so refusing would strand it. The PR
-# is still correct either way (GitHub diffs against the merge-base); what the
-# operator needs to know is that the swarm built against a base that has since
-# moved — the same "nobody ran git pull after the merge" trap in its second
-# disguise, arriving through the Dashboard instead of through run issue.
+# Behind is reported, never blocking. The work is already finished, so refusing
+# would strand it, and the PR is correct either way (GitHub diffs against the
+# merge-base). What the operator needs to know is that the swarm built against a
+# base that has since moved — the "nobody ran git pull after the merge" trap,
+# arriving here through the Dashboard.
 BEHIND=$(in_root "git rev-list --count HEAD..$(printf '%q' "origin/$BASE")" 2>/dev/null || echo 0)
 BEHIND=${BEHIND%$'\n'}
 COMMITS=$(in_root "git log --oneline $(printf '%q' "origin/$BASE")..HEAD" 2>/dev/null || true)
@@ -255,19 +250,16 @@ else
   block "tests failed: $TESTS_CMD — run it yourself in $ROOT to see the output"
 fi
 
-# Three sources, none of them a guess, merged and deduplicated:
-#   --issue N        the caller says it. Always available, always wins nothing
-#                    and loses nothing — it is just another number in the set.
+# Two sources, neither of them a guess, merged and deduplicated:
 #   card text        `#<digits>` in what the operator typed into New Task.
-#   card name        the exact `issue-<N>-<slug>` shape run-issue.sh mints.
-# The card-NAME match stays exact rather than becoming a scan, because the name
-# is derived, not typed. The card TEXT is typed by a human who is looking at
-# the issue, which is what makes scanning it fair game here and not there.
+#   --issue N        the caller says it, when the card text did not.
+# The card text is typed by a human who is looking at the issue, which is what
+# makes scanning it fair game. Nothing is inferred from the card NAME: a card
+# cut in the Dashboard is named by a human or a model and carries no reliable
+# issue number, and closing the wrong issue is worse than closing none.
 closes_numbers() {
-  { printf '%s\n' "$CARDS" | awk -F'\t' '
-      match($1, /^issue-[0-9]+-/) { print substr($1, 7, RLENGTH - 7) }'
-    printf '%s\n' $ISSUES $CARD_ISSUES
-  } | { grep -E '^[0-9]+$' || true; } | sort -un
+  printf '%s\n' $CARD_ISSUES $ISSUES \
+    | { grep -E '^[0-9]+$' || true; } | sort -un
 }
 
 [ -n "$BRANCH" ] || BRANCH="feat/swarm-$PROJECT-$(date -u +%Y%m%d)"
@@ -336,9 +328,9 @@ in_root "git rev-parse --verify --quiet $(printf '%q' "refs/heads/$BRANCH")" >/d
 in_root "git push -u origin $(printf '%q' "$BRANCH")" \
   || die ERROR "could not push $BRANCH from $ROOT — the branch exists locally; re-run to continue" 5
 
-# Same idempotency as run-issue.sh, and for the same reason: a run killed
-# between the push and the PR must not open a second PR for the same head. The
-# check runs BEFORE the body is required so a resume never costs a model call.
+# A run killed between the push and the PR must not open a second PR for the
+# same head. The check runs BEFORE the body is required so a resume never costs
+# a model call.
 PR_URL=$(in_root "gh pr list --head $(printf '%q' "$BRANCH") --state open --json url --jq '.[].url' | head -1") \
   || PR_URL=''
 PR_URL=${PR_URL%$'\n'}
@@ -357,18 +349,6 @@ if [ -z "$PR_URL" ]; then
   [ -n "$(printf '%s' "$PR_PROSE" | tr -d '[:space:]')" ] \
     || die ERROR "--body-file $BODY_FILE is empty; refusing to open a PR with no body. $BRANCH is pushed, no PR was opened" 5
 
-  # `Closes #N` has TWO sources, and neither of them guesses.
-  #
-  # --issue is the one that matters in practice. Most cards are cut straight
-  # from the Dashboard by the operator or the lieutenant, which means the card
-  # name is free text and the issue number lives only in the head of whoever
-  # cut it. That person is the caller, so the caller says it.
-  #
-  # The card-name derivation stays for the cards run-issue.sh minted, where
-  # `issue-<N>-<slug>` IS the issue number and reading it costs nothing. It is
-  # an exact-shape match, never a scan for `#<digits>`: a loose scan would find
-  # a PR number or a `#1 priority` in card text and close the wrong issue,
-  # which is worse than closing none.
   CLOSES=$(closes_numbers | sed 's/^/Closes #/')
   CARD_LINES=$(printf '%s\n' "$CARDS" | awk -F'\t' 'NF { printf "- %s (%s)\n", $1, $2 }')
   STALE_LINE=''

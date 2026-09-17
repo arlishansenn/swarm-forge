@@ -7,6 +7,10 @@ status: accepted; 实现手段由 ADR-0002 取代
 > **本条的决定仍然有效**，但下面写的实现手段（onboard 解压后改写 `ARCHIVE_URL`）已被
 > [ADR-0002](./0002-fork-owns-the-complete-pack-artifact.md) 取代：fork Pack 分支自带
 > 指向本 fork 的 launcher，onboard 原样安装、不再改写。改动 onboard 前先读 ADR-0002。
+>
+> **2026-09-17 起 `onboard project` 已删除**（[ADR-0007](./0007-the-fork-keeps-only-the-lieutenant-forge-path.md)，
+> issue #155）。本条的决定**仍然有效**，只是唯一的到达路径变成 `get-swarm-forge` 与 forge 的
+> project-pack；下文提到 onboard 的地方读作历史记录。
 
 一个 managed project 的 `swarm launcher` 首跑时下载 script snapshot，而 upstream 的
 pack 分支把下载地址硬编码成 `unclebob/swarm-forge` 的 `main`。本 fork 的

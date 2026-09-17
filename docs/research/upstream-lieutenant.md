@@ -1,5 +1,11 @@
 # Research: upstream 的 lieutenant 是什么、有什么用
 
+> **2026-09-17 后记：** 本报告的结论（dispatcher lieutenant 与 `run-issue.sh` 是替代关系，
+> 不是互补关系）已被采纳为决定，见
+> [ADR-0007](../adr/0007-the-fork-keeps-only-the-lieutenant-forge-path.md)：`run issue`、
+> `onboard project`、`update SwarmForge scripts` 三个 verb 已删除，本 fork 只保留
+> lieutenant forge 一条路径。下文提到 `run-issue.sh` 的地方读作写作当时的现状。
+
 Pinned refs：`upstream/main@f4f5fbcae0de6f7dcc26e82400334227647cfdb2`（2026-09-04）、
 `upstream/lieutenant@23653942488281a3c6d9a60b7e9378be0a1ca1c2`（2026-09-07）、
 `upstream/project-manager@2cc1795fbd1f5cedefd0c371aa1835464d1b4a15`（2026-09-04，用于第 B

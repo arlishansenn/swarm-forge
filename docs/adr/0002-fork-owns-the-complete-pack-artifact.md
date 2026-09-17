@@ -1,5 +1,10 @@
 # fork 拥有它安装的完整 Pack artifact，onboard 不再事后 patch
 
+> **2026-09-17 起 `onboard project` 与 Pack 路径已退休**
+> （[ADR-0007](./0007-the-fork-keeps-only-the-lieutenant-forge-path.md)，issue #155）。
+> 本条的决定**仍然有效**——安装仍然是纯解压、绝不事后 patch——只是主体从 Pack 分支换成
+> `get-swarm-forge` 与 forge 的 project-pack。下文提到 onboard 的地方读作历史记录。
+
 ADR 0001 定下「script snapshot 跟随本 fork」，实现手段是 `onboard project` 从 upstream
 下载 Pack 分支、解压后改写 `$ROOT/swarm` 里的 `ARCHIVE_URL`。这造成 split ownership：
 安装的 artifact 由 upstream 拥有，只有其中一行由本 fork 事后覆盖。
