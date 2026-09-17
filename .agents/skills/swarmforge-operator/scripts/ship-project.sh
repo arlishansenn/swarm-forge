@@ -119,6 +119,10 @@ esac
 if run_remote "test -d '$ROOT/projects' && test -e '$ROOT/swarm'" 2>/dev/null; then
   die BLOCKED "$ROOT looks like a forge root (it has projects/ and swarm) — the product repo is projects/<name>; point --root there" 6
 fi
+# Positive check, after the two negatives above so their sharper messages win.
+# Without it gate A accepts ANY standalone git repo that has a .swarmforge/
+# tree, which is how this verb got run against a retired pack install.
+require_managed_project
 TOP=$(in_root "git rev-parse --show-toplevel" 2>/dev/null) \
   || die ERROR "$ROOT is not a git work tree (or the target is unreachable)" 5
 TOP=${TOP%$'\n'}

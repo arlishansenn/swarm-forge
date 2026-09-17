@@ -45,10 +45,14 @@ ts() { printf '2026-09-%02dT10:00:00.000000Z\n' "$1"; }
 # plus the two state files accept-work.sh and the board gate read. $ROOT is
 # ahead of origin/main by the commit the terminal handoff names.
 new_project() { # $1 = case name -> sets ROOT, STUB
-  ROOT=$WORK/$1/proj
+  # A managed project lives at <forge-root>/projects/<name> (ADR-0007), so the
+  # fixture builds that shape: gate A refuses anything else.
+  FORGE=$WORK/$1/forge
+  ROOT=$FORGE/projects/proj
   STUB=$WORK/$1/stub
   export STUB
-  mkdir -p "$STUB" "$WORK/$1"
+  mkdir -p "$STUB" "$WORK/$1" "$FORGE/projects"
+  : > "$FORGE/swarm"
   git init --quiet --bare "$WORK/$1/origin.git"
   git clone --quiet "$WORK/$1/origin.git" "$ROOT" 2>/dev/null
   git -C "$ROOT" config user.email t@t; git -C "$ROOT" config user.name t
@@ -257,6 +261,29 @@ mkdir -p "$WORK/forge/projects"; touch "$WORK/forge/swarm"
 OUT=$("$SHIP" --root "$WORK/forge" --local 2>&1); RC=$?
 check "forge root exit" 6 "$RC"
 has "forge root explains" "$OUT" 'projects/<name>'
+
+# 13b. A standalone repo that is NOT under <forge>/projects/ is refused, even
+#      though its .swarmforge/ tree is indistinguishable from a real managed
+#      project's. This is the case that actually happened: a dormant two-pack
+#      clone sharing a basename with the forge's project, shipped against by
+#      mistake. ADR-0007 says this fork serves the forge path only.
+happy standalone
+STRAY=$WORK/stray/podsum
+mkdir -p "$(dirname "$STRAY")"
+cp -R "$ROOT" "$STRAY"
+OUT=$("$SHIP" --root "$STRAY" --local 2>&1); RC=$?
+check "standalone exit" 6 "$RC"
+has "standalone STATUS" "$OUT" 'STATUS=BLOCKED'
+has "standalone explains" "$OUT" '<forge-root>/projects/<name>'
+
+# 13c. Under a projects/ directory whose parent is not a forge is also refused:
+#      matching the path shape is not proof, the forge root must exist.
+FAKE=$WORK/notaforge/projects/podsum
+mkdir -p "$(dirname "$FAKE")"
+cp -R "$ROOT" "$FAKE"
+OUT=$("$SHIP" --root "$FAKE" --local 2>&1); RC=$?
+check "fake forge exit" 6 "$RC"
+has "fake forge explains" "$OUT" 'is not a forge root'
 
 # 14. An empty body file refuses rather than opening a PR that says nothing.
 happy emptybody

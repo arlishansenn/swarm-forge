@@ -35,6 +35,11 @@ SOCK=$(read_file .swarmforge/tmux-socket) \
   || die STOPPED "$ROOT/.swarmforge/tmux-socket missing — swarm not running" 3
 SOCK=${SOCK%$'\n'}
 
+# A managed project lives at <forge-root>/projects/<name> (ADR-0007). Checked
+# before the socket probe so pointing at a standalone pack install says so,
+# instead of reporting whatever that install's runtime happens to look like.
+require_managed_project
+
 # runtime gate: socket must actually answer, same as open-swarm.sh — stale
 # files after a reboot look identical to a live swarm otherwise.
 tmux_remote list-sessions >/dev/null 2>&1 \

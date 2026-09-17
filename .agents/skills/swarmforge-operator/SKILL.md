@@ -58,6 +58,23 @@ lieutenant forge 的设计是**操作都在 Dashboard 上做**。以下动作没
 往 pane 里打字(`wake role`/`talk role`)、装一个新 forge(`provision forge`)、
 推 GitHub(`ship project`)。
 
+## 被管 project 在哪
+
+**一个 Managed project 永远住在 `<forge-root>/projects/<name>`。** 这是 upstream lieutenant
+的布局,也是 ADR-0007 之后本 fork 唯一服务的布局。所有吃 `--root` 的 verb 都在动手之前
+硬性校验这一点(`lib-wake-talk.sh` 的 `require_managed_project`),不满足就 `6` `BLOCKED`。
+
+判据是两条,路径形状不算证据:
+
+1. `$ROOT` 必须匹配 `*/projects/*`,`<forge-root>` 取 `${ROOT%/projects/*}`。
+2. **那个 forge root 要被证实**:`<forge-root>/projects` 是目录,且 `<forge-root>/swarm` 存在。
+
+**为什么需要这道闸。** 一个独立的 pack 安装和一个 forge 管的 project,从目录内部看是
+**一模一样的** —— 同样的 `.swarmforge/`、同样的 `roles.tsv`、同样的 `handoffs/`。没有这道
+闸,每个 verb 都会照常工作在一个本 fork 早已不服务的 Pack 安装上。这不是假想:
+`ship project` 第一次真跑就跑在了一个休眠的 two-pack clone 上,它跟 forge 里那个真 project
+**同名**,报文里一切看起来都正常,得出的结论全是错的。
+
 ## Verb contract
 
 每个 verb 要么是 handover verb,要么是 report verb,要么是 effect verb(见

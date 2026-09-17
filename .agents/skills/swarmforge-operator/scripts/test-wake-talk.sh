@@ -76,7 +76,8 @@ export STUB=$WORK/stub
 reset_stub() { rm -rf "$STUB"; mkdir -p "$STUB"; : > "$STUB/calls.log"; : > "$STUB/pane.txt"; }
 
 mk_fixture() { # mk_fixture <name> <role> <session> <agent>
-  local root=$WORK/fixtures/$1
+  local root=$WORK/fixtures/forge/projects/$1
+  mkdir -p "$WORK/fixtures/forge/projects"; : > "$WORK/fixtures/forge/swarm"  # gate: managed project lives at <forge>/projects/<name>
   mkdir -p "$root/.swarmforge"
   printf '1\t%s\t%s\t%s Display\t%s\n' "$2" "$3" "$2" "$4" > "$root/.swarmforge/sessions.tsv"
   printf '/tmp/sf-wake-talk-%s.sock\n' "$1" > "$root/.swarmforge/tmux-socket"
@@ -92,12 +93,12 @@ export SF_CONSUME_TRIES=3 SF_CONSUME_INTERVAL=0.01
 
 run_wake() { # run_wake <fixture>
   OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB bash "$WAKE" --local \
-    --root "$WORK/fixtures/$1" --role coder 2>&1)
+    --root "$WORK/fixtures/forge/projects/$1" --role coder 2>&1)
   RC=$?
 }
 run_talk() { # run_talk <fixture> <message>
   OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB bash "$TALK" --local \
-    --root "$WORK/fixtures/$1" --role coder --message "$2" 2>&1)
+    --root "$WORK/fixtures/forge/projects/$1" --role coder --message "$2" 2>&1)
   RC=$?
 }
 val() { printf '%s\n' "$OUT" | sed -n "s/^$1=//p" | head -1; }
@@ -167,7 +168,7 @@ printf '%s\n' "$OUT" | grep -q "backend (grok)" \
 # 4. role not in sessions.tsv → exit 5
 reset_stub; touch "$STUB/live" "$STUB/consume"
 OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB bash "$WAKE" --local \
-  --root "$WORK/fixtures/claude" --role ghost 2>&1); RC=$?
+  --root "$WORK/fixtures/forge/projects/claude" --role ghost 2>&1); RC=$?
 check "unknown role exit" 5 "$RC"
 
 # 5. socket has no tmux server → exit 3
