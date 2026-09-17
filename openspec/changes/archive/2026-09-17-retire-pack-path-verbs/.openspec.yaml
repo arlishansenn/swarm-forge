@@ -1,3 +1,4 @@
 schema: intent-driven
 created: 2026-09-17
 issue: 155
+retire_capabilities: true
