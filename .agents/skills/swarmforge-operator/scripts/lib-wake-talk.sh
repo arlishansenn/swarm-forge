@@ -2,7 +2,7 @@
 # talk-role.sh (issue #14: a mismatched backend must fail loudly, not send
 # keys into the void). read-swarm.sh (issue #15) and stop-swarm.sh (issue
 # #11) also source this file: both are report-shaped verbs that only need
-# the die/read_file/tmux_remote plumbing plus BUSY_RE/IDLE_RE/classify — they
+# the die/read_file/tmux_remote plumbing — they
 # never call resolve_role or send_and_verify, since neither sends keys.
 # stop-swarm.sh additionally uses git_status for its DIRTY-worktree check.
 # accept-work.sh (issue #17) additionally uses git_merge_base_ancestor for its
@@ -344,52 +344,6 @@ read_manifest() {
   return 1
 }
 
-# ---------- report-verb classification (issue #15, shared per issue #11) ----
-# Moved here from read-swarm.sh so stop-swarm.sh's preflight reads a role's
-# BUSY/IDLE/UNKNOWN state exactly the way `read swarm` does — the issue #11
-# acceptance criterion is that the two judgments never drift apart, which a
-# second copy of this logic could not guarantee.
-#
-# BUSY: the "esc to interrupt" hint tied to codex's interruptible-work banner
-# ("Working (44s • esc to interrupt)"), or the "<participle> for Ns" shape of
-# claude's spinner line ("Baked for 13s", "Cogitated for 28s"). The spinner
-# glyph itself is skipped as a marker — unicode chrome a font/terminal may not
-# round-trip byte-for-byte; the text shape after it is the stable part.
-# IDLE: a bare prompt character with nothing else on the line (claude's empty
-# input line), or the literal placeholder text inviting input ("Ask Codex to
-# do anything").
-# Grok's "Waiting for response…" is the third shape: its spinner line says
-# "for response", not "for <n>s", so the participle pattern above does not
-# reach it (issue #58). The spinner glyph stays out of the marker for the same
-# reason as the others — the text after it is the part that round-trips.
-#
-# Grok has more wordings than that one (issue #92): "Thinking… 1.4s" and
-# "Responding… 5.7s" matched nothing here, so BUSY never fired, the empty
-# prompt right below matched IDLE, and a role mid-request read IDLE. On
-# coder2's pi-governance six roles all reported IDLE while two were visibly
-# working. That points the WRONG WAY compared with issue #58: that one read
-# UNKNOWN, which is safe; this one reads IDLE, and `stop swarm` shares the
-# judgment — green preflight, kill-session, no warning that live work died.
-#
-# The added alternative is a SHAPE, not another wording: a participle followed
-# immediately by an ellipsis. That is what every one of these spinners has in
-# common, so the next wording Grok invents is covered without another patch —
-# SKILL.md's own line about chasing individual strings being "a losing race".
-# Both the single character and three dots are accepted; which one a backend
-# emits is not worth depending on. The braille spinner glyph is still NOT part
-# of the marker, for the reason already given above: the text is the part that
-# round-trips, and the shape below is enough without it.
-BUSY_RE='esc to interrupt|[A-Za-z]+(ed|ing) for [0-9]+s|Waiting for response|[A-Za-z]+(ed|ing)(…|[.][.][.])'
-IDLE_RE='^(❯|>)[[:space:]]*$|Ask .* to do anything'
-
-classify() { # $1 = one pane line ("" for nothing to classify)
-  if [ -z "$1" ]; then echo UNKNOWN
-  elif printf '%s' "$1" | grep -qE "$BUSY_RE"; then echo BUSY
-  elif printf '%s' "$1" | grep -qE "$IDLE_RE"; then echo IDLE
-  else echo UNKNOWN
-  fi
-}
-
 # ---------- picking the line(s) that carry state (issue #58) ----------
 # The pane's last non-empty line is NOT reliably the input line. Grok renders a
 # static footer BELOW the prompt ("Grok 4.6 (high) · always-approve · 93K /
@@ -435,37 +389,6 @@ pane_lines() {
 # "⠙ Waiting for response…" / "❯" / footer, so the marker sits one line above
 # the input line and a single line cannot reach it. Kept small on purpose:
 # every extra line is another chance for transcript text to be read as state.
-PANE_CLASSIFY_LINES=${SF_PANE_CLASSIFY_LINES:-2}
-
-# $1 = session. Sets PANE_STATE (BUSY|IDLE|UNKNOWN) and PANE_LINE (the line
-# that decided it, for the human-facing report) — the same set-globals shape
-# resolve_role uses.
-#
-# BUSY wins over IDLE anywhere in the window, regardless of order. A busy Grok
-# pane still shows its empty prompt below the spinner, so "the first
-# classifiable line" would read IDLE off a role that is mid-request. Erring
-# toward BUSY is also the safe direction for stop swarm's preflight, which
-# refuses to stop work it is unsure about. UNKNOWN stays the default when
-# nothing matches, blank panes included — issue #15's boundary is unchanged.
-classify_pane() {
-  local lines line state
-  PANE_STATE=UNKNOWN
-  PANE_LINE=""
-  lines=$(pane_lines "$1" | tail -n "$PANE_CLASSIFY_LINES")
-  [ -n "$lines" ] || return 0
-  # What a human would see if nothing classifies, so an UNKNOWN still reports
-  # real pane text instead of an empty field.
-  PANE_LINE=$(printf '%s\n' "$lines" | tail -1)
-  while IFS= read -r line; do
-    state=$(classify "$line")
-    case $state in
-      BUSY) PANE_STATE=BUSY; PANE_LINE=$line; return 0 ;;
-      IDLE) if [ "$PANE_STATE" != IDLE ]; then PANE_STATE=IDLE; PANE_LINE=$line; fi ;;
-    esac
-  done <<< "$lines"
-  return 0
-}
-
 # Looks up $1 in sessions.tsv (columns: index, role, session, display,
 # agent). Sets SESSION/AGENT on success; returns 1 if the role has no row —
 # never accepts backend from the caller, sessions.tsv is the only source.
@@ -519,10 +442,11 @@ input_line_has() {
 # doesn't matter, only whether the text is still what's currently in the
 # editable input position. This also naturally covers the issue's "输入框为
 # 空或 role 已进入 BUSY" success condition — both a cleared input line and a
-# BUSY marker redraw move $text out of that area, so no separate
-# classify()/BUSY_RE check is needed here; that classifier is documented
-# (SKILL.md, `read swarm`'s boundary paragraph) as intentionally incomplete
-# across backends and would just trade one false negative for another.
+# BUSY marker redraw move $text out of that area, so no separate pane-state
+# classifier is needed here. (There used to be one, shared with `read swarm`
+# and `stop swarm`; both verbs were retired in issue #158 and it went with
+# them. It was deliberately incomplete across backends anyway, and relying on
+# it here would have traded one false negative for another.)
 #
 # The residual assumption this comment used to record — "a backend that
 # renders a static footer below the input would make the check report

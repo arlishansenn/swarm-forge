@@ -217,9 +217,30 @@ cockpit. It is historical and is not a `get-swarm-forge` product.
 ## Operating a running swarm from your laptop (this fork)
 
 This fork ships `.agents/skills/swarmforge-operator/`, a control-surface skill
-for a local agent session that drives a running SwarmForge project over ssh:
-ten verbs, a single exit-code table, dashboard port allocation, and the
-two-pass `ship project` pipeline. It is not part of upstream.
+for a local agent session that drives a running SwarmForge project over ssh. It
+is not part of upstream.
+
+The skill targets the **`lieutenant` forge** only. It does not install packs and
+it does not dispatch work; see
+[ADR-0007](docs/adr/0007-the-fork-keeps-only-the-lieutenant-forge-path.md).
+
+Six verbs, a single exit-code table, and dashboard port allocation:
+
+| Verb | What only it can do |
+|---|---|
+| `provision forge` | Install and start a forge in an empty directory, then create its first project. The dashboard does not exist yet at that moment. |
+| `dashboard` | Make the dashboard reachable: an ssh local-forward or a tailnet publish, plus a browser surface. `pack_web` binds `127.0.0.1` only. |
+| `open swarm` | Attach a terminal to a role. The dashboard's agent pane is a read-only capture. |
+| `wake role` / `talk role` | Type into a role's pane. No HTTP endpoint sends text to a project role, and the chat rail reaches the host lieutenant only. |
+| `ship project` | Push the finished work and open a pull request. Upstream's lifecycle stops when the board card reaches Done. |
+
+**Everything else is done in the dashboard**, which does it better: stop or
+start a project, tear the forge down, read role state, cut cards, answer
+clarifications. Stopping a project from the dashboard also keeps the forge's
+own `open-projects` record correct, which no external command can do. The two
+blind spots the dashboard structurally cannot cover — reaching itself, and
+typing — are recorded in
+[ADR-0008](docs/adr/0008-the-dashboard-cannot-reach-itself-or-type.md).
 
 See [the operator runbook](docs/operator-runbook.md). The runbook is written in
 Chinese; the skill itself is the executable contract.

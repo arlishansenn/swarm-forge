@@ -16,19 +16,20 @@ landing page，一份后半段是中文操作手册的 README 与那个定位冲
 
 使用前提：skill 的使用者工作目录是本仓库。放在被操作 project 里时，本仓库会话调不到它。
 
-### 十个 verb
+### 六个 verb
+
+**停 project / 停 forge / 起 project / 读角色状态都不在这里,走 Dashboard**（issue #158、
+ADR-0008）。留下的每一个 verb 都做网页做不到的事:接入、附着、往 pane 里打字、装 forge、
+推 GitHub。
 
 | 动词 | 作用 |
 |---|---|
-| `start swarm <root> --terminal <值>` | 从停机状态显式启动 swarm；`--dashboard-port <N>` 可选，转成 `SWARMFORGE_DASHBOARD_PORT` 让 pack_web 绑固定端口（不传则一字不变地保持随机端口；只校验是数字，不校验范围；与 `--terminal` 累积进同一个 `env` 前缀，两者同时生效）；`--terminal` 必传（`ghostty`/`iterm2`/`none`/`terminal-app`/`windows-terminal`/`auto`），杜绝 #10 那次靠自动探测踩中 watchdog 拆除的坑；已在跑（socket 探活成功）拒绝重复启动（退出 6，无 override）；启动前还会取 project lock 并比对已装 `swarmforge/scripts` 与其 manifest 的 digest，manifest 缺失或不一致报 `STATUS=DRIFT`（退出 4），锁被另一次并发的 `start swarm` 占用同样报 `UNSAFE`（退出 6）——`--force` 可越过锁占用与 DRIFT，但越不过「已在跑」；本地/远端都走 `nohup` 脱离终端启动，回读 runtime 文件确认后才报 `STATUS=STARTED` |
+| `start-swarm.sh`（**不再是公开 verb**，是 `provision forge` 的内部步骤：起 forge 自己时 Dashboard 还不存在） | 从停机状态显式启动 swarm；`--dashboard-port <N>` 可选，转成 `SWARMFORGE_DASHBOARD_PORT` 让 pack_web 绑固定端口（不传则一字不变地保持随机端口；只校验是数字，不校验范围；与 `--terminal` 累积进同一个 `env` 前缀，两者同时生效）；`--terminal` 必传（`ghostty`/`iterm2`/`none`/`terminal-app`/`windows-terminal`/`auto`），杜绝 #10 那次靠自动探测踩中 watchdog 拆除的坑；已在跑（socket 探活成功）拒绝重复启动（退出 6，无 override）；启动前还会取 project lock 并比对已装 `swarmforge/scripts` 与其 manifest 的 digest，manifest 缺失或不一致报 `STATUS=DRIFT`（退出 4），锁被另一次并发的 `start swarm` 占用同样报 `UNSAFE`（退出 6）——`--force` 可越过锁占用与 DRIFT，但越不过「已在跑」；本地/远端都走 `nohup` 脱离终端启动，回读 runtime 文件确认后才报 `STATUS=STARTED` |
 | `open swarm <root>` | 把运行中的 swarm 以 cmux workspace 打开；停机时报原因，命中 window watchdog 拆除会点名，绝不代人启动 |
 | `dashboard <root>` | 开 browser workspace 连 pack_web 看板；默认建 SSH 隧道，`--tailnet` 则不建隧道、直接打 target 的 tailscale IP（笔记本一睡隧道就断，且只有那台机器能看；tailnet URL 手机平板都能开）；**每次先读 `dashboard-url` 的端口决定走哪条**——在 `7780-7789` 段内就加 `--tailnet`，是随机端口就不加并把切换步骤报给用户（切换要停 swarm，不自作主张）；额外校验端口后面真是本项目的 `pack_web`（`--serve` 参数比对），不是同机别的项目撞上来的；**跑完要把报文里的 `URL=` 转述给用户，不能只回「已打开」** |
 | `attach <role>` | 临时附加到某个角色的 tmux session |
-| `read swarm` | 逐角色截屏，三态分类 `IDLE`/`BUSY`/`UNKNOWN`（认不出就是 UNKNOWN，不猜成 idle），每行都附原始 pane 文本 |
 | `wake <role>` | 唤醒：注入 `ready_for_next.sh`，按 backend 编码提交后**验证真的被消费**，没提交成功报错并点名 backend 不匹配 |
 | `talk <role>` | 给指定角色发一条行为切片，同样验证送达且被提交，不是发了就算 |
-| `accept work` | 人工验收：**只读 master worktree**（按 `roles.tsv` 第 2 列 `worktree-name == master` 定位，不认 role 名，不是恰好一条就报错）的终端 handoff 报 `task`/`commit`，别的 worktree 的中间跳不再被当成结果；缺字段的记录 `WARN=` 点名而不静默丢弃；同时扫 `inbox/new`/`inbox/in_process` 的滞留，卡链了会 `WARN=` 报出来，不再跟"没活干"读起来一样 |
-| `stop swarm` | 停机前先 preflight：有角色 `BUSY`/`UNKNOWN` 或 worktree 有未提交改动就拒绝停机（退出 6），全干净才走 `close-swarm`，**并检查它真的停成了**——`close-swarm` 失败就报 `5` ERROR 带上它自己的 stderr，绝不报 `STOPPED`（issue #82，此前对非 operator 机器会假报 `STOPPED` 且退出 0）；停完顺带按 `pack_web.pid` 停掉 dashboard 并报 `PACK_WEB=stopped\|absent`；`close-swarm` 跑在 **target** 上而默认路径是 operator 自己那台机器，被管项目里没有这个脚本，所以别的机器要用 `--close-swarm <target 上的路径>` 指明；`--force` 只跳过 preflight，不跳过"停没停成"的检查 |
 
 默认远端是 `admin@100.64.0.4`，可用 `--target`/`--key` 覆盖；`--local` 改走本地文件系统。
 
@@ -46,9 +47,9 @@ landing page，一份后半段是中文操作手册的 README 与那个定位冲
 
 看板本身是 `pack_web`：`./swarm` 启动时随 swarm 一起起的本地 HTTP 服务，页面展示并可操作 swarm 状态（agent 状态、任务/交接、approvals、chat、teardown），只监听远端 `127.0.0.1`，所以远程访问必须走隧道。
 
-`dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上，另加 `--tailnet`）：按顺序问四件事，第一个「否」就停——**swarm 在不在跑**（读 `tmux-socket` 探 `list-sessions`，与 `open`/`start`/`stop`/`read swarm`、`wake`/`talk role` 用的是同一条判定）→ 有没有 `dashboard-url` → 那个端口是不是本项目自己的 `pack_web` → 最后才是能不能连上。然后在当前 window 开/复用 `Dashboard · <basename>` workspace。**复用时会校验那个 browser surface 现在指向哪**（issue #99）：不是本次的 URL 就 `goto` 过去，已经一致则一个 cmux mutation 都不做。此前只在 surface **缺失**时才修，于是报文打印新 URL 而画面停在上一个已死端口——而这是常态不是例外，`pack_web` 每次启动都换端口（除非用了 `--dashboard-port`）。报文里的 `URL=` 与 surface 实际指向的一致，否则不报成功。
+`dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上，另加 `--tailnet`）：按顺序问四件事，第一个「否」就停——**swarm 在不在跑**（读 `tmux-socket` 探 `list-sessions`，与 `open swarm`、`wake`/`talk role` 用的是同一条判定）→ 有没有 `dashboard-url` → 那个端口是不是本项目自己的 `pack_web` → 最后才是能不能连上。然后在当前 window 开/复用 `Dashboard · <basename>` workspace。**复用时会校验那个 browser surface 现在指向哪**（issue #99）：不是本次的 URL 就 `goto` 过去，已经一致则一个 cmux mutation 都不做。此前只在 surface **缺失**时才修，于是报文打印新 URL 而画面停在上一个已死端口——而这是常态不是例外，`pack_web` 每次启动都换端口（除非用了 `--dashboard-port`）。报文里的 `URL=` 与 surface 实际指向的一致，否则不报成功。
 
-**顺序是修过的（issue #100）。** `stop swarm` 会删 `pack_web.pid`，但**没有任何动词删 `dashboard-url`**，所以停机后这两个输入互相矛盾；而可达性检查排在前面时，一个只是停机的项目会报 `5` ERROR（「隧道坏了」）而不是 `3` STOPPED，`--tailnet` 那条还会让人去跑一条**已经跑过**的 `tailscale serve`。**有意的取舍**：swarm 停了而 `pack_web` 仍独活的项目现在会被 `3` 拒绝——这个动词开的是某个 swarm 的看板，swarm 不在就没有可看的东西。退出码语义同上；`3` 表示 dashboard-url 缺失，绝不自己起 `pack_web.sh --serve`。报文里的 `TUNNEL=` 说明走了哪条路：`created`/`reused`/`tailnet`/`local`。
+**顺序是修过的（issue #100）。** 停机会删 `pack_web.pid`，但**没有任何动词删 `dashboard-url`**，所以停机后这两个输入互相矛盾；而可达性检查排在前面时，一个只是停机的项目会报 `5` ERROR（「隧道坏了」）而不是 `3` STOPPED，`--tailnet` 那条还会让人去跑一条**已经跑过**的 `tailscale serve`。**有意的取舍**：swarm 停了而 `pack_web` 仍独活的项目现在会被 `3` 拒绝——这个动词开的是某个 swarm 的看板，swarm 不在就没有可看的东西。退出码语义同上；`3` 表示 dashboard-url 缺失，绝不自己起 `pack_web.sh --serve`。报文里的 `TUNNEL=` 说明走了哪条路：`created`/`reused`/`tailnet`/`local`。
 
 **不带 `--tailnet`：** 建 `-N -L` 本地转发（已有可用隧道则复用；端口被占则换空闲端口），browser surface 指向隧道 URL。这条路径行为未变。
 
@@ -62,7 +63,7 @@ landing page，一份后半段是中文操作手册的 README 与那个定位冲
 
 #### 切到固定端口
 
-四步，顺序不能变。第三步不能并进第二步：**`start swarm` 对已在跑的 swarm 退 `6` UNSAFE 且无 override**，所以不停就换不了端口。
+四步，顺序不能变。第三步不能并进第二步：一个已在跑的 swarm 不会让你再起一个绑到别的端口，所以不停就换不了端口。
 
 ```sh
 # 1. 在 target 上发布整个 dashboard 端口段。每台 host 一次性。
@@ -89,7 +90,7 @@ scripts/open-dashboard.sh --root <root> --target <target> --key <key> --tailnet
 
 **绝不用别的方式暴露 dashboard。** 第 1 步的 `tailscale serve` 是唯一被认可的路径：不要自己写端口转发或 proxy，不要自己加 `ssh -L`，不要改 `pack_web` 绑定的地址。它绑 `127.0.0.1` 是刻意的，好让没有 tailscale 的环境行为不变；在它前面加任何东西，都等于把一块带 Teardown 按钮的看板发布给所有能连到的人。上面这几步走不通就说走不通，不要临时发明一条路。
 
-**第 2 步会打断 swarm 正在做的事，动手前必须问人**，并说清会打断什么（`read swarm` 能看到哪些 role 是 `BUSY`）。固定端口是便利，别人跑到一半的链路不是。第 1 步每台 host 只做一次，`tailscale serve status` 里已经有这个段就直接跳到第 2 步。
+**第 2 步会打断 swarm 正在做的事，动手前必须问人**，并说清会打断什么（Dashboard 的 role heats 能看到哪些 role 在忙）。固定端口是便利，别人跑到一半的链路不是。第 1 步每台 host 只做一次，`tailscale serve status` 里已经有这个段就直接跳到第 2 步。
 
 #### dashboard 端口分配
 
