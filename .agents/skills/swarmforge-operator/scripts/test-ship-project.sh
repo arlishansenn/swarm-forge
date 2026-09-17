@@ -78,9 +78,12 @@ add_commit() { # $1 = message -> echoes the new full sha
   git -C "$ROOT" rev-parse HEAD
 }
 
-add_card() { # $1 = name, $2 = lane
+add_card() { # $1 = name, $2 = lane, $3 = card text (optional)
   printf '%s\t%s\t%s\t%s\t%s\t0\tutility\n' "$1" "$2" "$(ts 1)" "$(ts 1)" "$1" \
     >> "$ROOT/.swarmforge/board/tasks.tsv"
+  # pack_board's write-body! puts the New Task text here, under the card's own
+  # name. This is where the operator's `#N` lives.
+  [ $# -lt 3 ] || printf '%s\n' "$3" > "$ROOT/.swarmforge/board/$1.txt"
 }
 
 # A terminal delivery record in the MASTER inbox, stamped non-forwarding so
@@ -174,13 +177,39 @@ run_ship
 check "dirty exit" 6 "$RC"
 has "dirty names the file" "$OUT" 'leftover.txt'
 
-# 7. delivery_attention blocks.
+# 7. A permanently failed delivery blocks. This repository's own handoffd
+#    (fail! -> handoffs/failed/) is the path that fires here; the lieutenant
+#    lineage's delivery_attention/ is checked too so the gate survives that
+#    sync. Checking only the latter was a gate that could never fire.
+happy failedroot
+mkdir -p "$ROOT/.swarmforge/handoffs/failed"
+touch "$ROOT/.swarmforge/handoffs/failed/50_stuck.handoff"
+run_ship
+check "failed at root exit" 6 "$RC"
+has "failed at root named" "$OUT" '50_stuck.handoff'
+
+happy failedworktree
+mkdir -p "$ROOT/.worktrees/cleaner/.swarmforge/handoffs/failed"
+touch "$ROOT/.worktrees/cleaner/.swarmforge/handoffs/failed/51_stuck.handoff"
+run_ship
+check "failed in worktree exit" 6 "$RC"
+has "failed in worktree named" "$OUT" '51_stuck.handoff'
+
 happy attention
 mkdir -p "$ROOT/.swarmforge/delivery_attention"
 touch "$ROOT/.swarmforge/delivery_attention/failed-delivery"
 run_ship
 check "attention exit" 6 "$RC"
 has "attention named" "$OUT" 'failed-delivery'
+
+# 7b. An EMPTY failed/ tree must not block. prepare-handoff-dirs! creates these
+#     directories for every worktree the moment a swarm first starts, so a gate
+#     that fired on their existence would refuse every managed project forever.
+happy failedempty
+mkdir -p "$ROOT/.swarmforge/handoffs/failed" "$ROOT/.worktrees/cleaner/.swarmforge/handoffs/failed"
+run_ship
+check "empty failed dirs do not block" 8 "$RC"
+has "empty failed dirs report none" "$OUT" 'failed deliveries: none'
 
 # 8. THE window this verb exists for: the board says done and the delivery
 #    record exists, but the commit is not an ancestor of HEAD because the
@@ -264,7 +293,79 @@ ARGS=$(cat "$STUB/pr-create.args")
 hasnt "lieutenant card emits no Closes" "$ARGS" 'Closes #'
 has "lieutenant card still listed" "$ARGS" 'harden the importer'
 
-# 18. Missing --root is a usage error, not a crash.
+# 18. --issue puts Closes lines in the body for a card nobody named after an
+#     issue. This is the path that matters: most cards are cut in the Dashboard
+#     by the operator or the lieutenant, so the card name carries no issue
+#     number and the caller is the only one who knows it.
+new_project issueflag
+C=$(add_commit work)
+add_card "harden the importer" done
+add_delivery "harden the importer" "$C"
+run_ship --issue 41 --issue '#42' --body-file "$WORK/body.md"
+check "--issue exit" 0 "$RC"
+ARGS=$(cat "$STUB/pr-create.args")
+has "--issue emits Closes" "$ARGS" 'Closes #41'
+has "--issue strips a leading hash" "$ARGS" 'Closes #42'
+
+# 19. A base that moved under the swarm is reported, never blocking: the work
+#     is already done, so refusing would strand it. run issue blocks on the
+#     same condition because it is about to START work on that base.
+happy behind
+OTHER=$WORK/behind/other
+# -b main is load-bearing: `git init --bare` leaves HEAD on `master`, so a
+# plain clone of this origin lands on an unborn branch and the push below
+# silently does nothing — which would make this case pass against code that
+# never counts `behind` at all.
+git clone --quiet -b main "$WORK/behind/origin.git" "$OTHER" 2>/dev/null
+git -C "$OTHER" config user.email t@t; git -C "$OTHER" config user.name t
+echo moved >> "$OTHER/f"; git -C "$OTHER" add f
+git -C "$OTHER" commit --quiet -m 'someone merged a PR'
+git -C "$OTHER" push --quiet origin main 2>/dev/null
+run_ship --body-file "$WORK/body.md"
+check "behind base still ships" 0 "$RC"
+has "behind base counted" "$OUT" 'behind 1'
+has "behind base warns" "$OUT" 'WARN=the swarm built on a base that has moved'
+has "behind base noted in the PR body" "$(cat "$STUB/pr-create.args")" 'NOTE: this work was built on a base that has since moved'
+
+# 20. The card text carries `#N`, which is how a Dashboard-cut card maps back
+#     to its issue. Only the cards BEING SHIPPED are read: a #N sitting in some
+#     other card's text must not end up in this PR.
+new_project cardtext
+C=$(add_commit work)
+add_card "harden the importer" done "按 #77 做，另见 #78"
+add_delivery "harden the importer" "$C"
+add_card "not in this ship" waiting "这张卡提到 #999"
+run_ship
+check "card text pass 1 exit" 8 "$RC"
+has "card text previewed before the PR" "$OUT" 'will close: 77 78'
+hasnt "other cards contribute nothing" "$OUT" '999'
+run_ship --body-file "$WORK/body.md"
+ARGS=$(cat "$STUB/pr-create.args")
+has "card text emits first Closes" "$ARGS" 'Closes #77'
+has "card text emits second Closes" "$ARGS" 'Closes #78'
+hasnt "no Closes from an unshipped card" "$ARGS" 'Closes #999'
+
+# 21. --issue and the card text merge and deduplicate rather than fight.
+new_project cardtextmerge
+C=$(add_commit work)
+add_card "harden the importer" done "按 #77 做"
+add_delivery "harden the importer" "$C"
+run_ship --issue 77 --issue 80 --body-file "$WORK/body.md"
+check "merge exit" 0 "$RC"
+ARGS=$(cat "$STUB/pr-create.args")
+check "77 appears exactly once" 1 "$(printf '%s' "$ARGS" | grep -c 'Closes #77')"
+has "--issue still adds its own" "$ARGS" 'Closes #80'
+
+# 22. A card with no text at all is not an error.
+new_project cardnotext
+C=$(add_commit work)
+add_card "silent card" done
+add_delivery "silent card" "$C"
+run_ship
+check "no card text exit" 8 "$RC"
+has "no card text reports none" "$OUT" 'will close: none'
+
+# 23. Missing --root is a usage error, not a crash.
 OUT=$("$SHIP" --local 2>&1); RC=$?
 check "no --root exit" 2 "$RC"
 has "no --root prints usage" "$OUT" 'Usage: ship-project.sh'

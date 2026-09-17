@@ -1253,11 +1253,15 @@ Done」，没有第七步；`upstream/lieutenant` 整个分支的 prompt、脚�
 跨出自己 prompt 的即兴发挥，Attention 与 board 都不会留下这次动作的痕迹。
 
 ```sh
-scripts/ship-project.sh --root <product-root> \
+scripts/ship-project.sh --root <managed-project-root> \
   [--target user@host] [--key <path>] [--local] \
-  [--branch <name>] [--base <name>] [--test-cmd <cmd>] \
+  [--branch <name>] [--base <name>] [--test-cmd <cmd>] [--issue <N>]... \
   [--body-file <path>] [--dry-run]
 ```
+
+**它不走 Dashboard。** 看板、handoff、git 全部从 managed project 自己磁盘上读，所以
+`pack_web` 没开也能跑，**Forge 下的 project 也能跑** —— 那种 project 根本没有自己的
+`dashboard-url`（`swarmforge.bb` 的 `run-project!` 不起 `pack_web`，只有 Forge 自己那一个）。
 
 ### 五道门，按顺序，任一失败就停
 
@@ -1272,13 +1276,27 @@ scripts/ship-project.sh --root <product-root> \
 在角色 lane 里的卡**阻断**（活干到一半，现在发就是把它切断）；`waiting` 卡**只报
 不阻**，计划没做完不是拒绝发布已经做完那部分的理由。
 
-**C Attention。** `.swarmforge/delivery_attention/` 非空就阻断。那是 `handoffd` 记下的
-一次投递失败且一直没好；覆在它上面发布等于发一棵链条从来没闭合的树。
+**C 投递失败。** 一次失败且一直没好的投递意味着一棵链条从来没闭合，覆在它上面发布
+就是发一棵缺一跳的树。**两条路径都查**，因为两条血统给同一件事起了不同的名字：
+
+- `handoffs/*/failed/`（每个 worktree 一份）—— `handoffd.bb` 的 `fail!` 把永久失败的
+  handoff 挪到这里。**本仓自己的 main 血统代码写的是这个，今天会触发的也是这个。**
+- `.swarmforge/delivery_attention/` —— lieutenant 血统给同一状态的名字。本仓没有，留着是
+  为了同步那条分支之后这道门仍然有效。
+
+只查 `delivery_attention/` 曾经是个 bug：本仓根本不创建那个目录，所以这道门**每次都
+静静地放行** —— 一道永远不会触发的门比没有门更坑，它看起来像保护。注意空目录不算：
+`prepare-handoff-dirs!` 给每个 worktree 都建了 `failed/`。
 
 **D git 卫生。** 工作区有未提交改动就阻断并点名文件，**绝不代你 commit** —— swarm
-跑完后还在产品 checkout 工作区里的东西，不是某个角色的残留就是人的手改，两者
+跑完后还在 managed project 工作区里的东西，不是某个角色的残留就是人的手改，两者
 都不该进一个没人 review 过的 PR。随后 `git fetch origin`，BASE 默认 `origin/main`，
 没有就 `origin/master`，都没有就停下来说先加 remote。
+
+**落后只报不阻。** 报告里的 `behind N` 和一条 `WARN=` 告诉你 swarm 是在一个已经移动了的
+ base 上干的活 —— 就是「合并后没人 `git pull`」那个坑换了扇门进来。`run issue` 在同一个
+条件上是**拒绝**，因为它正要在那上面**开工**；这里活已经干完了，拒绝只会把它扒在那里。
+同一句话会跟进 PR 正文。
 
 **E 验证。** 自动发现入口（`make test` / `npm test` / `pytest` / `./gradlew test`），
 `--test-cmd` 可覆盖。**红就阻断，没有绕过的 flag** —— 一个 `--allow-failing-tests`
@@ -1318,10 +1336,20 @@ point found)`，并把这一句带进 PR 正文。
 
 ### PR 正文：字段归脚本，散文归你
 
-与 `run issue` 同一条分工，但 `Closes` 的规矩不同。**只有卡名形状是
-`issue-<N>-<slug>`（这套工具链自己铸的那个形状）时才发 `Closes #N`。**
-lieutenant 切的卡是人或模型命的名，带不了可靠的 issue 号，所以从它身上
-**什么都不推** —— 关错 issue 比一个都不关更坏。
+与 `run issue` 同一条分工，但 `Closes` 有**三个来源，并集去重，三个都不猜**：
+
+**卡文本里的 `#N`。** 卡文本就是 operator 在 New Task 里敲的东西（`pack_board` 的
+`write-body!` 写在 `.swarmforge/board/<卡名>.txt`），它带着 issue 号。**只读本次要发的
+那几张卡**，不扫整块板 —— 不在这个 PR 里的卡不得往里面放 `Closes`。
+
+**`--issue N`（可重复）。** 卡文本里没写、或要补一个时用。`#42` 和 `42` 都收。
+
+**卡名推导，只对 `issue-<N>-<slug>` 生效。** 那是 `run-issue.sh` 自己铸的形状。这一条
+**是精确形状匹配，不是扫描**，因为卡名是**推导出来的**；卡文本是一个正对着 issue 的
+人**手敲的**，这是扫它公平而扫卡名不公平的区别。
+
+推导结果在报告的 `will close:` 一行里，而且它印在**停在 `NEEDS_PR_BODY` 那一趟**，
+比 PR 早 —— 推错了还有一趟可以改。
 
 脚本追加的是卡列表、验证结果、看板计数和发布源路径；你写的是读过 diff 才写得
 出来的那几段。空的或不存在的 `--body-file` 都是硬失败，**不回退到元数据正文**：
@@ -1449,6 +1477,21 @@ daemon 仍在运行。
 命名的卡不产生任何 `Closes` 行。这五处若被改坏都会红（已实测：去掉「不是 HEAD 祖先」阻断、
 去掉脏工作区门、去掉 PR 幂等检查、把 `waiting` 当成 live、去掉测试红阻断）。
 
+`test-ship-project.sh` 后来又补了三组，对应本仓真实血统而不是 upstream 文档：
+一次**永久失败的投递**在 project 根的 `handoffs/failed/` 与某个 worktree 的
+`handoffs/failed/` 里各阻断一次（本仓 `handoffd.bb` 的 `fail!` 写的就是这里），而**空的**
+`failed/` 目录不阻断（`prepare-handoff-dirs!` 给每个 worktree 都建了它，对存在性告警会
+永远拒绝每一个 project）；`--issue` 把 `Closes` 写进正文，因为大多数卡是 Dashboard 上切的、
+卡名带不了 issue 号；以及 **base 在 swarm 干活期间被别人推进过**时照发不误，但报告里出现
+`behind N` 与一条 `WARN=`，PR 正文里出现对应的 `NOTE:`。最后这条的 fixture 里
+`git clone -b main` 是承重的：`git init --bare` 把 HEAD 留在 `master`，不指定分支的 clone
+会落在一个未出生的分支上、后面那个 push 悄悄什么也没干，于是这条用例会对着一份根本不算
+`behind` 的实现照样通过。
+
+卡文本那条路径自己带三个用例：`#N` 从**本次要发的**卡里读出来并出现在 `will close:` 与
+`Closes` 里、另一张 `waiting` 卡文本里的 `#999` 一个字都不进来（读整块板会红）、`--issue`
+与卡文本合并后同一个号只出现一次（去掉 `sort -u` 会红）。没有卡文本的卡报 `will close: none`
+而不是报错。
 `scripts/test-open-swarm.sh` 和 `scripts/test-open-dashboard.sh` 对着打了桩的
 cmux/ssh/curl 跑这两条流程,覆盖 topology 配对、复用、修复、停机、drift、无法解析的
 mutation 输出、隧道复用,以及端口冲突时的回退。`test-open-dashboard.sh` 还额外给 `ps`
