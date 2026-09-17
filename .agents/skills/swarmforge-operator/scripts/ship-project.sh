@@ -217,12 +217,18 @@ AW_WARN=$(printf '%s\n' "$AW" | grep '^WARN=' || true)
 # The window this verb exists to refuse: the board says done, the delivery
 # record exists, and the commit has not reached the product HEAD yet because
 # the master is still merging it. Shipping here loses a card silently.
-MISSING=''
+MISSING='' CARD_ISSUES=''
 while IFS=$'\t' read -r task commit; do
   [ -n "${commit:-}" ] || continue
   in_root "git merge-base --is-ancestor $(printf '%q' "$commit") HEAD" >/dev/null 2>&1 \
     || MISSING="${MISSING}${MISSING:+, }$task ($commit)"
+  # The card text is what the operator typed into New Task, and it carries the
+  # issue number. Only the cards BEING SHIPPED are read, never the whole board:
+  # a card that is not in this PR must not put a Closes line in it.
+  CARD_ISSUES="$CARD_ISSUES $(run_remote "grep -o '#[0-9][0-9]*' $(printf '%q' "$ROOT/.swarmforge/board/$task.txt") 2>/dev/null" | tr -d '#' | tr '\n' ' ' || true)"
 done <<< "$CARDS"
+CARD_ISSUES=$(printf '%s\n' $CARD_ISSUES | sort -un | tr '\n' ' ')
+CARD_ISSUES=${CARD_ISSUES% }
 [ -z "$MISSING" ] || block "delivered but not in HEAD yet — the master is still merging, re-run in a moment: $MISSING"
 
 # ---------- gate E: tests ----------
@@ -249,6 +255,21 @@ else
   block "tests failed: $TESTS_CMD — run it yourself in $ROOT to see the output"
 fi
 
+# Three sources, none of them a guess, merged and deduplicated:
+#   --issue N        the caller says it. Always available, always wins nothing
+#                    and loses nothing — it is just another number in the set.
+#   card text        `#<digits>` in what the operator typed into New Task.
+#   card name        the exact `issue-<N>-<slug>` shape run-issue.sh mints.
+# The card-NAME match stays exact rather than becoming a scan, because the name
+# is derived, not typed. The card TEXT is typed by a human who is looking at
+# the issue, which is what makes scanning it fair game here and not there.
+closes_numbers() {
+  { printf '%s\n' "$CARDS" | awk -F'\t' '
+      match($1, /^issue-[0-9]+-/) { print substr($1, 7, RLENGTH - 7) }'
+    printf '%s\n' $ISSUES $CARD_ISSUES
+  } | { grep -E '^[0-9]+$' || true; } | sort -un
+}
+
 [ -n "$BRANCH" ] || BRANCH="feat/swarm-$PROJECT-$(date -u +%Y%m%d)"
 TITLE="[swarm] $PROJECT: $(printf '%s\n' "$CARDS" | awk -F'\t' 'NF { print $1; exit }')"
 [ "$TITLE" != "[swarm] $PROJECT: " ] || TITLE="[swarm] $PROJECT: ${MISSION:-published from the swarm board}"
@@ -273,6 +294,11 @@ report() {
   if [ -n "$COMMITS" ]; then printf '%s\n' "$COMMITS" | sed 's/^/  /'
   else printf '  (none)\n'; fi
   printf 'tests: %s%s\n' "${TESTS_CMD:-<none>}" " -> $TESTS_RESULT"
+  # Printed BEFORE the PR is opened, on the pass that stops at NEEDS_PR_BODY,
+  # so the operator sees exactly which issues are about to be closed while
+  # there is still a pass left to drop a wrong one with --branch/--issue.
+  WILL_CLOSE=$(closes_numbers | tr '\n' ' '); WILL_CLOSE=${WILL_CLOSE% }
+  printf 'will close: %s\n' "${WILL_CLOSE:-none}"
   printf 'branch: %s\ntitle: %s\n' "$BRANCH" "$TITLE"
   [ -z "$AW_WARN" ] || printf '%s\n' "$AW_WARN"
 }
@@ -343,11 +369,7 @@ if [ -z "$PR_URL" ]; then
   # an exact-shape match, never a scan for `#<digits>`: a loose scan would find
   # a PR number or a `#1 priority` in card text and close the wrong issue,
   # which is worse than closing none.
-  CLOSES=$(
-    { printf '%s\n' "$CARDS" | awk -F'\t' '
-        match($1, /^issue-[0-9]+-/) { n = substr($1, 7, RLENGTH - 7); print "Closes #" n }'
-      for n in $ISSUES; do printf 'Closes #%s\n' "$n"; done
-    } | sort -u)
+  CLOSES=$(closes_numbers | sed 's/^/Closes #/')
   CARD_LINES=$(printf '%s\n' "$CARDS" | awk -F'\t' 'NF { printf "- %s (%s)\n", $1, $2 }')
   STALE_LINE=''
   [ "${BEHIND:-0}" = 0 ] || STALE_LINE=$(printf -- '- NOTE: this work was built on a base that has since moved; HEAD is %s commits behind origin/%s\n' "$BEHIND" "$BASE")

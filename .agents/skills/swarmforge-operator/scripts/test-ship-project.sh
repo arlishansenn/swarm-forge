@@ -78,9 +78,12 @@ add_commit() { # $1 = message -> echoes the new full sha
   git -C "$ROOT" rev-parse HEAD
 }
 
-add_card() { # $1 = name, $2 = lane
+add_card() { # $1 = name, $2 = lane, $3 = card text (optional)
   printf '%s\t%s\t%s\t%s\t%s\t0\tutility\n' "$1" "$2" "$(ts 1)" "$(ts 1)" "$1" \
     >> "$ROOT/.swarmforge/board/tasks.tsv"
+  # pack_board's write-body! puts the New Task text here, under the card's own
+  # name. This is where the operator's `#N` lives.
+  [ $# -lt 3 ] || printf '%s\n' "$3" > "$ROOT/.swarmforge/board/$1.txt"
 }
 
 # A terminal delivery record in the MASTER inbox, stamped non-forwarding so
@@ -324,7 +327,45 @@ has "behind base counted" "$OUT" 'behind 1'
 has "behind base warns" "$OUT" 'WARN=the swarm built on a base that has moved'
 has "behind base noted in the PR body" "$(cat "$STUB/pr-create.args")" 'NOTE: this work was built on a base that has since moved'
 
-# 20. Missing --root is a usage error, not a crash.
+# 20. The card text carries `#N`, which is how a Dashboard-cut card maps back
+#     to its issue. Only the cards BEING SHIPPED are read: a #N sitting in some
+#     other card's text must not end up in this PR.
+new_project cardtext
+C=$(add_commit work)
+add_card "harden the importer" done "按 #77 做，另见 #78"
+add_delivery "harden the importer" "$C"
+add_card "not in this ship" waiting "这张卡提到 #999"
+run_ship
+check "card text pass 1 exit" 8 "$RC"
+has "card text previewed before the PR" "$OUT" 'will close: 77 78'
+hasnt "other cards contribute nothing" "$OUT" '999'
+run_ship --body-file "$WORK/body.md"
+ARGS=$(cat "$STUB/pr-create.args")
+has "card text emits first Closes" "$ARGS" 'Closes #77'
+has "card text emits second Closes" "$ARGS" 'Closes #78'
+hasnt "no Closes from an unshipped card" "$ARGS" 'Closes #999'
+
+# 21. --issue and the card text merge and deduplicate rather than fight.
+new_project cardtextmerge
+C=$(add_commit work)
+add_card "harden the importer" done "按 #77 做"
+add_delivery "harden the importer" "$C"
+run_ship --issue 77 --issue 80 --body-file "$WORK/body.md"
+check "merge exit" 0 "$RC"
+ARGS=$(cat "$STUB/pr-create.args")
+check "77 appears exactly once" 1 "$(printf '%s' "$ARGS" | grep -c 'Closes #77')"
+has "--issue still adds its own" "$ARGS" 'Closes #80'
+
+# 22. A card with no text at all is not an error.
+new_project cardnotext
+C=$(add_commit work)
+add_card "silent card" done
+add_delivery "silent card" "$C"
+run_ship
+check "no card text exit" 8 "$RC"
+has "no card text reports none" "$OUT" 'will close: none'
+
+# 23. Missing --root is a usage error, not a crash.
 OUT=$("$SHIP" --local 2>&1); RC=$?
 check "no --root exit" 2 "$RC"
 has "no --root prints usage" "$OUT" 'Usage: ship-project.sh'
