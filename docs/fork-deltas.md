@@ -31,12 +31,10 @@ scenario，且尽量带一句「换成 upstream 的版本，本 scenario 失败�
 | 覆盖的东西 | capability |
 |---|---|
 | STATUS 行与跨 verb 唯一的退出码表 | `operator-verb-contract` |
-| `start swarm` | `swarm-start-safety` |
-| `stop swarm` | `swarm-stop-safety` |
+| `start-swarm.sh`（`provision forge` 的内部步骤，不再是公开 verb） | `swarm-start-safety` |
 | `dashboard` | `dashboard-access` |
-| `read swarm` | `role-state-reading` |
 | `wake role` / `talk role` | `role-message-delivery` |
-| `accept work` | `work-acceptance` |
+| `ship project` 读交付记录的那一半 | `work-acceptance` |
 | `ship project` | （随 verb 一起进 `SKILL.md`，未单列 capability） |
 | `start swarm` 的 snapshot 判定，以及 manifest 归谁写（ADR-0006） | `snapshot-install-safety` |
 | `provision forge` | `forge-provisioning` |
@@ -396,10 +394,13 @@ upstream 的其余改动并进 `pack-web-argv` 里。
 ### D-7 `swarmforge-operator` skill
 
 **位置：** `.agents/skills/swarmforge-operator/`
-**内容：** provision forge、open / start / stop / read swarm、wake / talk role、dashboard、
-accept work、ship project 十个动词，及其 `test-*.sh` 测试。
+**内容：** provision forge、open swarm、dashboard、wake / talk role、ship project 六个动词，
+及其 `test-*.sh` 测试，外加内部实现 `start-swarm.sh`。
 **2026-09-17（issue #155、ADR-0007）：** `onboard project`、`update SwarmForge scripts`、
 `run issue` 三个动词连同测试一并删除，本 fork 只保留 lieutenant forge 一条路径。
+**2026-09-17（issue #158、ADR-0008）：** 再退 `read swarm`、`stop swarm`，`start swarm`
+降级为内部实现，`accept work` 折进 `ship project`。`role-state-reading` 与
+`swarm-stop-safety` 两份 capability 整体退役。
 **upstream 无对应物。**
 
 ### D-8 remote ssh 调用一律带 `-n`

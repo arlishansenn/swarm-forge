@@ -1,24 +1,30 @@
 #!/usr/bin/env bash
-# test-accept-work.sh — end-to-end checks for accept-work.sh against a
-# stubbed git (issue #17; narrowed to master-only delivery records by issue
-# #39). Run: bash scripts/test-accept-work.sh. Exits non-zero on any
-# failure. Local-mode cases run --local (same convention as
-# test-stop-swarm.sh), so ssh is never invoked there; find/sed run for real
-# against fixture files under a temp ROOT, and only `git` is stubbed, for the
-# merge-base --is-ancestor exclusion check. A remote-mode case below (issue
-# #36) adds a stub ssh that actually simulates real ssh's own
-# stdin-forwarding behavior — see test-read-swarm.sh's stub comment for why
-# a naive argv-logging stub would not catch this bug.
+# test-ship-project-delivery.sh — checks for the delivery-record half of
+# ship-project.sh against a stubbed git. This was test-accept-work.sh until
+# issue #158 folded `accept work` into `ship project`; the cases are carried
+# over one by one, not rewritten.
 #
-# issue #39: accept-work.sh now requires a valid .swarmforge/roles.tsv with
-# exactly one worktree-name == master row before it will report anything —
-# every case below that expects STATUS=REPORTED calls mk_roles first. The
-# three roles.tsv-error cases (missing / 0 master / 2 master rows) are the
-# only ones that deliberately omit or misconfigure it.
+# WHY THIS IS A SECOND FILE AND NOT MERGED INTO test-ship-project.sh: the two
+# suites need opposite harnesses. test-ship-project.sh drives REAL git against
+# a real bare origin, because it asserts what the verb does to a repository
+# (branch created, pushed once, PR opened once). These cases assert how a
+# handoff header is read, and their fixtures carry invented commit hashes that
+# no real repository contains — so they need git stubbed. Forcing one harness
+# on both would mean rewriting one of them, which is exactly what the change
+# said not to do.
+#
+# Local-mode cases run --local so ssh is never invoked; find/sed run for real
+# against fixture files under a temp ROOT. A remote-mode case (issue #36) adds
+# a stub ssh that actually simulates real ssh's own stdin-forwarding behavior.
+#
+# Every case that expects a report calls mk_roles first: resolving the master
+# worktree needs a roles.tsv with exactly one worktree-name == master row. The
+# three roles.tsv-error cases (missing / 0 master / 2 master rows) are the only
+# ones that deliberately omit or misconfigure it.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-ACCEPT=$HERE/accept-work.sh
-WORK=$(mktemp -d /tmp/sf-accept-work-test.XXXXXX)
+SHIP=$HERE/ship-project.sh
+WORK=$(mktemp -d /tmp/sf-ship-delivery-test.XXXXXX)
 PASS=0 FAIL=0
 
 ok()   { PASS=$((PASS+1)); echo "  PASS $1"; }
@@ -34,12 +40,32 @@ cat > "$WORK/bin/git" <<'EOF'
 #!/usr/bin/env bash
 STUB=${STUB:?}
 printf 'git %s\n' "$*" >> "$STUB/calls.log"
-commit="" prev=""
-for a in "$@"; do
-  [ "$prev" = "--is-ancestor" ] && commit=$a
-  prev=$a
-done
-grep -qxF "$commit" "$STUB/shipped-commits" 2>/dev/null && exit 0 || exit 1
+# Drop a leading `-C <dir>` so the subcommand is always $1.
+[ "${1:-}" = "-C" ] && shift 2
+case "${1:-} ${2:-}" in
+  "merge-base --is-ancestor")
+    # TWO different questions reach this stub and they must not share an
+    # answer. `<commit> HEAD` asks "is the delivered work merged into the
+    # managed project checkout yet" — always yes in these fixtures, they are
+    # about header reading, not about the merge window. `<commit> origin/main`
+    # asks "was this already shipped", which is what shipped-commits drives.
+    commit=$3; ref=$4
+    [ "$ref" = "HEAD" ] && exit 0
+    grep -qxF "$commit" "$STUB/shipped-commits" 2>/dev/null && exit 0 || exit 1 ;;
+  "status --porcelain") exit 0 ;;                      # clean worktree
+  "fetch origin"|"fetch "*) exit 0 ;;
+  # Resolved, like real git: the verb compares this against `pwd -P`, and on
+  # macOS /tmp is a symlink to /private/tmp, so an unresolved answer makes a
+  # perfectly good root look like a subdirectory.
+  "rev-parse --show-toplevel") (cd "$ROOT_FOR_STUB" && pwd -P); exit 0 ;;
+  "rev-parse --verify")
+    case "$*" in *origin/main*) exit 0 ;; *) exit 1 ;; esac ;;
+  "rev-parse --short") printf 'abc1234\n'; exit 0 ;;
+  "rev-list --count")
+    case "$*" in *"origin/main..HEAD"*) printf '1\n' ;; *) printf '0\n' ;; esac; exit 0 ;;
+  "log --oneline") printf 'abc1234 work\n'; exit 0 ;;
+esac
+exit 0
 EOF
 chmod +x "$WORK/bin/git"
 
@@ -183,14 +209,36 @@ body
 EOF
 }
 
+# The cases below were written against `accept work`'s report, which printed
+# one `task:`/`commit:` block per unshipped task. ship-project prints the same
+# facts inside its `cards to ship:` block. This shim translates that block back
+# into the old line shape so each case's given/when/then is carried over
+# untouched — it is a test-side adapter, deliberately NOT a second output
+# format in the script.
+as_delivery_report() {
+  awk '
+    /^cards to ship:/ { incards = 1; next }
+    incards && /^[a-z]+ to ship:|^tests:|^branch:|^blockers:|^nothing was pushed/ { incards = 0 }
+    incards && /^  / {
+      line = $0; sub(/^  /, "", line)
+      p = index(line, "  ")
+      if (p) { printf "task: %s\ncommit: %s\n\n", substr(line, p + 2), substr(line, 1, p - 1) }
+      next
+    }
+    { print }
+  '
+}
 run() {
-  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB bash "$ACCEPT" --local --root "$ROOT" 2>&1)
+  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB ROOT_FOR_STUB=$ROOT \
+    bash "$SHIP" --local --root "$ROOT" --dry-run 2>&1)
   RC=$?
+  OUT=$(printf '%s\n' "$OUT" | as_delivery_report)
 }
 run_remote() {  # runs against $ROOT via --target instead of --local
-  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB \
-    bash "$ACCEPT" --target test-target --key /dev/null --root "$ROOT" 2>&1)
+  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB ROOT_FOR_STUB=$ROOT \
+    bash "$SHIP" --target test-target --key /dev/null --root "$ROOT" --dry-run 2>&1)
   RC=$?
+  OUT=$(printf '%s\n' "$OUT" | as_delivery_report)
 }
 
 # checksum every file under every inbox/ tree in the fixture — used to assert
@@ -200,9 +248,9 @@ inbox_checksum() {
     | sort -z | xargs -0 cksum 2>/dev/null
 }
 
-echo "== RED/GREEN suite for accept-work.sh =="
+echo "== delivery-record suite for ship-project.sh =="
 
-if [ ! -f "$ACCEPT" ]; then
+if [ ! -f "$SHIP" ]; then
   echo "script missing — RED confirmed, all cases fail"; exit 1
 fi
 
@@ -214,8 +262,11 @@ reset_fixture; reset_stub
 mk_roles coder master "$ROOT"
 run
 check "clean exit" 0 "$RC"
-printf '%s\n' "$OUT" | head -1 | grep -q '^STATUS=REPORTED$' \
-  && ok "clean status is REPORTED" || bad "clean status is REPORTED" "$OUT"
+# Was STATUS=REPORTED when this was a pure report verb. The merged verb says
+# what it actually did: with no unshipped delivery record there is nothing to
+# ship, and it pushed nothing.
+printf '%s\n' "$OUT" | head -1 | grep -q '^STATUS=NOTHING_TO_SHIP$' \
+  && ok "clean status is NOTHING_TO_SHIP" || bad "clean status is NOTHING_TO_SHIP" "$OUT"
 ! printf '%s\n' "$OUT" | grep -q '^WARN=' \
   && ok "clean: no WARN" || bad "clean: no WARN" "$OUT"
 
@@ -336,9 +387,13 @@ mk_roles coder master "$ROOT"
 mk_completed - 00_frac.handoff frac-task dddddddd03 2026-08-24T17:26:56.932911Z
 run
 check "fractional completed_at exit" 0 "$RC"
-printf '%s\n' "$OUT" | grep -q '^completed_at: 2026-08-24T17:26:56.932911Z$' \
-  && ok "fractional completed_at reported unchanged" \
-  || bad "fractional completed_at reported unchanged" "$OUT"
+# The old verb printed completed_at and this asserted it round-tripped
+# verbatim. ship project does not print it at all, so that guard has nothing
+# left to protect. What still matters is that a fractional timestamp does not
+# break the path — proven by the record being reported at all.
+printf '%s\n' "$OUT" | grep -q '^commit: dddddddd03$' \
+  && ok "fractional completed_at does not break the delivery path" \
+  || bad "fractional completed_at does not break the delivery path" "$OUT"
 
 # 9. same task, multiple terminal returns with DIFFERENT completed_at ->
 #    newest wins, judged by the completed_at STRING (not filename): the
@@ -374,9 +429,9 @@ check "mixed-width exit" 0 "$RC"
 printf '%s\n' "$OUT" | grep -q '^commit: ffff000001$' \
   && ok "mixed-width: fractional record wins over same-second no-fraction one" \
   || bad "mixed-width: fractional record wins over same-second no-fraction one" "$OUT"
-printf '%s\n' "$OUT" | grep -q '^completed_at: 2026-08-24T17:26:55.000001Z$' \
-  && ok "mixed-width: completed_at printed verbatim, not normalized" \
-  || bad "mixed-width: completed_at printed verbatim, not normalized" "$OUT"
+# (dropped with the merge: ship project prints no completed_at, so
+#  "printed verbatim, not normalized" has nothing to assert. The commit
+#  assertion above is what proves norm() picked the right record.)
 N=$(printf '%s\n' "$OUT" | grep -c '^task: mixedwidth-task$')
 check "mixed-width: exactly one entry" 1 "$N"
 
@@ -633,7 +688,11 @@ mk_roles coder master "$ROOT" cleaner cleaner "$ROOT/.worktrees/cleaner"
 mk_board board-task coder
 mk_completed - 00_t.handoff board-task 5555555512 50 git_handoff cleaner coder
 run
-check "board disagree exit" 0 "$RC"
+# Was exit 0: a report verb has no opinion about a live card. The merged verb
+# is an Effect verb and a card sitting in a role lane means work is in flight,
+# so it refuses to publish (6 BLOCKED) — while still printing the report, which
+# is what keeps the WARN and the record below visible.
+check "board disagree exit" 6 "$RC"
 printf '%s\n' "$OUT" | grep -q '^WARN=board-task is in Board lane coder, not done' \
   && ok "board disagree: WARNs about the lane" \
   || bad "board disagree: WARNs about the lane" "$OUT"

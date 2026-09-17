@@ -218,7 +218,7 @@ cockpit. It is historical and is not a `get-swarm-forge` product.
 
 This fork ships `.agents/skills/swarmforge-operator/`, a control-surface skill
 for a local agent session that drives a running SwarmForge project over ssh:
-ten verbs, a single exit-code table, dashboard port allocation, and the
+six verbs, a single exit-code table, dashboard port allocation, and the
 two-pass `ship project` pipeline. It is not part of upstream.
 
 See [the operator runbook](docs/operator-runbook.md). The runbook is written in
