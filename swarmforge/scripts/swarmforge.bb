@@ -117,7 +117,17 @@
   (let [exclude-file (fs/path (sh-out "git" "-C" (str (:working-dir ctx)) "rev-parse" "--git-path" "info/exclude"))]
     (fs/create-dirs (fs/parent exclude-file))
     (ensure-in-file! exclude-file ".swarmforge/")
-    (ensure-in-file! exclude-file ".worktrees/")))
+    (ensure-in-file! exclude-file ".worktrees/")
+    ;; forge.bb's instantiate! writes mission.md into the project working tree
+    ;; and never commits it, so every forge-created project is dirty from birth.
+    ;; Excluded here rather than in .gitignore so SwarmForge does not write a
+    ;; line into a file the project's own authors own, and so the exclusion
+    ;; disappears with the clone instead of being published.
+    ;; Cost, verified not assumed: tracking it afterwards needs `git add -f`,
+    ;; because an excluded path refuses a plain add. Accepted -- a mission that
+    ;; SwarmForge wrote and only the Dashboard reads is not project source, and
+    ;; one -f beats every forge-created project being dirty from birth.
+    (ensure-in-file! exclude-file "mission.md")))
 
 (defn initialize-git-repo! [ctx]
   (when-not (fs/exists? (fs/path (:working-dir ctx) ".git"))

@@ -385,6 +385,30 @@ delta 能做得这么小、merge 冲突面这么窄的原因。来源 issue #78�
 upstream 若改了那行，保留 fork 的 `(pack-web-argv script (:working-dir ctx))` 形状，把
 upstream 的其余改动并进 `pack-web-argv` 里。
 
+### D-11 `ensure-runtime-git-excludes!` 排掉 `mission.md`
+
+**差异：** `swarmforge.bb` 的 `ensure-runtime-git-excludes!` 在 `.swarmforge/`、`.worktrees/`
+之外多写一行 `mission.md` 进 `.git/info/exclude`。upstream 只有前两条。
+
+**为什么：** `forge.bb` 的 `instantiate!` 建 project 时 spit 一个 `mission.md` 到工作区，
+**既不 commit 也不 ignore**，于是每个 Forge 建出来的 Managed project 一诞生就是脏的。
+`ship project` 的 gate D 一律拒绝有未提交改动的树，所以每个 project 第一次发布前都要人工
+处理一次同一个文件——永远成立的拒绝，等于没人看的拒绝。来源 issue #162。
+
+写 `info/exclude` 而不是 `.gitignore`：SwarmForge 不该往 project 自己的作者拥有的文件里
+塞行，而且这条排除应该随 clone 消失，不该被发布出去。
+
+**代价（实测，不是推测）：** 之后想跟踪它需要 `git add -f`，被排除的路径会拒绝裸 `add`。
+接受这个代价——一个 SwarmForge 写的、只有 Dashboard 读的 mission 不是 project 源码。
+
+**钉子：** `test/swarmforge/mission_exclude_check.bb`（`bb test/swarmforge/mission_exclude_check.bb`）
+断言三件事：排除后 `mission.md` 不再出现在 `git status`、真正的未跟踪文件仍然可见、
+`git add -f` 仍然可用。
+
+**merge 注意：** 冲突只可能落在 `ensure-runtime-git-excludes!` 这一个函数里。upstream 若
+改了它，保留末尾那行 `(ensure-in-file! exclude-file "mission.md")`。如果哪天 upstream 自己
+决定了 `mission.md` 的归属（commit 它，或写进 `.gitignore`），这条 delta 就该删掉。
+
 ---
 
 ## A 类：落在 upstream 没有的文件里，merge 不碰
