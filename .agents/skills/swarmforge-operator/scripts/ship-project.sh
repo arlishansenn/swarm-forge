@@ -619,30 +619,29 @@ AW_WARN=$(printf '%s\n' "$AW_WARN" | grep -v '^$' || true)
 # The window this verb exists to refuse: the board says done, the delivery
 # record exists, and the commit has not reached the product HEAD yet because
 # the master is still merging it. Shipping here loses a card silently.
-MISSING='' CARD_ISSUES=''
+MISSING=''
 while IFS=$'\t' read -r task commit; do
   [ -n "${commit:-}" ] || continue
   in_root "git merge-base --is-ancestor $(printf '%q' "$commit") HEAD" >/dev/null 2>&1 \
     || MISSING="${MISSING}${MISSING:+, }$task ($commit)"
-  # The card text is what the operator typed into New Task, and it carries the
-  # issue number. Only the cards BEING SHIPPED are read, never the whole board:
-  # a card that is not in this PR must not put a Closes line in it.
-  CARD_ISSUES="$CARD_ISSUES $(run_remote "grep -o '#[0-9][0-9]*' $(printf '%q' "$ROOT/.swarmforge/board/$task.txt") 2>/dev/null" | tr -d '#' | tr '\n' ' ' || true)"
 done <<< "$CARDS"
-CARD_ISSUES=$(printf '%s\n' $CARD_ISSUES | sort -un | tr '\n' ' ')
-CARD_ISSUES=${CARD_ISSUES% }
 [ -z "$MISSING" ] || block "delivered but not in HEAD yet — the master is still merging, re-run in a moment: $MISSING"
 
-# Two sources, neither of them a guess, merged and deduplicated:
-#   card text        `#<digits>` in what the operator typed into New Task.
-#   --issue N        the caller says it, when the card text did not.
-# The card text is typed by a human who is looking at the issue, which is what
-# makes scanning it fair game. Nothing is inferred from the card NAME: a card
-# cut in the Dashboard is named by a human or a model and carries no reliable
-# issue number, and closing the wrong issue is worse than closing none.
+# One source, and it is not a guess: `--issue N`, said by the caller.
+#
+# Card text was a second source until issue #173. It is gone. A `#N` in what
+# the operator typed into New Task can mean "implement #195", "see the analysis
+# in #160", or "do not touch #203", and no regex separates those — the
+# difference lives in the sentence, not in the syntax. The first real PR this
+# verb opened derived two numbers and one of them was an unrelated issue that
+# four cards merely cited; once the card loop was fixed (#172) the same board
+# would have produced nine, at least five of them wrong. Closing the wrong
+# issue is worse than closing none.
+#
+# Nothing is inferred from the card NAME either: a card cut in the Dashboard is
+# named by a human or a model and carries no reliable issue number.
 closes_numbers() {
-  printf '%s\n' $CARD_ISSUES $ISSUES \
-    | { grep -E '^[0-9]+$' || true; } | sort -un
+  printf '%s\n' $ISSUES | { grep -E '^[0-9]+$' || true; } | sort -un
 }
 
 [ -n "$BRANCH" ] || BRANCH="feat/swarm-$PROJECT-$(date -u +%Y%m%d)"
@@ -670,9 +669,9 @@ report() {
   else printf '  (none)\n'; fi
   # Printed BEFORE the PR is opened, on the pass that stops at NEEDS_PR_BODY,
   # so the operator sees exactly which issues are about to be closed while
-  # there is still a pass left to drop a wrong one with --branch/--issue.
+  # there is still a pass left to add the missing ones with --issue.
   WILL_CLOSE=$(closes_numbers | tr '\n' ' '); WILL_CLOSE=${WILL_CLOSE% }
-  printf 'will close: %s\n' "${WILL_CLOSE:-none}"
+  printf 'will close: %s\n' "${WILL_CLOSE:-none — pass --issue N for each issue this PR closes}"
   printf 'branch: %s\ntitle: %s\n' "$BRANCH" "$TITLE"
   [ -z "$AW_WARN" ] || printf '%s\n' "$AW_WARN"
 }

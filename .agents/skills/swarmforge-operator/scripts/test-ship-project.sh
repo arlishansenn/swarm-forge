@@ -362,34 +362,34 @@ has "behind base counted" "$OUT" 'behind 1'
 has "behind base warns" "$OUT" 'WARN=the swarm built on a base that has moved'
 has "behind base noted in the PR body" "$(cat "$STUB/pr-create.args")" 'NOTE: this work was built on a base that has since moved'
 
-# 20. The card text carries `#N`, which is how a Dashboard-cut card maps back
-#     to its issue. Only the cards BEING SHIPPED are read: a #N sitting in some
-#     other card's text must not end up in this PR.
+# 20. Card text contributes NOTHING (issue #173). The same card text carries
+#     both flavours a regex cannot tell apart: #77 is the issue this card
+#     implements, #78 is one it merely cites. Deriving from either is how the
+#     first real PR this verb opened got an unrelated `Closes`.
 new_project cardtext
 C=$(add_commit work)
-add_card "harden the importer" done "按 #77 做，另见 #78"
+add_card "harden the importer" done "按 #77 做，分析另见 #78，别碰 #79 那条路径"
 add_delivery "harden the importer" "$C"
-add_card "not in this ship" waiting "这张卡提到 #999"
 run_ship
 check "card text pass 1 exit" 8 "$RC"
-has "card text previewed before the PR" "$OUT" 'will close: 77 78'
-hasnt "other cards contribute nothing" "$OUT" '999'
+has "card text derives nothing" "$OUT" 'will close: none'
 run_ship --body-file "$WORK/body.md"
 ARGS=$(cat "$STUB/pr-create.args")
-has "card text emits first Closes" "$ARGS" 'Closes #77'
-has "card text emits second Closes" "$ARGS" 'Closes #78'
-hasnt "no Closes from an unshipped card" "$ARGS" 'Closes #999'
+hasnt "the issue the card implements is not closed either" "$ARGS" 'Closes #77'
+hasnt "a merely cited issue is not closed" "$ARGS" 'Closes #78'
+has "the card is still listed" "$ARGS" 'harden the importer'
 
-# 21. --issue and the card text merge and deduplicate rather than fight.
-new_project cardtextmerge
+# 21. --issue is the whole source, and it deduplicates: the same number in
+#     both accepted spellings closes once.
+new_project issuededupe
 C=$(add_commit work)
 add_card "harden the importer" done "按 #77 做"
 add_delivery "harden the importer" "$C"
-run_ship --issue 77 --issue 80 --body-file "$WORK/body.md"
-check "merge exit" 0 "$RC"
+run_ship --issue 77 --issue '#77' --issue 80 --body-file "$WORK/body.md"
+check "dedupe exit" 0 "$RC"
 ARGS=$(cat "$STUB/pr-create.args")
 check "77 appears exactly once" 1 "$(printf '%s' "$ARGS" | grep -c 'Closes #77')"
-has "--issue still adds its own" "$ARGS" 'Closes #80'
+has "--issue adds the other number" "$ARGS" 'Closes #80'
 
 # 22. A card with no text at all is not an error.
 new_project cardnotext
