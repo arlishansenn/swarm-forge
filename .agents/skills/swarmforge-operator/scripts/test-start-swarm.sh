@@ -24,7 +24,7 @@ START=$HERE/start-swarm.sh
 WORK=$(mktemp -d /tmp/sf-start-swarm-test.XXXXXX)
 # Sibling test-*.sh files are inconsistent here (test-stop-swarm.sh/
 # test-open-swarm.sh/test-wake-talk.sh/test-read-swarm.sh/test-accept-work.sh
-# leave $WORK behind entirely; test-onboard-project.sh does an unconditional
+# leave $WORK behind entirely; test-ship-project.sh does an unconditional
 # `rm -rf "$WORK"` as its own last line) — neither is a real "clean up even
 # on early exit" convention, so a trap is used here instead: this script
 # already has an early `exit 1` path (missing start-swarm.sh) that a

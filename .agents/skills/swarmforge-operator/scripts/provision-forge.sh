@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # provision-forge.sh — provision forge (issue #144): one verb for upstream
 # README steps 2-4 — install a forge into an empty directory, start it, and
-# create its first project. Step 5 (New Task) is deliberately NOT here; that
-# is `run issue`'s ground.
+# create its first project. Step 5 (New Task) is deliberately NOT here: cards
+# are cut in the Dashboard or by the Host lieutenant.
 #
 # Exit codes / STATUS line:
 #   0 PROVISIONED   2 USAGE   4 DRIFT   5 ERROR   6 UNSAFE
@@ -227,9 +227,8 @@ else
   # SOURCE_COMMIT is unknown by construction: get-swarm-forge installs from a
   # branch tarball, which carries no commit id. read_manifest only ever reads
   # DIGEST=; the other two lines are provenance for humans.
-  # Trailing newline included, matching what update-swarmforge-scripts.sh
-  # writes: $(...) strips it, so it is added back by the printf that writes
-  # the file rather than carried in the variable.
+  # Trailing newline included: $(...) strips it, so it is added back by the
+  # printf that writes the file rather than carried in the variable.
   MANIFEST=$(printf 'SOURCE_COMMIT=unknown\nSOURCE_REPO=%s#%s\nDIGEST=%s' "$HELPER_URL" "$FORGE" "$DIGEST")
   remote "mkdir -p $(q "$ROOT/.swarmforge") && printf '%s\n' $(q "$MANIFEST") > $(q "$ROOT/.swarmforge/scripts-manifest")" \
     || die ERROR "could not write $ROOT/.swarmforge/scripts-manifest" 5

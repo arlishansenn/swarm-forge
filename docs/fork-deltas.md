@@ -37,12 +37,15 @@ scenario，且尽量带一句「换成 upstream 的版本，本 scenario 失败�
 | `read swarm` | `role-state-reading` |
 | `wake role` / `talk role` | `role-message-delivery` |
 | `accept work` | `work-acceptance` |
-| `run issue` | `issue-to-pr-pipeline` |
-| `update SwarmForge scripts` 与 `start swarm` 的 snapshot 判定，以及 manifest 归谁写（ADR-0006） | `snapshot-install-safety` |
-| `onboard project` | `project-onboarding` |
+| `ship project` | （随 verb 一起进 `SKILL.md`，未单列 capability） |
+| `start swarm` 的 snapshot 判定，以及 manifest 归谁写（ADR-0006） | `snapshot-install-safety` |
 | `provision forge` | `forge-provisioning` |
 
-**这十一个的用途和上面那八个不同。** 上面八个是 merge 验收用的：B 类差异，upstream 会碰。
+**`issue-to-pr-pipeline` 与 `project-onboarding` 已整体移除**（issue #155，ADR-0007）：
+`run issue`、`onboard project`、`update SwarmForge scripts` 三个 verb 随 Pack 路径一起退休。
+`snapshot-install-safety` 只剩两条 requirement——`start swarm` 的自管判定，与 ADR-0006。
+
+**这些的用途和上面那八个不同。** 上面八个是 merge 验收用的：B 类差异，upstream 会碰。
 D-7 是 A 类，merge 从不碰它——这十一个 spec 的用途是**让契约本身有个可验收的载体**。
 `SKILL.md` 说的是同一批事，但散文说不清「换成别的实现会不会失败」。
 
@@ -206,7 +209,7 @@ A 类差异的钉子在 `.agents/skills/swarmforge-operator/scripts/test-*.sh`�
 
 ```sh
 cd .agents/skills/swarmforge-operator/scripts
-bash test-run-issue.sh > /tmp/t.out 2>&1; tail -1 /tmp/t.out
+bash test-ship-project.sh > /tmp/t.out 2>&1; tail -1 /tmp/t.out
 ```
 
 `-X theirs` 与 `git checkout --theirs` 不是一回事。后者取整个文件，会把自动合并成功
@@ -393,8 +396,10 @@ upstream 的其余改动并进 `pack-web-argv` 里。
 ### D-7 `swarmforge-operator` skill
 
 **位置：** `.agents/skills/swarmforge-operator/`
-**内容：** open / start / stop / read swarm、wake / talk role、dashboard、accept work、
-onboard project、update SwarmForge scripts 等动词，及其 `test-*.sh` 测试。
+**内容：** provision forge、open / start / stop / read swarm、wake / talk role、dashboard、
+accept work、ship project 十个动词，及其 `test-*.sh` 测试。
+**2026-09-17（issue #155、ADR-0007）：** `onboard project`、`update SwarmForge scripts`、
+`run issue` 三个动词连同测试一并删除，本 fork 只保留 lieutenant forge 一条路径。
 **upstream 无对应物。**
 
 ### D-8 remote ssh 调用一律带 `-n`
@@ -412,8 +417,11 @@ onboard project、update SwarmForge scripts 等动词，及其 `test-*.sh` 测�
 
 **差异：** fork 的 Pack 分支（`two-pack`/`four-pack`/`six-pack`）自带一个默认指向
 `arlishansenn/swarm-forge` 的 `swarm` launcher，并且那个 launcher 的 first-run bootstrap
-是 staged-then-atomic-rename 安装、装完写 `.swarmforge/scripts-manifest`。`onboard project`
-从 fork 的 Pack 分支下载，原样安装，**不做任何解压后改写**。
+是 staged-then-atomic-rename 安装、装完写 `.swarmforge/scripts-manifest`。安装原样进行，
+**不做任何解压后改写**。
+
+**2026-09-17 起**：Pack 分支不再有 verb 消费（ADR-0007），这条差异的活跃载体是
+`get-swarm-forge` 与 forge 的 project-pack。三条 Pack 分支保留但不再安装。
 
 **为什么：** 见 `docs/adr/0001-script-snapshot-follows-this-fork.md` 与
 `docs/adr/0002-fork-owns-the-complete-pack-artifact.md`。照 upstream 流程 onboard 出来的
@@ -428,8 +436,8 @@ upstream 的 bootstrap 是 `rm -rf` 目标再 `cp -R`，不是崩溃安全的；
 先在同级 staging 装好再 rename 换入，manifest 一定写在原子安装之后。
 
 **issue #67 新增的一条暴露面：** upstream 在 `e5b7f9e` 加了 `get-swarm-forge` 安装器，
-默认 `default_repo_url="https://github.com/unclebob/swarm-forge"`。它绕过 `onboard project`
-与 Pack 分支，直接从 upstream 拉一整棵树——**正是 ADR-0001 要堵的那个陷阱的新入口**：这样
+默认 `default_repo_url="https://github.com/unclebob/swarm-forge"`。它直接从 upstream 拉
+一整棵树——**正是 ADR-0001 要堵的那个陷阱的新入口**：这样
 装出来的 managed project 拿到的 snapshot 里没有 D-1，也没有 D-5，handoff 链会卡死而不报错。
 本 fork 把默认值改为 `arlishansenn/swarm-forge`，保留 `SWARMFORGE_REPO_URL` 覆盖，
 所以「有意装别的树」仍然可以，只是不再是默认。
@@ -445,9 +453,9 @@ pack 分支，所以这行默认值现在同时决定 host 脚本与三个 pack 
 **钉子：**
 - `script_test.clj` 的 `get-swarm-forge-installs-this-fork-by-default`（issue #67）：
   默认源是本 fork、没有 unclebob 默认残留、`SWARMFORGE_REPO_URL` 覆盖仍在
-- `test-onboard-project.sh`：`launcher bytes preserved from the archive, not patched`、
-  `launcher still executable after onboarding`、`launcher mode preserved from the archive`、
-  `onboard downloads the pack from the fork`、`no upstream URL left in onboard-project.sh`
+- ~~`test-onboard-project.sh`~~ **（2026-09-17 删除，issue #155）**：它钉的是
+  `onboard project` 不改写 launcher 字节这一条。verb 删除后这条钉子没有了；同一条决定
+  （ADR-0002：安装是纯解压、不事后 patch）现在只由下面那组 launcher 测试钉着。
 - 各 Pack 分支的 `test-swarm-launcher.sh`（29 条）：manifest digest 与
   `start swarm` 的 `scripts_digest` 一致、安装中途被 kill 目标树不受影响、
   失败不留半装 snapshot 或 manifest。
@@ -536,9 +544,9 @@ grep -c 'github.com/arlishansenn' README.md  # 应为 6
 「a fork of `unclebob/swarm-forge`」，所以裸的 `grep -c unclebob README.md` 永远是 1，
 把它当判据会把正常状态读成异常、把异常读成正常。
 
-**遗留：** `update SwarmForge scripts` 保留它自己那份 `ARCHIVE_URL` 改写与回滚逻辑，
-**有意不删**：那是给本次改动之前 onboard 的项目用的 legacy 修复路径，那批项目的 launcher
-可能还指着 upstream。它不与已删除的 onboard 改写合并。
+**遗留（已结）：** `update SwarmForge scripts` 曾保留它自己那份 `ARCHIVE_URL` 改写与回滚
+逻辑，作为给早期 onboard 项目用的 legacy 修复路径。2026-09-17 该 verb 随 Pack 路径一起删除
+（issue #155、ADR-0007），这条遗留不再存在。
 
 ---
 

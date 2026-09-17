@@ -16,27 +16,22 @@ landing page，一份后半段是中文操作手册的 README 与那个定位冲
 
 使用前提：skill 的使用者工作目录是本仓库。放在被操作 project 里时，本仓库会话调不到它。
 
-### 十二个 verb
+### 十个 verb
 
 | 动词 | 作用 |
 |---|---|
-| `start swarm <root> --terminal <值>` | 从停机状态显式启动 swarm；`--dashboard-port <N>` 可选，转成 `SWARMFORGE_DASHBOARD_PORT` 让 pack_web 绑固定端口（不传则一字不变地保持随机端口；只校验是数字，不校验范围；与 `--terminal` 累积进同一个 `env` 前缀，两者同时生效）；`--terminal` 必传（`ghostty`/`iterm2`/`none`/`terminal-app`/`windows-terminal`/`auto`），杜绝 #10 那次靠自动探测踩中 watchdog 拆除的坑；已在跑（socket 探活成功）拒绝重复启动（退出 6，无 override）；启动前还会取 project lock 并比对已装 `swarmforge/scripts` 与其 manifest 的 digest，manifest 缺失或不一致报 `STATUS=DRIFT`（退出 4），锁被 `update SwarmForge scripts` 占用同样报 `UNSAFE`（退出 6）——`--force` 可越过锁占用与 DRIFT，但越不过「已在跑」；本地/远端都走 `nohup` 脱离终端启动，回读 runtime 文件确认后才报 `STATUS=STARTED` |
-| `update SwarmForge scripts <root>` | **被管项目自己版本控制了 `swarmforge/` 就拒绝**（退出 `8` `OWNED`，列出会被覆盖的每一处，含角色 worktree；`--overwrite-tracked` 才是有意的覆盖，与 `--force` 分开——`--force` 只管过期的锁）；成功时报 `WROTE=` 写了哪棵树、`MIRRORS=` 有几个角色 worktree 会在下次启动时被镜像；把 operator 自己这份源码checkout 的 `swarmforge/scripts` 装进被管项目，替换前先落地临时目录并按 `swarmforge.bb` 同款 required-helpers/terminal-adapters 清单校验，三件套（scripts 树、manifest、旧版 `./swarm` 启动器）原子替换、任一步失败整体回滚；已在跑拒绝（退出 6，无 override），源码checkout 有未提交改动同样拒绝（退出 5，无 override，永不可越过）；抢同一把 project lock，被 `start swarm` 占用报 `UNSAFE`，`--force` 只越过锁占用；成功报 `STATUS=UPDATED` 并带 `DIGEST=`/`SOURCE_COMMIT=` |
+| `start swarm <root> --terminal <值>` | 从停机状态显式启动 swarm；`--dashboard-port <N>` 可选，转成 `SWARMFORGE_DASHBOARD_PORT` 让 pack_web 绑固定端口（不传则一字不变地保持随机端口；只校验是数字，不校验范围；与 `--terminal` 累积进同一个 `env` 前缀，两者同时生效）；`--terminal` 必传（`ghostty`/`iterm2`/`none`/`terminal-app`/`windows-terminal`/`auto`），杜绝 #10 那次靠自动探测踩中 watchdog 拆除的坑；已在跑（socket 探活成功）拒绝重复启动（退出 6，无 override）；启动前还会取 project lock 并比对已装 `swarmforge/scripts` 与其 manifest 的 digest，manifest 缺失或不一致报 `STATUS=DRIFT`（退出 4），锁被另一次并发的 `start swarm` 占用同样报 `UNSAFE`（退出 6）——`--force` 可越过锁占用与 DRIFT，但越不过「已在跑」；本地/远端都走 `nohup` 脱离终端启动，回读 runtime 文件确认后才报 `STATUS=STARTED` |
 | `open swarm <root>` | 把运行中的 swarm 以 cmux workspace 打开；停机时报原因，命中 window watchdog 拆除会点名，绝不代人启动 |
 | `dashboard <root>` | 开 browser workspace 连 pack_web 看板；默认建 SSH 隧道，`--tailnet` 则不建隧道、直接打 target 的 tailscale IP（笔记本一睡隧道就断，且只有那台机器能看；tailnet URL 手机平板都能开）；**每次先读 `dashboard-url` 的端口决定走哪条**——在 `7780-7789` 段内就加 `--tailnet`，是随机端口就不加并把切换步骤报给用户（切换要停 swarm，不自作主张）；额外校验端口后面真是本项目的 `pack_web`（`--serve` 参数比对），不是同机别的项目撞上来的；**跑完要把报文里的 `URL=` 转述给用户，不能只回「已打开」** |
 | `attach <role>` | 临时附加到某个角色的 tmux session |
 | `read swarm` | 逐角色截屏，三态分类 `IDLE`/`BUSY`/`UNKNOWN`（认不出就是 UNKNOWN，不猜成 idle），每行都附原始 pane 文本 |
 | `wake <role>` | 唤醒：注入 `ready_for_next.sh`，按 backend 编码提交后**验证真的被消费**，没提交成功报错并点名 backend 不匹配 |
 | `talk <role>` | 给指定角色发一条行为切片，同样验证送达且被提交，不是发了就算 |
-| `onboard project` | 把 upstream 的 two-pack/four-pack/six-pack 装进一个项目目录；拒绝 `main`，目标非空时零写入拒绝；改写 `ARCHIVE_URL` 默认值指向本 fork，装完不启动 |
 | `accept work` | 人工验收：**只读 master worktree**（按 `roles.tsv` 第 2 列 `worktree-name == master` 定位，不认 role 名，不是恰好一条就报错）的终端 handoff 报 `task`/`commit`，别的 worktree 的中间跳不再被当成结果；缺字段的记录 `WARN=` 点名而不静默丢弃；同时扫 `inbox/new`/`inbox/in_process` 的滞留，卡链了会 `WARN=` 报出来，不再跟"没活干"读起来一样 |
-| `run issue <root> --issue <N>` | 把**一张** issue 走完「投 task → 轮询 → 开 PR」：读 `dashboard-url`（端口每次起 server 会变，永远现读）→ `gh issue view` 取 slug，分支 `feat/issue-<N>-<slug>` 与 task name `issue-<N>-<slug>` 同源 → BASE 取最新 open PR 的 head branch（无则 `main`，**stacked 在上一张票上，`main` 只被人 merge 推进**）→ **建分支前先 `git fetch origin` 并把 BASE 对齐到远端**（本地 BASE 不是 `origin/BASE` 的祖先就拒绝，退出 6，绝不 `-B` 把本地 commit 甩成孤儿；stacked 的 head 分支本地可能不存在，直接从远端建，issue #122）→ 读 **card 与分支两个标记**决定走哪条路，四格都有出口：两个都没有是首次运行；两个都在是 **resume**（跳过建分支与 POST，直接接着轮询）；只有分支没有 card，说明上次死在建分支与 POST 之间，**resume 但补做 POST**（issue #76，旧代码在这一格必然 `5` ERROR 且每次重跑都一样）；只有 card 没分支，那不是这个动词的 card，拒绝（退出 6，零 POST、零写入，因为 `pack_web` 的 `create-task!` 不去重）→ `/api/state` 有 pending clarification/approval 拒绝（退出 6，报出 id 与问题原文，**这是连投时唯一会自动停的人闸**）→ POST 一次 task（目标有 `openspec/seams.md` 就点名这份名单、要求动手前先读，**只给信息不给流程**，pi-governance#455）→ 轮询 board lane 到 `done`（**只认 lane，不看 `work_in_flight` 的 idle**，链路中途 coder 会短暂 idle）→ `accept work` 拿 commit（**重试到 delivery record 真的可见为止**，board `done` 只代表 handoff 已送达，master 还可能在处理，issue #63）→ push → **停在 `NEEDS_PR_BODY`（退出 8）把 commit 交回给调用方**，正文由调用方写（建议派子代理用 `to-pr` skill，让 diff 落在子代理而不是编排者），带 `--body-file` 重跑第二趟才开 PR（issue #118）→ `gh pr create` 显式 `--title/--body`（body = `Closes #N` 等字段由脚本拼 + 小节由调用方给；**从不** `--merge`/`--auto`/`--fill`）；超时报 `ERROR`（退出 5）并明说可能还在跑，**绝不重投** |
-| `onboard project <root> --pack <N>` | 装一个 fork Pack 进被管项目；**装完往 `$ROOT/.gitignore` 追加一段 SwarmForge 装机产物的忽略清单**（条目从刚装的 artifact 派生，不硬编码；`.gitignore` 与 `README.md` 除外，那两个归项目所有，装之前先存、装完还原，不让 tar 覆盖），否则那些文件永远以未跟踪身份让 `stop swarm` 的 DIRTY 闸常亮（issue #87）；已经装好的老项目要人工补一次同样的块 |
 | `stop swarm` | 停机前先 preflight：有角色 `BUSY`/`UNKNOWN` 或 worktree 有未提交改动就拒绝停机（退出 6），全干净才走 `close-swarm`，**并检查它真的停成了**——`close-swarm` 失败就报 `5` ERROR 带上它自己的 stderr，绝不报 `STOPPED`（issue #82，此前对非 operator 机器会假报 `STOPPED` 且退出 0）；停完顺带按 `pack_web.pid` 停掉 dashboard 并报 `PACK_WEB=stopped\|absent`；`close-swarm` 跑在 **target** 上而默认路径是 operator 自己那台机器，被管项目里没有这个脚本，所以别的机器要用 `--close-swarm <target 上的路径>` 指明；`--force` 只跳过 preflight，不跳过"停没停成"的检查 |
 
 默认远端是 `admin@100.64.0.4`，可用 `--target`/`--key` 覆盖；`--local` 改走本地文件系统。
 
-`onboard project`/`start swarm`/`update SwarmForge scripts`/`accept work` 这四个 verb 正在按 issue #35、#38、#39 重构 fresh-bootstrap、drift-repair 与 delivery-report 三条路径，架构图见 [Onboard, Start, and Repair](https://claude.ai/code/artifact/f45abf63-064e-428d-918b-02ba10be0f6c)。
 
 ### `open swarm` 契约
 
@@ -51,7 +46,7 @@ landing page，一份后半段是中文操作手册的 README 与那个定位冲
 
 看板本身是 `pack_web`：`./swarm` 启动时随 swarm 一起起的本地 HTTP 服务，页面展示并可操作 swarm 状态（agent 状态、任务/交接、approvals、chat、teardown），只监听远端 `127.0.0.1`，所以远程访问必须走隧道。
 
-`dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上，另加 `--tailnet`）：按顺序问四件事，第一个「否」就停——**swarm 在不在跑**（读 `tmux-socket` 探 `list-sessions`，与 `open`/`start`/`stop`/`read swarm`、`wake`/`talk role`、`update SwarmForge scripts` 用的是同一条判定）→ 有没有 `dashboard-url` → 那个端口是不是本项目自己的 `pack_web` → 最后才是能不能连上。然后在当前 window 开/复用 `Dashboard · <basename>` workspace。**复用时会校验那个 browser surface 现在指向哪**（issue #99）：不是本次的 URL 就 `goto` 过去，已经一致则一个 cmux mutation 都不做。此前只在 surface **缺失**时才修，于是报文打印新 URL 而画面停在上一个已死端口——而这是常态不是例外，`pack_web` 每次启动都换端口（除非用了 `--dashboard-port`）。报文里的 `URL=` 与 surface 实际指向的一致，否则不报成功。
+`dashboard` 动词用 `scripts/open-dashboard.sh`（参数同上，另加 `--tailnet`）：按顺序问四件事，第一个「否」就停——**swarm 在不在跑**（读 `tmux-socket` 探 `list-sessions`，与 `open`/`start`/`stop`/`read swarm`、`wake`/`talk role` 用的是同一条判定）→ 有没有 `dashboard-url` → 那个端口是不是本项目自己的 `pack_web` → 最后才是能不能连上。然后在当前 window 开/复用 `Dashboard · <basename>` workspace。**复用时会校验那个 browser surface 现在指向哪**（issue #99）：不是本次的 URL 就 `goto` 过去，已经一致则一个 cmux mutation 都不做。此前只在 surface **缺失**时才修，于是报文打印新 URL 而画面停在上一个已死端口——而这是常态不是例外，`pack_web` 每次启动都换端口（除非用了 `--dashboard-port`）。报文里的 `URL=` 与 surface 实际指向的一致，否则不报成功。
 
 **顺序是修过的（issue #100）。** `stop swarm` 会删 `pack_web.pid`，但**没有任何动词删 `dashboard-url`**，所以停机后这两个输入互相矛盾；而可达性检查排在前面时，一个只是停机的项目会报 `5` ERROR（「隧道坏了」）而不是 `3` STOPPED，`--tailnet` 那条还会让人去跑一条**已经跑过**的 `tailscale serve`。**有意的取舍**：swarm 停了而 `pack_web` 仍独活的项目现在会被 `3` 拒绝——这个动词开的是某个 swarm 的看板，swarm 不在就没有可看的东西。退出码语义同上；`3` 表示 dashboard-url 缺失，绝不自己起 `pack_web.sh --serve`。报文里的 `TUNNEL=` 说明走了哪条路：`created`/`reused`/`tailnet`/`local`。
 
@@ -115,122 +110,6 @@ scripts/open-dashboard.sh --root <root> --target <target> --key <key> --tailnet
 3. 绝不自动 close 任何 workspace/surface/window 作为清理；残留对象由用户逐项授权处置。
 
 直接操作 cmux 前需先加载 `cmux` skill（REQUIRED SUB-SKILL），handle、settle、ownership、destructive guardrail 是 cmux skill 的契约，本 skill 不重复。
-
-### `run issue` 契约
-
-```sh
-.agents/skills/swarmforge-operator/scripts/run-issue.sh \
-  --root <远端 project 根> --issue <N> [--target host] [--key path] [--local]
-```
-
-一次一张票。要连投多张，`|| break` 那三个字符就是列表版里全部的错误处理逻辑：
-
-```sh
-for n in 28 29 30; do run-issue.sh --root <root> --issue "$n" || break; done
-```
-
-退出码：`0` PR_OPENED（输出带 `issue:`/`task:`/`branch:`/`base:`/`commit:`/`url:`）；
-`2` USAGE（缺 `--root`/`--issue`，或 `--issue`/`--max-wait` 不是数字，什么都不做）；
-`5` ERROR（runtime 文件缺失、`gh`/`git`/`curl` 失败、轮询超时、或 board 说 `done` 后
-delivery record 在整个等待窗口里始终对 `accept work` 不可见）；`6` UNSAFE（同名 card
-存在**但分支不在**，即那不是本动词的 card；或有 pending clarification/approval，两者都
-点名要清什么）；`7` STILL_RUNNING（`--max-wait` 到点，task 已投、swarm 还在跑，输出带
-`lane:`/`waiting_for:`，原样重跑即续）。**所有超时都不会 push、不会开 PR、不会重投 task。**
-`7` 刻意不复用 `5`：`|| break` 那条链两种都会 break，但「还在跑，再叫我一次」和「出事了」
-要的反应不同——GNU `timeout` 用 124 而不复用被测命令退出码，是同一个理由。成功输出里的
-`resumed:` 说明这次是首次运行还是续跑。
-
-**PR body 的四个小节由模型写，`Closes #N` 这些字段由脚本拼。** 在 issue #118 之前 body 是
-四行 `printf`，podsum#149 就是那个样子——没有一个字是模型写的。现在分工是：脚本拼下游要
-解析的字段（`Closes #N`、`task:`、`commit:`、`completed_at:`），模型写四个 `##` 小节。
-
-**小节写在哪里、要求是什么，这份文档不复述**——那是 `to-pr` skill 的正文
-（`skills` 仓 `engineering/to-pr`）。在这里抄一份，就是又造一个改 skill 时会忘记同步的
-副本，正是这层间接要消掉的东西。要看形状就读那个 skill。
-
-只说两件与本动词有关的：形状取自 `show-me`，**不是** `github-workflow.md` 的四问；
-以及调它的模型**没有跑过任何命令**，所以 skill 里明文禁止编造命令输出、通过条数、耗时
-与覆盖率——「TDD 证据」这一节不堵就是幻觉邀请函。
-
-- **开分支之前先对齐 BASE。** `BASE` 的名字来自 `gh pr list`（远端），内容是那台机器上次
-  checkout 留下的；原本没有任何东西对账，于是人合并之后被管 project 的 `main` 留在原地，
-  下一轮从旧代码开分支——**这个动词自己的注释就把这条记作 podsum 两种丢法之一**。实测：
-  podsum#155 合并后那台机器落后 `origin/main` **4 个 commit**。现在 `git fetch origin`
-  之后，本地已有的 BASE 走 `merge --ff-only`，**不是祖先就拒绝**（`UNSAFE`，退出 `6`，零
-  POST 零 push）；stacked 的 head 分支本地可能不存在，走 `checkout -B <BASE> origin/<BASE>`。
-  两种形状不能合并成一条 `-B`——对 `main` 用 `-B` 会静默把本地 commit 甩成孤儿。
-- **缝名单跟着目标 project 走，但只给信息不给流程。** 目标有 `openspec/seams.md` 时，task 正文
-  点名这份名单并要求动手前先读；没有时正文与之前逐字节相同。**正文不规定什么时候停、要不要新
-  立一条缝、缝切在哪**——那些是判断，判断错了由 `code-review` 的 seam baseline 兜着（它本来就报
-  「新引入的外部依赖没登记成 seam」与「测试替身的对象不在名单里」）。早先有一版把这些写成流程，
-  触发条件是「模块不在名单里」，而**在多数被管 project 里那是常态不是例外**——每一轮都被变成
-  要人回一趟。**停也不靠这段正文**：constitution 已经告诉每个角色卡住就问操作员，`refuse_if_blocked()`
-  会把任何 pending clarification 变成硬退出 `6`，两半都早于这段话存在且对所有事有效。
-- **形状不在脚本里，也不由脚本去要。** 这个 verb 分两趟：第一趟做完机械活（投 task、
-  轮询、`accept work`、`git push`）就停在 `STATUS=NEEDS_PR_BODY`（退出 `8`），把
-  issue/task/branch/base/commit 交回给调用方；调用方写好正文，带 `--body-file <path>`
-  重跑，第二趟直接走到 `gh pr create`。
-- **脚本零模型依赖。** 它曾内嵌 `pi -p`，那把一个 operator verb 绑死在一个 harness 上——
-  Claude Code 编排者在没装 `pi` 的机器上根本跑不起来。现在一个模型调用都不发。
-- **正文该由子代理写，不该由编排者自己读 diff。** 一次改动几十 KB，而这个动词的常规用法
-  是连投（`for n in 28 29 30; ...`）；让 diff 进编排者的上下文是每张票几十 KB 地累加，
-  交给带 `to-pr` skill 的子代理，编排者只收回正文。
-- **失败即停**，两种都是 `STATUS=ERROR` 退出 `5`，**绝不回退到旧模板**：`--body-file`
-  的路径不存在，或那个文件是空的。空正文的 PR 看起来完成了却什么都没说。
-- **第一趟停下时分支已 push、PR 未开**，原样带 `--body-file` 重跑不会开出第二个 PR——
-  幂等判断仍在脚本里。
-- **resume 不付这笔钱**：模型调用排在「本 head 是否已有 open PR」之后，续跑不会重复调。
-
-**它会阻塞整条链路，几分钟到几小时，这不是卡死。** 默认每 15 秒轮一次
-（`SF_RUN_ISSUE_POLL_SECONDS`），上界 7200 秒（`SF_RUN_ISSUE_TIMEOUT_SECONDS`）；
-board 变 `done` 之后还会再等 delivery record 最多 600 秒
-（`SF_RUN_ISSUE_DELIVERY_SECONDS`）。
-轮询是纯 shell，每轮两次短往返、**不调用任何 LLM**，等多久都不烧 token。
-**但整个动词不再是零 LLM 的**：开 PR 之前会调**恰好一次**模型写 body（见下）。等待再久，
-模型调用也只有那一次，与轮询时长无关。
-
-**从 agent 会话里发起时，先弄清你的 harness 上限并显式传 timeout。** 咬人的是
-**client 注入的默认值**，不是 shell tool 自己的天花板：
-
-- **pi 的 `bash`**：不传 `timeout` 就一个定时器都不 arm（`dist/core/tools/bash.js:75-80`，
-  `pi-agent-core` 的 `dist/harness/tools/bash.js:11-19` 是同一份逻辑），上限
-  `MAX_TIMEOUT_MS = 2_147_483_647` 毫秒，约 **24.8 天**（`dist/core/tools/bash.js:16`）。
-  全树没有针对 tool call 的定时 abort，`AbortController` 只被 user abort 与 session dispose
-  触发，报错文案由调用方传进来的 `timeout` 拼成，只可能打印别人送进去的数。所以 issue #65 记的
-  **120 秒不是 pi 的**，是 client 注入的默认值，显式传 `timeout` 即解除。（`@earendil-works/pi-coding-agent@0.84.3`
-  实测：不传 timeout，`sleep 150` 在 120 秒被杀；传 `timeout: 300`，同一条 `sleep 150` 跑满。）
-- **Claude Code 的 `Bash`**：默认 2 分钟（`BASH_DEFAULT_TIMEOUT_MS`），**硬上限 10 分钟**
-  （`BASH_MAX_TIMEOUT_MS`），没有参数能抬高它。
-
-按顺序：**①** 工具收 timeout 就显式传一个大的（pi 的 `bash` 收秒数）；**②** 硬上限低于一条
-真实链路时（Claude Code 的 10 分钟就是），传 **`--max-wait`** 卡在上限之下，让它干净地退
-`7` STILL_RUNNING 而不是被 SIGKILL，再叫一次——干净退出会报出停在哪个 lane，被杀则什么都不报；
-**③** 有后台模式就用（Claude Code 的 `Bash` 收 `run_in_background`）；**④** 都不行就让它被杀，
-然后**原样重跑**——那是支持的路径，不是抢修。
-
-**`--max-wait <秒>` 是调用方的 deadline**，语义照抄 `kubectl wait --timeout`，不自创第四种含义：
-正数是**整条命令**的 wall-clock 预算（同时覆盖轮询与 delivery 等待），到点退 `7` STILL_RUNNING；
-`0` 只查一次就返回（该投的 task 还是会投，然后报当前 lane）；负数沿用现有上限，默认 `-1`，
-所以不传这个 flag 的行为与从前完全一致。到点是干净退出：不 push、不开 PR、绝不重投 task。
-
-**别用 `nohup ... &` 绕上限**：在 pi 里取消会杀整棵进程树，把脱离出去的 job 一起带走，
-而且脱离后的输出没人看。
-
-**被杀之后：原样重跑同一条命令。** 动词会认出自己上次的运行并接着做：不会投第二张 task、
-不会建第二条分支、不会开第二个 PR，resume 的那次会在输出里打 `resumed: yes`。判据是
-**board 有没有 card × 同名分支在不在**，四格全部有定义：
-
-| Board card | 分支 | 行为 |
-|---|---|---|
-| 无 | 无 | 首次运行 |
-| 无 | **有** | **resume**：跳过建分支，补做那次没做成的 POST |
-| 有 | 有 | **resume**：跳过建分支与 POST，直接接着轮询 |
-| 有 | 无 | `6` UNSAFE：那不是这个动词建的（人在 Dashboard 手敲的），什么都不碰 |
-
-第二格正是建分支与 POST 之间那个约两次 ssh 往返宽的窗口。issue #76 之前它没有出口：没 card
-就走 fresh，`git checkout -b` 撞上已存在的分支，`5` ERROR，且每次重跑都一样，只能人工删分支。
-现在两个标记每次都读，「建不建分支」与「投不投 task」各自认自己的标记，两次写入的任何中断
-顺序都不会再产生无出口的状态。
 
 ### 测试
 

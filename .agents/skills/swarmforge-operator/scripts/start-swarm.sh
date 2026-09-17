@@ -68,9 +68,8 @@ ROOT='' TERMINAL='' LOCAL=0 FORCE=0 DASHBOARD_PORT=''
 # but adds that round trip to every single invocation.
 TERMINAL_VALUES='ghostty iterm2 none terminal-app windows-terminal auto'
 
-# Verb contract: a scripted verb prints STATUS=<WORD> as its first line —
-# same pattern onboard-project.sh's usage_error() uses (issue #29 review
-# round 4 finding).
+# Verb contract: a scripted verb prints STATUS=<WORD> as its first line
+# (issue #29 review round 4 finding).
 usage() { printf 'STATUS=USAGE\n'; sed -n '2,46p' "$0"; exit 2; }
 
 while [ $# -gt 0 ]; do
