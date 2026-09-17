@@ -1,6 +1,6 @@
 ---
 name: swarmforge-operator
-description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, running one GitHub issue through the swarm to a stacked pull request, stopping the swarm, installing a fork pack (two-pack, four-pack, six-pack) into a new or existing project directory before the swarm has ever run, or provisioning a whole forge (project-manager, lieutenant) from an empty directory and creating its first project."
+description: "Use when operating a running SwarmForge project from the local machine: opening its role sessions or its pack_web dashboard in cmux, reading role state, waking or messaging a role, running one GitHub issue through the swarm to a stacked pull request, publishing finished swarm work to GitHub as a pull request when the cards were cut in the dashboard or by a lieutenant rather than by this skill, stopping the swarm, installing a fork pack (two-pack, four-pack, six-pack) into a new or existing project directory before the swarm has ever run, or provisioning a whole forge (project-manager, lieutenant) from an empty directory and creating its first project."
 ---
 
 # SwarmForge Operator
@@ -74,8 +74,8 @@ runtime 文件缺失、socket 上没有 session、或者 master 行不是恰好�
 
 **不是每个 verb 都已经有脚本。** `provision forge`、`onboard project`、`open swarm`、
 `dashboard`、`wake role`、`talk role`、`read swarm`、`stop swarm`、`accept work`、
-`start swarm`、`update SwarmForge scripts` 和 `run issue` 今天已经有脚本并遵守
-这份契约。其余 verb 是本文件里的 shell 步骤;照写的跑,读它们的原始输出。把它们
+`start swarm`、`update SwarmForge scripts`、`run issue` 和 `ship project` 今天已经
+有脚本并遵守这份契约。其余 verb 是本文件里的 shell 步骤;照写的跑,读它们的原始输出。把它们
 纳入契约的工作记在 issue tracker 里。
 
 ## Verb: `provision forge`
@@ -1234,6 +1234,122 @@ Dashboard 里给它改名,或者手工用 `accept work` 接走它的工作。
 重跑同一条命令来续跑,而第 1 轮的卡片、分支和交付记录原封不动地留在那里,作为它们
 本来就是的历史。第 1 轮不带后缀,所以这个 verb 曾经产出过的每一个名字都未变。
 
+## Verb: `ship project`
+
+把 swarm **已经干完的活**推上 GitHub，停在一个可 review 的 PR 上。它与 `run issue`
+的分工就一句话：**卡是谁切的。**
+
+`run issue` 发布的是它自己派下去的那一张卡 —— 分支是它建的，task 名是它从 issue
+推的，所以它从头到尾都知道自己在等什么。上游的 lieutenant forge 是另一种形状：
+卡由人在 dashboard 上切、或由 lieutenant 按 `.swarmforge/routes.tsv` 切并推进，这边
+既没建过分支，也不提前知道任何 task 名。
+
+而上游到那里就停了。它的 work lifecycle 最后一步写的是「the board moves the card to
+Done」，没有第七步；`upstream/lieutenant` 整个分支的 prompt、脚本与文档里搜不到
+一处 `git push` 或 `gh pr`，唯一的 GitHub 接触点是 `forge.bb` 把仓库 **clone 进来**。
+`lieutenant.prompt` 里的 git 词汇是被刻意清空的：`Never git_handoff. Never merge.`、
+`Never git reset yourself.` 最后一公里在 forge 外面，是设计如此，不是缺口。
+**不要在 chat rail 里让 lieutenant 去 push。** 它确实是个有 shell 的 agent，但那是
+跨出自己 prompt 的即兴发挥，Attention 与 board 都不会留下这次动作的痕迹。
+
+```sh
+scripts/ship-project.sh --root <product-root> \
+  [--target user@host] [--key <path>] [--local] \
+  [--branch <name>] [--base <name>] [--test-cmd <cmd>] \
+  [--body-file <path>] [--dry-run]
+```
+
+### 五道门，按顺序，任一失败就停
+
+**A 定位。** 三种指错地方各自有自己的拒绝语，因为修法不同：`.worktrees/*` 是
+生成的角色 checkout（它们坐在 `swarmforge-<name>` 分支上）；forge 根持有 `projects/`
+根本不是产品仓；一个子目录会把整个仓推上去却报出一个不是它根的路径。比对
+用的是 **解析后**的路径（`pwd -P`），不是你敲进去的字符串 —— git 答的是解开符号
+链接的路径，字面比较会把一个完全正常的产品根拒之门外。
+
+**B 看板。** 读 `.swarmforge/board/tasks.tsv`，**不走 dashboard** —— `pack_web` 每次启动
+都绑新端口，而人决定发布的时候它未必开着。lane 在看板的每一个版本里都是第 2 列。
+在角色 lane 里的卡**阻断**（活干到一半，现在发就是把它切断）；`waiting` 卡**只报
+不阻**，计划没做完不是拒绝发布已经做完那部分的理由。
+
+**C Attention。** `.swarmforge/delivery_attention/` 非空就阻断。那是 `handoffd` 记下的
+一次投递失败且一直没好；覆在它上面发布等于发一棵链条从来没闭合的树。
+
+**D git 卫生。** 工作区有未提交改动就阻断并点名文件，**绝不代你 commit** —— swarm
+跑完后还在产品 checkout 工作区里的东西，不是某个角色的残留就是人的手改，两者
+都不该进一个没人 review 过的 PR。随后 `git fetch origin`，BASE 默认 `origin/main`，
+没有就 `origin/master`，都没有就停下来说先加 remote。
+
+**E 验证。** 自动发现入口（`make test` / `npm test` / `pytest` / `./gradlew test`），
+`--test-cmd` 可覆盖。**红就阻断，没有绕过的 flag** —— 一个 `--allow-failing-tests`
+只会在它最该拦住你的那一天被用一次。找不到入口就报 `skipped (no test entry
+point found)`，并把这一句带进 PR 正文。
+
+### 它存在的真正理由：Done 与已合入是两件事
+
+上面五道门里没一条是这个 verb 的核心。核心是第六条检查：
+
+`handoffd` 是在它**投递**终端 handoff 的那一刻把卡标成 `done` 的，master 合入它是
+之后的事。在这个窗口里发布，`git log origin/<base>..HEAD` 会安静地带着一个
+**子集** —— 一个看起来完整、实际少了一张卡的 PR。所以每条交付记录的 commit 都要
+过一遍 `git merge-base --is-ancestor <commit> HEAD`，差一条就阻断并点名，绝不聆聆
+肩。过一会儿再跑就好。
+
+「要发什么」本身不在这里重算：它直接跑 `accept-work.sh`。那个脚本已经拿下了两个
+难点 —— 只从 master worktree 读终端记录，以及排掉 commit 已经到了 origin 的任务。
+
+### 两趟，跟 `run issue` 一样的形状
+
+```text
+第一趟  ship-project.sh --root R
+          报告 → 五道门 → 建分支 → git push
+          → STATUS=NEEDS_PR_BODY（退出 8）
+你       派一个子代理：用 to-pr skill 读 origin/BASE..BRANCH 写正文
+第二趟  ship-project.sh --root R --body-file <那个文件>
+          → gh pr create
+```
+
+想先看报告、连分支都不要建，用 `--dry-run`。
+
+分支是在 HEAD 上 **建出来而不 checkout** 的。产品 checkout 留在 swarm 把它留下的
+那条分支上，`.worktrees/` 下的角色各自守着自己的 `swarmforge-<name>`；在这里
+`checkout` 会把树从正在干活的 agent 脚底下抽走。默认分支名
+`feat/swarm-<project>-<yyyymmdd>`，`--branch` 可改。
+
+### PR 正文：字段归脚本，散文归你
+
+与 `run issue` 同一条分工，但 `Closes` 的规矩不同。**只有卡名形状是
+`issue-<N>-<slug>`（这套工具链自己铸的那个形状）时才发 `Closes #N`。**
+lieutenant 切的卡是人或模型命的名，带不了可靠的 issue 号，所以从它身上
+**什么都不推** —— 关错 issue 比一个都不关更坏。
+
+脚本追加的是卡列表、验证结果、看板计数和发布源路径；你写的是读过 diff 才写得
+出来的那几段。空的或不存在的 `--body-file` 都是硬失败，**不回退到元数据正文**：
+一个空正文的 PR 看起来完成了、却什么都没说。
+
+按 SwarmForge 自己的文风，**handoff 协议字段、tmux、helper 脚本名不进 PR 正文**。
+
+### 它拒绝做的事
+
+- **绝不 `--force` push、绝不代提交、绝不 merge PR。** merge 是人的决定。
+- **绝不从 `.worktrees/` 发布。**
+- **绝不开第二个 PR。** push 之后、要正文之前先查这个 head 上有没有开着的 PR，
+  所以一次被杀在 push 与 PR 之间的运行，重跑时不会再开一个，也不会为一份没用的
+  正文花一次模型调用。
+
+退出码 / STATUS 行：
+
+- `0` `PR_OPENED` —— 报文末尾带 `url:`。
+- `0` `NOTHING_TO_SHIP` —— `accept work` 没有未交付记录，或 HEAD 没超前 `origin/<base>`。
+  不是错，没有任何东西被推。
+- `0` `DRY_RUN` —— `--dry-run`，只出报告。
+- `2` `USAGE`、`5` `ERROR`。
+- `6` `BLOCKED` —— 门没过。报告照样打印，末尾带 `blockers:` 列表；什么都没改。
+- `8` `NEEDS_PR_BODY` —— 分支已推，PR 未开，等你的 `--body-file`。
+
+报告在**每一条路径**上都打印，包括被阻断的那一条：拒绝的理由只有跟它读到的
+状态放在一起才有用。
+
 ## Verb: `stop swarm`
 
 跑随包的脚本;它在停任何东西之前先做 preflight(issue #11):`stop swarm` 过去是一次
@@ -1320,6 +1436,18 @@ preflight:停机到底跑没跑成仍然会被检查,所以 `--force` 照样可�
 daemon 仍在运行。
 
 ## Testing
+
+`scripts/test-ship-project.sh` 用真 git、桩 `gh` 跑 `ship-project.sh`：`origin` 是一个
+本地 bare 仓，所以 fetch/push/rev-list/merge-base 全是真跑的（换成桩 git 就变成在测桩），
+只有会真的碰 GitHub 的 `gh` 被打了桩。覆盖快乐路径（报告、建分支、恰好一次 push、停在
+`NEEDS_PR_BODY` 且不开 PR）、带正文的第二趟（恰好一次 `gh pr create`）、head 上已有开着
+的 PR 时返回旧 URL 且不再创建、一张在角色 lane 的卡阻断而一张 `waiting` 卡不阻断、未提交
+改动阻断并点名文件、`delivery_attention` 阻断、**Done 且有交付记录但 commit 还不是 HEAD
+祖先时阻断**（master 还在合并的那个窗口，这是这个 verb 存在的理由）、测试红阻断而绿照报、
+无未交付记录时 `NOTHING_TO_SHIP` 且不建分支、角色 worktree 与 forge 根各自被拒、空的和
+不存在的 `--body-file` 都硬失败且不开 PR、`--dry-run` 不建分支，以及一张 lieutenant 风格
+命名的卡不产生任何 `Closes` 行。这五处若被改坏都会红（已实测：去掉「不是 HEAD 祖先」阻断、
+去掉脏工作区门、去掉 PR 幂等检查、把 `waiting` 当成 live、去掉测试红阻断）。
 
 `scripts/test-open-swarm.sh` 和 `scripts/test-open-dashboard.sh` 对着打了桩的
 cmux/ssh/curl 跑这两条流程,覆盖 topology 配对、复用、修复、停机、drift、无法解析的
