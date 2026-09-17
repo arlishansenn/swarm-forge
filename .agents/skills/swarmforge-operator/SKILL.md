@@ -58,6 +58,23 @@ lieutenant forge 的设计是**操作都在 Dashboard 上做**。以下动作没
 往 pane 里打字(`wake role`/`talk role`)、装一个新 forge(`provision forge`)、
 推 GitHub(`ship project`)。
 
+## 被管 project 在哪
+
+**一个 Managed project 永远住在 `<forge-root>/projects/<name>`。** 这是 upstream lieutenant
+的布局,也是 ADR-0007 之后本 fork 唯一服务的布局。所有吃 `--root` 的 verb 都在动手之前
+硬性校验这一点(`lib-wake-talk.sh` 的 `require_managed_project`),不满足就 `6` `BLOCKED`。
+
+判据是两条,路径形状不算证据:
+
+1. `$ROOT` 必须匹配 `*/projects/*`,`<forge-root>` 取 `${ROOT%/projects/*}`。
+2. **那个 forge root 要被证实**:`<forge-root>/projects` 是目录,且 `<forge-root>/swarm` 存在。
+
+**为什么需要这道闸。** 一个独立的 pack 安装和一个 forge 管的 project,从目录内部看是
+**一模一样的** —— 同样的 `.swarmforge/`、同样的 `roles.tsv`、同样的 `handoffs/`。没有这道
+闸,每个 verb 都会照常工作在一个本 fork 早已不服务的 Pack 安装上。这不是假想:
+`ship project` 第一次真跑就跑在了一个休眠的 two-pack clone 上,它跟 forge 里那个真 project
+**同名**,报文里一切看起来都正常,得出的结论全是错的。
+
 ## Verb contract
 
 每个 verb 要么是 handover verb,要么是 report verb,要么是 effect verb(见
@@ -270,7 +287,7 @@ dashboard 就在你所在的这台机器上,照着 `# local:` 注释走:`REMOTE=
 
 ```sh
 SF=.agents/skills/swarmforge-operator/scripts
-ROOT=/Users/admin/project/podsum          # the MANAGED project's root, on its host
+ROOT=/Users/admin/project/forge/projects/podsum   # <forge-root>/projects/<name>, on its host
 TARGET=admin@100.64.0.4                   # omit for a local root
 KEY=~/.ssh/tailscale_key                  # omit for a local root
 REMOTE=(--target "$TARGET" --key "$KEY")  # local: REMOTE=(--local)
@@ -346,19 +363,18 @@ Teardown 按钮发布给所有够得着它的人。如果这些步骤走不到,�
 
 ### Dashboard 端口分配
 
-`7780`-`7789` 留给 dashboard,一个 project 一个号,这样光看 URL 就知道你在看哪个
-project:
+`7780`-`7789` 留给 dashboard。**一个 forge 一个号,不是一个 project 一个号** —— Forge 下的
+Managed project 没有自己的 dashboard(`swarmforge.bb` 的 `run-project!` 不起 `pack_web`),
+整个 forge 共用一个:
 
-| project | port |
-|---|---|
-| podsum | `7780` |
-| pi-governance (coder2) | `7781` |
-| `provision forge` 的验收 forge (macmini) | `7782` |
-| unassigned | `7783`-`7789` |
+| forge | port | 里面的 project |
+|---|---|---|
+| macmini `~/project/forge` | `7782` | podsum |
+| unassigned | `7780`-`7781`, `7783`-`7789` | |
 
 端口跨主机其实不会真的冲突 —— 这张表存在的意义是让读 URL 的人知道那是什么。它是
 本 fork 的 operator 手工维持的一条约定:没有任何东西推导它,没有任何东西强制它,
-`--dashboard-port` 也不会拿它做范围校验。给新 project 分配下一个空号,并在这里加
+`--dashboard-port` 也不会拿它做范围校验。给新 forge 分配下一个空号,并在这里加
 一行。
 
 ### `--tailnet` 为什么存在

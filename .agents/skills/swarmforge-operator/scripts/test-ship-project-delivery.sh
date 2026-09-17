@@ -88,7 +88,10 @@ export STUB=$WORK/stub
 reset_stub() { rm -rf "$STUB"; mkdir -p "$STUB"; : > "$STUB/calls.log"; : > "$STUB/shipped-commits"; }
 ship() { printf '%s\n' "$1" >> "$STUB/shipped-commits"; }  # ship <commit> — marks it already on origin/main
 
-ROOT=$WORK/fixtures/twopack
+# A managed project lives at <forge-root>/projects/<name> (ADR-0007); gate A
+# refuses anything else, so the fixture builds that shape.
+FORGE=$WORK/fixtures/forge
+ROOT=$FORGE/projects/twopack
 now=$(date -u +%s)
 # ts <seconds-ago> — ISO8601 UTC, GNU date first then BSD -j (macOS)
 # fallback, same two-path conversion accept-work.sh's own to_epoch() uses
@@ -111,6 +114,7 @@ ts_frac() {
 
 reset_fixture() {
   rm -rf "$ROOT"
+  mkdir -p "$FORGE/projects"; : > "$FORGE/swarm"   # forge marker gate A checks
   mkdir -p "$ROOT/.swarmforge/handoffs/inbox/completed" \
            "$ROOT/.swarmforge/handoffs/inbox/new" \
            "$ROOT/.swarmforge/handoffs/inbox/in_process"

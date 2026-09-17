@@ -66,6 +66,24 @@ watchdog_suffix() {
   printf ' — swarm was torn down by the window watchdog at %s — fix the terminal backend before restarting' "$ts"
 }
 
+# A managed project lives at <forge-root>/projects/<name> (ADR-0007). Checked
+# before the socket probe so pointing at a standalone pack install says so,
+# instead of reporting whatever that install's runtime happens to look like.
+#
+# Duplicated from lib-wake-talk.sh's require_managed_project rather than
+# sourced: this script deliberately carries its own die/read_file and never
+# loads that lib, and the lib's read_file uses `ssh -n` where this one does
+# not. Sourcing 481 lines to reuse eight would swap this file's stdin
+# handling underneath a passing suite. The lib copy is canonical; change both.
+case "$ROOT" in
+  */projects/*) FORGE_ROOT=${ROOT%/projects/*} ;;
+  *) die BLOCKED "$ROOT is not a managed project — a managed project lives at <forge-root>/projects/<name>; this fork serves the forge path only (ADR-0007)" 6 ;;
+esac
+FORGE_PROBE="test -d '$FORGE_ROOT/projects' && test -e '$FORGE_ROOT/swarm'"
+if [ "$LOCAL" = 1 ]; then eval "$FORGE_PROBE"
+else ssh -n -i "$KEY" "$TARGET" "$FORGE_PROBE"; fi >/dev/null 2>&1 \
+  || die BLOCKED "$ROOT sits under a projects/ directory whose parent $FORGE_ROOT is not a forge root (no projects/ + swarm there) — point --root at <forge-root>/projects/<name>" 6
+
 # runtime gate: socket must actually answer. Stale files after a reboot
 # look identical to a live swarm otherwise.
 if [ "$LOCAL" = 1 ]; then tmux -S "$SOCK" list-sessions >/dev/null 2>&1 \

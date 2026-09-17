@@ -139,7 +139,8 @@ chmod +x "$WORK/bin/tmux"
 # ---------- fixture builder ----------
 mk_fixture() { # mk_fixture <name> <live:0|1> <role:display> ...
   local name=$1 live=$2; shift 2
-  local root=$WORK/fixtures/$name
+  local root=$WORK/fixtures/forge/projects/$name
+  mkdir -p "$WORK/fixtures/forge/projects"; : > "$WORK/fixtures/forge/swarm"  # gate: managed project lives at <forge>/projects/<name>
   mkdir -p "$root/.swarmforge"
   : > "$root/.swarmforge/sessions.tsv"
   : > "$root/.swarmforge/roles.tsv"
@@ -171,7 +172,7 @@ export STUB=$WORK/stub
 
 run() { # run <fixture> [extra args...] — returns script output in $OUT
   local fx=$1; shift
-  local root=$WORK/fixtures/$fx
+  local root=$WORK/fixtures/forge/projects/$fx
   OUT=$(PATH="$WORK/bin:$PATH" TMUX_STUB_LIVE="$root/.swarmforge/live-marker" \
     STUB=$STUB bash "$SCRIPT" --local --root "$root" "$@" 2>&1)
   RC=$?
@@ -183,7 +184,7 @@ no_swarm_start() { ! grep -q '\./swarm' "$STUB/calls.log"; }
 no_new_window()  { ! grep -q 'cmux new-window' "$STUB/calls.log"; }
 
 map_sessions() { # fixture sessions → stub session-map.tsv
-  awk -F'\t' '{print $3"\t"$4}' "$WORK/fixtures/$1/.swarmforge/sessions.tsv" >> "$STUB/session-map.tsv"
+  awk -F'\t' '{print $3"\t"$4}' "$WORK/fixtures/forge/projects/$1/.swarmforge/sessions.tsv" >> "$STUB/session-map.tsv"
 }
 
 # ---------- cases ----------
@@ -252,15 +253,15 @@ grep -q "attach -t 'swarmforge-Cleaner'" "$STUB/calls.log" \
 
 # 7 stopped: no .swarmforge at all → exit 3, zero cmux calls
 reset_stub
-mkdir -p "$WORK/fixtures/dead/.swarmforge"
-rm -rf "$WORK/fixtures/dead/.swarmforge"
+mkdir -p "$WORK/fixtures/forge/projects/dead/.swarmforge"
+rm -rf "$WORK/fixtures/forge/projects/dead/.swarmforge"
 run dead
 check "stopped exit" 3 "$RC"
 check "stopped zero cmux calls" 0 "$(grep -c '^cmux' "$STUB/calls.log" || true)"
 
 # 8 socket dead: files present, tmux gate fails → exit 3, no mutation
 reset_stub; map_sessions twopack
-rm -f "$WORK/fixtures/twopack/.swarmforge/live-marker"
+rm -f "$WORK/fixtures/forge/projects/twopack/.swarmforge/live-marker"
 run twopack
 check "socket-dead exit" 3 "$RC"
 check "socket-dead no mutation" 0 "$(mutcount)"
@@ -268,7 +269,7 @@ check "socket-dead no mutation" 0 "$(mutcount)"
 # 8a socket dead + watchdog log ends in KILL-ALL-SESSIONS → message names the
 # watchdog and carries the kill line's own timestamp (issue #10)
 printf '2026-08-23T22:45:02.100000Z watchdog-start backend= terminal-app\n2026-08-23T22:45:06.654321Z KILL-ALL-SESSIONS tearing down the entire swarm\n' \
-  > "$WORK/fixtures/twopack/.swarmforge/window-watchdog.log"
+  > "$WORK/fixtures/forge/projects/twopack/.swarmforge/window-watchdog.log"
 run twopack
 check "watchdog-killed exit" 3 "$RC"
 printf '%s\n' "$OUT" | grep -qi watchdog \
@@ -277,7 +278,7 @@ printf '%s\n' "$OUT" | grep -q '2026-08-23T22:45:06.654321Z' \
   && ok "watchdog-killed message carries kill-line timestamp" || bad "watchdog-killed message carries kill-line timestamp" "$OUT"
 printf '%s\n' "$OUT" | grep -q 'REASON=' \
   && bad "watchdog-killed no REASON= field" "found REASON= in output" || ok "watchdog-killed no REASON= field"
-rm -f "$WORK/fixtures/twopack/.swarmforge/window-watchdog.log"
+rm -f "$WORK/fixtures/forge/projects/twopack/.swarmforge/window-watchdog.log"
 
 # 8b socket dead, no watchdog log at all → message unchanged, no watchdog mention
 run twopack
@@ -287,14 +288,14 @@ printf '%s\n' "$OUT" | grep -qi watchdog \
 
 # 8c socket dead, watchdog log present but never killed anything → still silent
 printf '2026-08-23T22:45:02.100000Z watchdog-start backend= terminal-app\n' \
-  > "$WORK/fixtures/twopack/.swarmforge/window-watchdog.log"
+  > "$WORK/fixtures/forge/projects/twopack/.swarmforge/window-watchdog.log"
 run twopack
 check "benign-watchdog-log exit" 3 "$RC"
 printf '%s\n' "$OUT" | grep -qi watchdog \
   && bad "benign-watchdog-log message stays silent on watchdog" "$OUT" || ok "benign-watchdog-log message stays silent on watchdog"
-rm -f "$WORK/fixtures/twopack/.swarmforge/window-watchdog.log"
+rm -f "$WORK/fixtures/forge/projects/twopack/.swarmforge/window-watchdog.log"
 
-touch "$WORK/fixtures/twopack/.swarmforge/live-marker"  # restore for later cases
+touch "$WORK/fixtures/forge/projects/twopack/.swarmforge/live-marker"  # restore for later cases
 
 # 9 drift: extra matching workspace → exit 4
 reset_stub; map_sessions twopack

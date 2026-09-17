@@ -207,7 +207,8 @@ export STUB=$WORK/stub
 export PSREG=$WORK/ps-registry
 
 mk_fixture() { # <name> <url|->  (- = no file)
-  local root=$WORK/fixtures/$1
+  local root=$WORK/fixtures/forge/projects/$1
+  mkdir -p "$WORK/fixtures/forge/projects"; : > "$WORK/fixtures/forge/swarm"  # gate: managed project lives at <forge>/projects/<name>
   mkdir -p "$root/.swarmforge"
   if [ "$2" != - ]; then printf '%s\n' "$2" > "$root/.swarmforge/dashboard-url"; fi
   # issue #100: this verb now asks the same liveness question its six siblings
@@ -219,7 +220,7 @@ mk_fixture() { # <name> <url|->  (- = no file)
 # pack_web.pid fixture + fake ps registry entry (issue #18 ownership check).
 # Omit the 3rd arg to write a pid file with no matching process (dead pid).
 mk_pid() { # <fixture> <pid> [served-root]
-  local root=$WORK/fixtures/$1
+  local root=$WORK/fixtures/forge/projects/$1
   mkdir -p "$root/.swarmforge"
   printf '%s\n' "$2" > "$root/.swarmforge/pack_web.pid"
   if [ $# -ge 3 ]; then
@@ -229,8 +230,8 @@ mk_pid() { # <fixture> <pid> [served-root]
 
 run() { # <fixture> [extra args...]
   local fx=$1; shift
-  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB PSREG=$PSREG DASHURL_FIXTURE="$WORK/fixtures/$fx/.swarmforge/dashboard-url" \
-    bash "$SCRIPT" --root "$WORK/fixtures/$fx" "$@" 2>&1)
+  OUT=$(PATH="$WORK/bin:$PATH" STUB=$STUB PSREG=$PSREG DASHURL_FIXTURE="$WORK/fixtures/forge/projects/$fx/.swarmforge/dashboard-url" \
+    bash "$SCRIPT" --root "$WORK/fixtures/forge/projects/$fx" "$@" 2>&1)
   RC=$?
 }
 val() { printf '%s\n' "$OUT" | sed -n "s/^$1=//p" | head -1; }
@@ -241,13 +242,13 @@ echo "== suite for open-dashboard.sh =="
 if [ ! -f "$SCRIPT" ]; then echo "script missing — RED confirmed"; exit 1; fi
 
 mk_fixture gov http://127.0.0.1:54870/
-mk_pid gov 501 "$WORK/fixtures/gov"    # --serve matches $ROOT: proceed as today
+mk_pid gov 501 "$WORK/fixtures/forge/projects/gov"    # --serve matches $ROOT: proceed as today
 mk_fixture dead -
 
 # issue #18: three port-ownership fixtures, distinct from gov so a bad
 # ownership check can't accidentally piggyback on gov's registration.
 mk_fixture squat http://127.0.0.1:54871/
-mk_pid squat 502 "$WORK/fixtures/other-project"   # --serve names a different root
+mk_pid squat 502 "$WORK/fixtures/forge/projects/other-project"   # --serve names a different root
 mk_fixture pidmissing http://127.0.0.1:54872/     # no pack_web.pid written at all
 mk_fixture piddead http://127.0.0.1:54873/
 mk_pid piddead 909090                              # pid file present, no live process
@@ -335,7 +336,7 @@ reset_stub
 run squat
 check "squat exit" 4 "$RC"
 check "squat status" DRIFT "$(val STATUS)"
-printf '%s\n' "$OUT" | grep -qF "$WORK/fixtures/other-project" \
+printf '%s\n' "$OUT" | grep -qF "$WORK/fixtures/forge/projects/other-project" \
   && ok "squat names actual root" || bad "squat names actual root" "$OUT"
 check "squat no cmux" 0 "$(grep -c '^cmux' "$STUB/calls.log" || true)"
 check "squat no workspace" 0 "$(mutcount)"
@@ -393,7 +394,7 @@ reset_stub
 run squat --tailnet
 check "tailnet squat exit" 4 "$RC"
 check "tailnet squat status" DRIFT "$(val STATUS)"
-printf '%s\n' "$OUT" | grep -qF "$WORK/fixtures/other-project" \
+printf '%s\n' "$OUT" | grep -qF "$WORK/fixtures/forge/projects/other-project" \
   && ok "tailnet squat names actual root" || bad "tailnet squat names actual root" "$OUT"
 check "tailnet squat no workspace" 0 "$(mutcount)"
 

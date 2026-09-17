@@ -27,6 +27,31 @@ read_file() { # $1 = path under ROOT
   else ssh -n -i "$KEY" "$TARGET" "cat '$ROOT/$1'"; fi
 }
 
+# A managed project lives at <forge-root>/projects/<name>. That is upstream's
+# lieutenant layout and, since ADR-0007, the only layout this fork serves: a
+# standalone pack install is not a managed project here even though it has an
+# identical .swarmforge/ tree. The two are indistinguishable from inside the
+# directory, which is exactly how `ship project` got pointed at a dormant
+# two-pack clone that happened to share a basename with the real one.
+#
+# The forge root is proven, not assumed: <forge>/projects must be a directory
+# and <forge>/swarm must exist, the same pair ship-project's gate A already
+# uses to recognise a forge root when refusing to publish one.
+#
+# Runs the probe the same way read_file does (LOCAL or one ssh), so callers do
+# not need a remote-exec helper of their own.
+require_managed_project() {
+  local forge
+  case "$ROOT" in
+    */projects/*) forge=${ROOT%/projects/*} ;;
+    *) die BLOCKED "$ROOT is not a managed project — a managed project lives at <forge-root>/projects/<name>; this fork serves the forge path only (ADR-0007)" 6 ;;
+  esac
+  local probe="test -d '$forge/projects' && test -e '$forge/swarm'"
+  if [ "$LOCAL" = 1 ]; then eval "$probe"
+  else ssh -n -i "$KEY" "$TARGET" "$probe"; fi >/dev/null 2>&1 \
+    || die BLOCKED "$ROOT sits under a projects/ directory whose parent $forge is not a forge root (no projects/ + swarm there) — point --root at <forge-root>/projects/<name>" 6
+}
+
 # Runs tmux on the target with argv passed through untouched, never a
 # hand-built remote string. LOCAL execs tmux directly (no shell in the
 # middle, so nothing needs escaping). Remote mode still has to cross an ssh

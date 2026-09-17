@@ -64,6 +64,11 @@ DESC="swarmforge-dashboard:${BASE}@${HOSTPART}"
 #
 # Asked before everything else: a project that is not running has no port to
 # reach, no owner to identify, and no workspace to open.
+# A managed project lives at <forge-root>/projects/<name> (ADR-0007). Checked
+# before the socket probe so pointing at a standalone pack install says so,
+# instead of reporting whatever that install's runtime happens to look like.
+require_managed_project
+
 if ! SOCK=$(read_file .swarmforge/tmux-socket 2>/dev/null); then
   die STOPPED "$ROOT/.swarmforge/tmux-socket missing — swarm not running; start it first, this verb never does" 3
 fi
