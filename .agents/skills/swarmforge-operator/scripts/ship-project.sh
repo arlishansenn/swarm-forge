@@ -49,7 +49,7 @@
 #
 # Usage: ship-project.sh --root <product-root> \
 #   [--target user@host] [--key <path>] [--local] \
-#   [--branch <name>] [--base <name>] [--test-cmd <cmd>] \
+#   [--branch <name>] [--base <name>] [--test-cmd <cmd>] [--issue <N>]... \
 #   [--body-file <path>] [--dry-run]
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -58,6 +58,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
 ROOT='' LOCAL=0 BRANCH='' BASE='' TEST_CMD='' BODY_FILE='' DRY_RUN=0
+ISSUES=''
 
 # Usage text is grepped, not line-numbered: offsets rot on the first comment
 # edit, and a usage message that prints the wrong lines is worse than none.
@@ -72,6 +73,7 @@ while [ $# -gt 0 ]; do
     --branch) BRANCH=$2; shift 2 ;;
     --base) BASE=$2; shift 2 ;;
     --test-cmd) TEST_CMD=$2; shift 2 ;;
+    --issue) ISSUES="${ISSUES}${ISSUES:+ }${2#\#}"; shift 2 ;;
     --body-file) BODY_FILE=$2; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) usage; exit 2 ;;
@@ -136,14 +138,30 @@ WAIT_N=$(printf '%s\n' "$BOARD" | awk -F'\t' '$2 == "waiting"' | wc -l | tr -d '
 LIVE_N=$(printf '%s\n' "$BOARD" | awk -F'\t' 'NF && $2 != "done" && $2 != "waiting"' | wc -l | tr -d ' ')
 [ -z "$LIVE" ] || block "board has live cards: ${LIVE% }"
 
-# ---------- gate C: attention ----------
-# delivery_attention/ is handoffd's record of a delivery that failed and stayed
-# failed. Publishing over one means publishing a tree whose chain never closed.
-ATTENTION=$(run_remote "ls -1 '$ROOT/.swarmforge/delivery_attention' 2>/dev/null | head -20" || true)
+# ---------- gate C: failed deliveries ----------
+# A delivery that failed and stayed failed means a chain that never closed;
+# publishing over one publishes a tree that is missing a hop.
+#
+# TWO paths are checked because the two SwarmForge lineages name this-same
+# thing differently, and a gate that looks at only one of them is a gate that
+# cannot fire on the other:
+#
+#   handoffs/*/failed/       handoffd.bb's fail! moves a permanently failed
+#                            handoff here, per worktree. This is what the
+#                            main-lineage code in this repository actually
+#                            writes, and it is the one that fires today.
+#   .swarmforge/delivery_attention/
+#                            the lieutenant lineage's name for the same state.
+#                            Absent here, kept so this gate keeps working after
+#                            that branch is synced.
+#
+# Checking only delivery_attention/ was the bug: on this repository's own code
+# that directory is never created, so the gate silently passed every time.
+FAILED=$(run_remote "ls -1 '$ROOT'/.swarmforge/handoffs/failed '$ROOT'/.worktrees/*/.swarmforge/handoffs/failed '$ROOT/.swarmforge/delivery_attention' 2>/dev/null | grep -v '^$' | grep -v ':$' | head -20" || true)
 ATTENTION_LINE=none
-if [ -n "$ATTENTION" ]; then
-  ATTENTION_LINE=$(printf '%s' "$ATTENTION" | tr '\n' ' ')
-  block "delivery attention is not empty: $ATTENTION_LINE"
+if [ -n "$FAILED" ]; then
+  ATTENTION_LINE=$(printf '%s' "$FAILED" | tr '\n' ' ')
+  block "failed deliveries are not cleared: $ATTENTION_LINE"
 fi
 
 # ---------- gate D: git hygiene ----------
@@ -170,6 +188,15 @@ BASE_SHA=$(in_root "git rev-parse --short $(printf '%q' "origin/$BASE")" 2>/dev/
 BASE_SHA=${BASE_SHA%$'\n'}
 AHEAD=$(in_root "git rev-list --count $(printf '%q' "origin/$BASE")..HEAD" 2>/dev/null || echo 0)
 AHEAD=${AHEAD%$'\n'}
+# Behind is reported, never blocking. `run issue` refuses a stale BASE because
+# it is about to START work there, and building on stale code is the whole
+# cost. Here the work is already finished, so refusing would strand it. The PR
+# is still correct either way (GitHub diffs against the merge-base); what the
+# operator needs to know is that the swarm built against a base that has since
+# moved — the same "nobody ran git pull after the merge" trap in its second
+# disguise, arriving through the Dashboard instead of through run issue.
+BEHIND=$(in_root "git rev-list --count HEAD..$(printf '%q' "origin/$BASE")" 2>/dev/null || echo 0)
+BEHIND=${BEHIND%$'\n'}
 COMMITS=$(in_root "git log --oneline $(printf '%q' "origin/$BASE")..HEAD" 2>/dev/null || true)
 
 # ---------- what is being shipped ----------
@@ -230,9 +257,12 @@ TITLE="[swarm] $PROJECT: $(printf '%s\n' "$CARDS" | awk -F'\t' 'NF { print $1; e
 # Printed on every path, including the blocked one: the reason to refuse is
 # only useful next to the state it was read from.
 report() {
-  printf 'project: %s\npath: %s\nmission: %s\nboard: done %s / waiting %s / live %s\nattention: %s\nbase: origin/%s @ %s\nhead: %s (ahead %s)\n' \
+  printf 'project: %s\npath: %s\nmission: %s\nboard: done %s / waiting %s / live %s\nfailed deliveries: %s\nbase: origin/%s @ %s\nhead: %s (ahead %s, behind %s)\n' \
     "$PROJECT" "$ROOT" "${MISSION:-<no mission.md>}" "$DONE_N" "$WAIT_N" "$LIVE_N" \
-    "$ATTENTION_LINE" "$BASE" "${BASE_SHA:-<unknown>}" "$HEAD_SHA" "$AHEAD"
+    "$ATTENTION_LINE" "$BASE" "${BASE_SHA:-<unknown>}" "$HEAD_SHA" "$AHEAD" "$BEHIND"
+  [ "${BEHIND:-0}" = 0 ] \
+    || printf 'WARN=the swarm built on a base that has moved: HEAD is %s commits behind origin/%s\n' \
+         "$BEHIND" "$BASE"
   printf 'cards to ship:\n'
   if [ -n "$CARDS" ]; then
     printf '%s\n' "$CARDS" | awk -F'\t' 'NF { printf "  %s  %s\n", $2, $1 }'
@@ -301,16 +331,30 @@ if [ -z "$PR_URL" ]; then
   [ -n "$(printf '%s' "$PR_PROSE" | tr -d '[:space:]')" ] \
     || die ERROR "--body-file $BODY_FILE is empty; refusing to open a PR with no body. $BRANCH is pushed, no PR was opened" 5
 
-  # `Closes #N` only from a card name this toolchain itself mints
-  # (issue-<N>-<slug>, run-issue.sh's shape). A lieutenant-cut card is named by
-  # a human or a model and carries no reliable issue number, so nothing is
-  # inferred from it: closing the wrong issue is worse than closing none.
-  CLOSES=$(printf '%s\n' "$CARDS" | awk -F'\t' '
-    match($1, /^issue-[0-9]+-/) { n = substr($1, 7, RLENGTH - 7); print "Closes #" n }' | sort -u)
+  # `Closes #N` has TWO sources, and neither of them guesses.
+  #
+  # --issue is the one that matters in practice. Most cards are cut straight
+  # from the Dashboard by the operator or the lieutenant, which means the card
+  # name is free text and the issue number lives only in the head of whoever
+  # cut it. That person is the caller, so the caller says it.
+  #
+  # The card-name derivation stays for the cards run-issue.sh minted, where
+  # `issue-<N>-<slug>` IS the issue number and reading it costs nothing. It is
+  # an exact-shape match, never a scan for `#<digits>`: a loose scan would find
+  # a PR number or a `#1 priority` in card text and close the wrong issue,
+  # which is worse than closing none.
+  CLOSES=$(
+    { printf '%s\n' "$CARDS" | awk -F'\t' '
+        match($1, /^issue-[0-9]+-/) { n = substr($1, 7, RLENGTH - 7); print "Closes #" n }'
+      for n in $ISSUES; do printf 'Closes #%s\n' "$n"; done
+    } | sort -u)
   CARD_LINES=$(printf '%s\n' "$CARDS" | awk -F'\t' 'NF { printf "- %s (%s)\n", $1, $2 }')
-  PR_BODY=$(printf '%s%s\n\n---\n\n## Cards shipped\n%s\n\n## Verification\n- tests: %s -> %s\n- board: done %s / waiting %s / live %s, delivery attention empty\n- published from the product checkout %s at %s; no role worktree was used as the push source\n' \
+  STALE_LINE=''
+  [ "${BEHIND:-0}" = 0 ] || STALE_LINE=$(printf -- '- NOTE: this work was built on a base that has since moved; HEAD is %s commits behind origin/%s\n' "$BEHIND" "$BASE")
+  PR_BODY=$(printf '%s%s\n\n---\n\n## Cards shipped\n%s\n\n## Verification\n- tests: %s -> %s\n- board: done %s / waiting %s / live %s, no failed deliveries outstanding\n- published from the managed project checkout %s at %s; no role worktree was used as the push source\n%s' \
     "${CLOSES:+$CLOSES$'\n\n'}" "$PR_PROSE" "$CARD_LINES" \
-    "${TESTS_CMD:-<none>}" "$TESTS_RESULT" "$DONE_N" "$WAIT_N" "$LIVE_N" "$ROOT" "$HEAD_SHA")
+    "${TESTS_CMD:-<none>}" "$TESTS_RESULT" "$DONE_N" "$WAIT_N" "$LIVE_N" "$ROOT" "$HEAD_SHA" \
+    "$STALE_LINE")
 
   PR_OUT=$(in_root "gh pr create --base $(printf '%q' "$BASE") --head $(printf '%q' "$BRANCH") --title $(printf '%q' "$TITLE") --body $(printf '%q' "$PR_BODY")") \
     || die ERROR "gh pr create failed for $BRANCH -> $BASE in $ROOT" 5
