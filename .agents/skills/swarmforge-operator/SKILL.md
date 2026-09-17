@@ -486,7 +486,7 @@ Done」，没有第七步；`upstream/lieutenant` 整个分支的 prompt、脚�
 ```sh
 scripts/ship-project.sh --root <managed-project-root> \
   [--target user@host] [--key <path>] [--local] \
-  [--branch <name>] [--base <name>] [--test-cmd <cmd>] [--issue <N>]... \
+  [--branch <name>] [--base <name>] [--issue <N>]... \
   [--body-file <path>] [--dry-run]
 ```
 
@@ -494,7 +494,7 @@ scripts/ship-project.sh --root <managed-project-root> \
 `pack_web` 没开也能跑，**Forge 下的 project 也能跑** —— 那种 project 根本没有自己的
 `dashboard-url`（`swarmforge.bb` 的 `run-project!` 不起 `pack_web`，只有 Forge 自己那一个）。
 
-### 五道门，按顺序，任一失败就停
+### 四道门，按顺序，任一失败就停
 
 **A 定位。** 三种指错地方各自有自己的拒绝语，因为修法不同：`.worktrees/*` 是
 生成的角色 checkout（它们坐在 `swarmforge-<name>` 分支上）；forge 根持有 `projects/`
@@ -531,14 +531,27 @@ scripts/ship-project.sh --root <managed-project-root> \
 按 merge-base 出 diff）。你需要知道的是这批活建立在一个已经移动了的 base 上，不是被拦住。
 同一句话会跟进 PR 正文。
 
-**E 验证。** 自动发现入口（`make test` / `npm test` / `pytest` / `./gradlew test`），
-`--test-cmd` 可覆盖。**红就阻断，没有绕过的 flag** —— 一个 `--allow-failing-tests`
-只会在它最该拦住你的那一天被用一次。找不到入口就报 `skipped (no test entry
-point found)`，并把这一句带进 PR 正文。
+**没有 E。这个 verb 不跑你的测试(issue #170)。** 它曾经跑过:自动发现入口、执行、红就
+阻断。那建立在一个**在一般情况下为假**的假设上 —— 这个 verb 恰好 ssh 进去的那台主机,
+能有意义地跑起 managed project 的测试套件。跑不起来:一个套件需要那个 project 的环境,
+而这个 verb 没有资格去搭一个。
+
+**实测怎么塌的。** 在 podsum 上它猜了 `pytest -q`,而那个 project 自己的 CI 跑的是
+`python -m unittest discover -s tests`,并且在此之前先装两个依赖组。结果是 20 个
+collection error、0 个测试执行,报文却说 `tests failed` —— 一句关于 swarm 产出代码的断言,
+实际上是一句关于缺了个模块的断言。这两件事的处理方式完全相反。
+
+**这道检查本来就不必住在这里。** swarm 的角色在交接前自己验证(constitution 的
+`engineering.prompt`),而这个 verb 开出来的那个 PR,会被 project 自己的 CI 在
+`pull_request` 上测 —— 用对的命令、在准备好的环境里、在任何人合并它之前。一个没有 CI 的
+managed project 确实有缺口,**而那个缺口的修法是给它加 CI,不是让一个 operator verb
+假装自己是 test runner。**
+
+报文里不再有 `tests:` 行,`--test-cmd` 也撤了。
 
 ### 它存在的真正理由：Done 与已合入是两件事
 
-上面五道门里没一条是这个 verb 的核心。核心是第六条检查：
+上面四道门里没一条是这个 verb 的核心。核心是第五条检查：
 
 `handoffd` 是在它**投递**终端 handoff 的那一刻把卡标成 `done` 的，master 合入它是
 之后的事。在这个窗口里发布，`git log origin/<base>..HEAD` 会安静地带着一个
@@ -553,7 +566,7 @@ point found)`，并把这一句带进 PR 正文。
 
 ```text
 第一趟  ship-project.sh --root R
-          报告 → 五道门 → 建分支 → git push
+          报告 → 四道门 → 建分支 → git push
           → STATUS=NEEDS_PR_BODY（退出 8）
 你       派一个子代理：用 to-pr skill 读 origin/BASE..BRANCH 写正文
 第二趟  ship-project.sh --root R --body-file <那个文件>
@@ -732,11 +745,11 @@ preflight 守的是进入同一个「从零到一」步骤的入口;它们没有
 `NEEDS_PR_BODY` 且不开 PR）、带正文的第二趟（恰好一次 `gh pr create`）、head 上已有开着
 的 PR 时返回旧 URL 且不再创建、一张在角色 lane 的卡阻断而一张 `waiting` 卡不阻断、未提交
 改动阻断并点名文件、`delivery_attention` 阻断、**Done 且有交付记录但 commit 还不是 HEAD
-祖先时阻断**（master 还在合并的那个窗口，这是这个 verb 存在的理由）、测试红阻断而绿照报、
+祖先时阻断**（master 还在合并的那个窗口，这是这个 verb 存在的理由）、
 无未交付记录时 `NOTHING_TO_SHIP` 且不建分支、角色 worktree 与 forge 根各自被拒、空的和
 不存在的 `--body-file` 都硬失败且不开 PR、`--dry-run` 不建分支，以及一张 lieutenant 风格
 命名的卡不产生任何 `Closes` 行。这五处若被改坏都会红（已实测：去掉「不是 HEAD 祖先」阻断、
-去掉脏工作区门、去掉 PR 幂等检查、把 `waiting` 当成 live、去掉测试红阻断）。
+去掉脏工作区门、去掉 PR 幂等检查、把 `waiting` 当成 live）。
 
 `test-ship-project.sh` 后来又补了三组，对应本仓真实血统而不是 upstream 文档：
 一次**永久失败的投递**在 project 根的 `handoffs/failed/` 与某个 worktree 的

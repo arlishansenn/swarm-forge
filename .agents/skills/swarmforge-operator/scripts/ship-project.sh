@@ -29,6 +29,22 @@
 # It never merges the PR, never force-pushes, never commits for you, and never
 # pushes from a role worktree under .worktrees/.
 #
+# IT DOES NOT RUN YOUR TESTS (issue #170). It used to: discover an entry point,
+# run it, block on red. That rested on an assumption that is false in general --
+# that the host this verb happens to ssh into can meaningfully run the managed
+# project's suite. It cannot: a suite needs that project's environment, and this
+# verb has no business building one. On podsum it guessed `pytest -q` against a
+# project whose own CI runs `python -m unittest discover -s tests` after
+# installing two dependency groups, got 20 collection errors, and reported
+# "tests failed" -- a claim about the swarm's code that was really a claim about
+# a missing module.
+#
+# The check did not need to live here. The swarm's roles verify before they hand
+# off, and the PR this verb opens is tested by the project's own CI on
+# `pull_request`, with the right command in a prepared environment, before any
+# human merges it. A managed project with no CI has a gap -- and the fix for
+# that is CI, not an operator verb impersonating a test runner.
+#
 # TWO PASSES: the first pass reports, gates, creates
 # the branch and pushes it, then stops at NEEDS_PR_BODY (exit 8) because the
 # prose belongs to something that read the diff. Send a subagent with the
@@ -46,7 +62,7 @@
 #
 # Usage: ship-project.sh --root <product-root> \
 #   [--target user@host] [--key <path>] [--local] \
-#   [--branch <name>] [--base <name>] [--test-cmd <cmd>] [--issue <N>]... \
+#   [--branch <name>] [--base <name>] [--issue <N>]... \
 #   [--body-file <path>] [--dry-run]
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -54,7 +70,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 TARGET=${TARGET:-admin@100.64.0.4}
 KEY=${KEY:-$HOME/.ssh/tailscale_key}
-ROOT='' LOCAL=0 BRANCH='' BASE='' TEST_CMD='' BODY_FILE='' DRY_RUN=0
+ROOT='' LOCAL=0 BRANCH='' BASE='' BODY_FILE='' DRY_RUN=0
 ISSUES=''
 
 # Staleness thresholds (issue #17 design decision — see report). Presence
@@ -87,7 +103,6 @@ while [ $# -gt 0 ]; do
     --local) LOCAL=1; shift ;;
     --branch) BRANCH=$2; shift 2 ;;
     --base) BASE=$2; shift 2 ;;
-    --test-cmd) TEST_CMD=$2; shift 2 ;;
     --issue) ISSUES="${ISSUES}${ISSUES:+ }${2#\#}"; shift 2 ;;
     --body-file) BODY_FILE=$2; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -611,30 +626,6 @@ CARD_ISSUES=$(printf '%s\n' $CARD_ISSUES | sort -un | tr '\n' ' ')
 CARD_ISSUES=${CARD_ISSUES% }
 [ -z "$MISSING" ] || block "delivered but not in HEAD yet — the master is still merging, re-run in a moment: $MISSING"
 
-# ---------- gate E: tests ----------
-# Discovery, not configuration: a project that has a test entry point gets it
-# run, a project that does not says so in the report and in the PR. A red suite
-# blocks with no override flag — an override would be used exactly once, on the
-# day it mattered.
-TESTS_CMD=$TEST_CMD
-if [ -z "$TESTS_CMD" ]; then
-  if in_root "test -f Makefile && grep -q '^test:' Makefile" >/dev/null 2>&1; then TESTS_CMD='make test'
-  elif in_root "test -f package.json && grep -q '\"test\"[[:space:]]*:' package.json" >/dev/null 2>&1; then TESTS_CMD='npm test'
-  elif in_root "test -f pytest.ini || test -f pyproject.toml" >/dev/null 2>&1; then TESTS_CMD='pytest -q'
-  elif in_root "test -x ./gradlew" >/dev/null 2>&1; then TESTS_CMD='./gradlew test'
-  fi
-fi
-if [ -n "$BLOCKERS" ]; then
-  TESTS_RESULT='not run (blocked earlier)'
-elif [ -z "$TESTS_CMD" ]; then
-  TESTS_RESULT='skipped (no test entry point found)'
-elif in_root "$TESTS_CMD" >/dev/null 2>&1; then
-  TESTS_RESULT='pass'
-else
-  TESTS_RESULT='FAIL'
-  block "tests failed: $TESTS_CMD — run it yourself in $ROOT to see the output"
-fi
-
 # Two sources, neither of them a guess, merged and deduplicated:
 #   card text        `#<digits>` in what the operator typed into New Task.
 #   --issue N        the caller says it, when the card text did not.
@@ -670,7 +661,6 @@ report() {
   printf 'commits to ship:\n'
   if [ -n "$COMMITS" ]; then printf '%s\n' "$COMMITS" | sed 's/^/  /'
   else printf '  (none)\n'; fi
-  printf 'tests: %s%s\n' "${TESTS_CMD:-<none>}" " -> $TESTS_RESULT"
   # Printed BEFORE the PR is opened, on the pass that stops at NEEDS_PR_BODY,
   # so the operator sees exactly which issues are about to be closed while
   # there is still a pass left to drop a wrong one with --branch/--issue.
@@ -738,9 +728,9 @@ if [ -z "$PR_URL" ]; then
   CARD_LINES=$(printf '%s\n' "$CARDS" | awk -F'\t' 'NF { printf "- %s (%s)\n", $1, $2 }')
   STALE_LINE=''
   [ "${BEHIND:-0}" = 0 ] || STALE_LINE=$(printf -- '- NOTE: this work was built on a base that has since moved; HEAD is %s commits behind origin/%s\n' "$BEHIND" "$BASE")
-  PR_BODY=$(printf '%s%s\n\n---\n\n## Cards shipped\n%s\n\n## Verification\n- tests: %s -> %s\n- board: done %s / waiting %s / live %s, no failed deliveries outstanding\n- published from the managed project checkout %s at %s; no role worktree was used as the push source\n%s' \
+  PR_BODY=$(printf '%s%s\n\n---\n\n## Cards shipped\n%s\n\n## Verification\n- board: done %s / waiting %s / live %s, no failed deliveries outstanding\n- published from the managed project checkout %s at %s; no role worktree was used as the push source\n%s' \
     "${CLOSES:+$CLOSES$'\n\n'}" "$PR_PROSE" "$CARD_LINES" \
-    "${TESTS_CMD:-<none>}" "$TESTS_RESULT" "$DONE_N" "$WAIT_N" "$LIVE_N" "$ROOT" "$HEAD_SHA" \
+    "$DONE_N" "$WAIT_N" "$LIVE_N" "$ROOT" "$HEAD_SHA" \
     "$STALE_LINE")
 
   PR_OUT=$(in_root "gh pr create --base $(printf '%q' "$BASE") --head $(printf '%q' "$BRANCH") --title $(printf '%q' "$TITLE") --body $(printf '%q' "$PR_BODY")") \

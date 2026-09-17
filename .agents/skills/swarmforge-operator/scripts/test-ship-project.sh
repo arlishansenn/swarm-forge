@@ -130,7 +130,6 @@ has "happy names the card" "$OUT" 'issue-42-thing'
 has "happy names the branch" "$OUT" "feat/swarm-proj-$(date -u +%Y%m%d)"
 has "happy reports mission" "$OUT" '# happy'
 has "happy reports board" "$OUT" 'board: done 1 / waiting 0 / live 0'
-has "happy reports tests skipped" "$OUT" 'skipped (no test entry point found)'
 BR=$(git -C "$ROOT" for-each-ref --format='%(refname:short)' refs/remotes/origin/ | grep swarm || true)
 has "happy pushed the branch to origin" "$BR" 'feat/swarm-proj-'
 hasnt "happy opened no PR" "$(cat "$STUB/gh.log")" 'pr create'
@@ -228,19 +227,19 @@ has "unmerged delivery STATUS" "$OUT" 'STATUS=BLOCKED'
 has "unmerged delivery named" "$OUT" 'issue-9-pending'
 has "unmerged delivery explains" "$OUT" 'still merging'
 
-# 9. Failing tests block, with no override flag anywhere.
-happy redtests
-run_ship --test-cmd false
-check "red tests exit" 6 "$RC"
-has "red tests STATUS" "$OUT" 'STATUS=BLOCKED'
-has "red tests named" "$OUT" 'tests failed: false'
-hasnt "red tests did not push" "$(cat "$STUB/gh.log")" 'pr'
-
-# 10. Passing tests are reported as pass.
-happy greentests
-run_ship --test-cmd true
-check "green tests exit" 8 "$RC"
-has "green tests reported" "$OUT" 'tests: true -> pass'
+# 9. This verb does not run the project's tests and says nothing about them
+#    (issue #170). A managed project's suite needs that project's environment,
+#    which an ssh shell on the shipping host does not have; the PR this verb
+#    opens is tested by the project's own CI on `pull_request` instead. The
+#    assertion is the ABSENCE of a test claim: a report that still talked about
+#    tests would be making one it cannot back.
+#    Matched as the report line `tests:`, not the bare word: the fixture path
+#    itself lands in git's push output, so a loose match tests the tmpdir name.
+happy notestgate
+run_ship
+check "no test gate exit" 8 "$RC"
+hasnt "report makes no test claim" "$OUT" 'tests:'
+hasnt "--test-cmd is gone" "$(bash "$SHIP" --help 2>&1 || true)" 'test-cmd'
 
 # 11. Nothing unshipped -> NOTHING_TO_SHIP, no branch, no push.
 new_project nothing
