@@ -451,6 +451,13 @@ FILTERED=$(
   [ -n "$COMPLETED_ROWS" ] || exit 0
   while IFS=$'\x1f' read -r wt file task commit completed_at _enq _deq type from to nonfwd; do
     [ -n "$file" ] || continue
+    # A record that declares some OTHER type is not a malformed delivery, it
+    # is a different kind of message. Every New Task injection is a
+    # `type: note`, so warning here printed one line per card on every run --
+    # 37 of them on podsum's first real run, burying the one real blocker.
+    # Same reasoning as the non-terminal skip below: always-true warnings get
+    # ignored. An EMPTY type is still malformed and still warns.
+    if [ -n "$type" ] && [ "$type" != git_handoff ]; then continue; fi
     missing=""
     [ "$type" = git_handoff ] || missing="${missing}type: git_handoff, "
     [ -n "$task" ] || missing="${missing}task, "

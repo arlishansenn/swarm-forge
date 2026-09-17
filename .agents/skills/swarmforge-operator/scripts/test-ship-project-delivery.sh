@@ -492,6 +492,29 @@ printf '%s\n' "$OUT" | grep -q '^WARN=.*missing.*type: git_handoff' \
   && ok "missing type: not reported as delivery record" \
   || bad "missing type: not reported as delivery record" "$OUT"
 
+# 12b. a well-formed record of ANOTHER type (`type: note`) -> skipped in
+#      silence, no WARN. Every New Task injection is a note, so warning here
+#      fires once per card forever: podsum's first real run printed 37 of
+#      them and buried the single real blocker. Distinct from case 12, where
+#      the type field is absent and the record really is malformed.
+reset_fixture; reset_stub
+mk_roles coder master "$ROOT"
+mk_completed_raw - 00_note.handoff "id: x
+type: note
+from: (New Task)
+to: coder
+task: task-note
+created_at: $(ts 10)
+
+body"
+run
+check "note type exit" 0 "$RC"
+! printf '%s\n' "$OUT" | grep -q '^WARN=.*00_note.handoff' \
+  && ok "note type: no WARN" || bad "note type: no WARN" "$OUT"
+! printf '%s\n' "$OUT" | grep -q '^task: task-note$' \
+  && ok "note type: not reported as delivery record" \
+  || bad "note type: not reported as delivery record" "$OUT"
+
 # 13. roles.tsv missing entirely -> STATUS=ERROR exit 5, message names the
 #     file, no guessing.
 reset_fixture; reset_stub
