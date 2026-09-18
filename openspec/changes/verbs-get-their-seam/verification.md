@@ -4,7 +4,7 @@
 
 ## 结论
 
-实现核验通过，无 CRITICAL；有两项文档状态 WARNING，不影响隔离行为验证。27/27 tasks 已核对，10 条 requirements 均有实现证据，13 个 scenarios 中 12 个以可运行 shell 检查覆盖，1 个迁移期场景按历史记录与人工 review 核对。没有对 SKILL 措辞写自动测试。
+实现核验通过，无 CRITICAL；两项文档状态 WARNING 均已处理，不影响隔离行为验证。27/27 tasks 已核对，10 条 requirements 均有实现证据，13 个 scenarios 中 12 个以可运行 shell 检查覆盖，1 个迁移期场景按历史记录与人工 review 核对。没有对 SKILL 措辞写自动测试。
 
 | 维度 | 结果 |
 |---|---|
@@ -62,7 +62,7 @@ Requirement：spec:162。本次重新复制仅 scripts 到临时目录，以临�
 ### WARNING
 
 1. **已处理：规划中的行为不变表述未注明已授权例外。** proposal 的 What Changes 与完成判据、design 的 Non-Goals、ADR-0009 的 Decision 各补一句，点名 `ship-project.sh` 的 `git push` stdout→stderr 为经用户授权的唯一例外，并指向 tasks 阶段 5。只补说明，不改已合入的决定本身。
-2. **待人决定：ADR 状态尚为 proposed。** `docs/adr/0009-operator-verbs-own-adapter-seams.md:3` 与 change 的 `adr.md` 仍记 proposed，虽然规划与实现均已进入本地 main。建议由决策维护者确认是否改为 accepted，并同步 manifest；不代替人批准 ADR。
+2. **已处理：ADR 状态。** 用户于 2026-09-18 确认 ADR-0009 为 accepted，`docs/adr/0009-operator-verbs-own-adapter-seams.md` 与 change 的 `adr.md` 已同步。
 
 ### SUGGESTION
 
@@ -74,4 +74,4 @@ Requirement：spec:162。本次重新复制仅 scripts 到临时目录，以临�
 
 未执行 Gherkin runner：本仓无 acceptance-tests，Markdown scenarios 是留档。未连接真实 Forge、角色 pane 或 GitHub。Dashboard 不支持 Forge 共享 runtime 的既有限制保留。
 
-实现具备归档条件，但建议先处理两项文档 WARNING，并提交本轮 tasks/report，再决定 archive。未 push、未 archive，也未创建后续 commit。
+实现具备归档条件：两项文档 WARNING 已处理。未 push、未 archive，也未创建后续 commit。

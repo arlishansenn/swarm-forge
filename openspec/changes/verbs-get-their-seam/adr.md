@@ -7,7 +7,7 @@
 
 已完成本 change 的 ADR review。新决定为 Operator verb 拥有可替换执行 seam，既有脚本作为 real adapter。它补充现有决定，不 supersede。
 
-本 manifest 只记录 review 与新文件位置，不把既有 ADR 的存在当成本 change 已完成的证明。新 ADR 为 proposed，随 proposal 一起 review 后再确认接受。
+本 manifest 只记录 review 与新文件位置，不把既有 ADR 的存在当成本 change 已完成的证明。新 ADR 初为 proposed，实现与 verify 完成后经用户确认为 accepted（2026-09-18）。
 
 ## In-Force ADRs Reviewed
 

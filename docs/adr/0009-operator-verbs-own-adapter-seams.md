@@ -1,6 +1,6 @@
 # 0009. Operator verb 拥有 seam，已有脚本作为 adapter
 
-Status: proposed
+Status: accepted
 Date: 2026-09-18
 Supersedes: 无
 
