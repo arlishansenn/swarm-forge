@@ -199,24 +199,7 @@ agent 用 `swarm_handoff.sh` 发送已提交的工作，用 `ready_for_next.sh` 
 本 fork 带着 `.agents/skills/swarmforge-operator/`——一个给本地 agent 会话用的控制面
 skill，通过 ssh 驱动一个运行中的 SwarmForge project。**upstream 没有这东西。**
 
-这个 skill **只服务 `lieutenant` forge**。它不装 pack，也不派活；见
-[ADR-0007](docs/adr/0007-the-fork-keeps-only-the-lieutenant-forge-path.md)。
-
-六个 verb，一张跨 verb 唯一的退出码表，以及 dashboard 端口分配：
-
-| Verb | 只有它能做的事 |
-|---|---|
-| `provision forge` | 在空目录里装好并启动一个 forge，然后建它的第一个 project。**那一刻 dashboard 还不存在。** |
-| `dashboard` | 让 dashboard 可达：一条 ssh local-forward 或一次 tailnet 发布，外加一个 browser surface。`pack_web` 只绑 `127.0.0.1`。 |
-| `open swarm` | 把终端附着到一个角色上。dashboard 的 agent pane 是**只读 capture**。 |
-| `wake role` / `talk role` | **往角色的 pane 里打字。** 没有任何 HTTP 端点能给 project 角色送文本，chat rail 只通到 host lieutenant。 |
-| `ship project` | 推走干完的活并开 PR。upstream 的生命周期在 board 卡片进入 Done 时就停了。 |
-
-**其余动作都在 dashboard 里做**，而且它做得更好：停止或启动一个 project、拆掉整个
-forge、读角色状态、切卡、回答澄清。**从 dashboard 停 project 还会同时维护 forge 自己的
-`open-projects` 记录，这是任何外部命令都做不到的。** dashboard 在结构上覆盖不了的那两个
-盲区——够不到自己，以及打不了字——记在
-[ADR-0008](docs/adr/0008-the-dashboard-cannot-reach-itself-or-type.md)。
-
-见[operator runbook](docs/operator-runbook.md)。runbook 是中文的；skill 本身才是可执行的
-契约。
+这个 skill **只服务 `lieutenant` Forge**，不安装独立 Pack。
+六个 verb 的选择、输入、seam 调用、退出码与安全条件统一见
+[swarmforge-operator SKILL.md](.agents/skills/swarmforge-operator/SKILL.md)。
+操作前的定位见 [operator runbook](docs/operator-runbook.md)，无需先读 issue、spec 或 ADR。

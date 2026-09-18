@@ -706,7 +706,7 @@ fi
 in_root "git rev-parse --verify --quiet $(printf '%q' "refs/heads/$BRANCH")" >/dev/null 2>&1 \
   || in_root "git branch $(printf '%q' "$BRANCH") HEAD" \
   || die ERROR "could not create $BRANCH at HEAD in $ROOT" 5
-in_root "git push -u origin $(printf '%q' "$BRANCH")" \
+in_root "git push -u origin $(printf '%q' "$BRANCH")" >&2 \
   || die ERROR "could not push $BRANCH from $ROOT — the branch exists locally; re-run to continue" 5
 
 # A run killed between the push and the PR must not open a second PR for the

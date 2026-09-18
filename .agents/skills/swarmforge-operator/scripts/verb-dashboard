@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -eu
+
+main() {
+  local here adapter
+  here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  case ${SF_ADAPTER-real} in
+    fake) adapter="$here/fakes/dashboard.sh" ;;
+    real) adapter="$here/open-dashboard.sh" ;;
+    *) printf 'STATUS=USAGE\nSF_ADAPTER must be fake or real\n'; return 2 ;;
+  esac
+  if [ ! -f "$adapter" ] || [ ! -x "$adapter" ]; then
+    printf 'STATUS=ERROR\nadapter is missing or not executable: %s\n' "$adapter"
+    return 5
+  fi
+  exec "$adapter" "$@"
+}
+
+main "$@"
