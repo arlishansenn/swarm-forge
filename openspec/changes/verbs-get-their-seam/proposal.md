@@ -7,7 +7,7 @@ Issue #177 要把 `swarmforge-operator` 重写为以 Operator verb 为核心的 
 - 为六个 verb 建立各自的 wrapper seam、固定结果的 fake adapter 和同一份可运行于 fake/real 的 contract 测试；先让六个 fake 路径全绿，再逐个接入现有 `.sh`。
 - 移植顺序固定为 provision forge、dashboard、ship project、wake role、talk role、open swarm；attach role 不移植。
 - 原地重写 `SKILL.md`，围绕 verb 的用途、输入、调用入口、结果与失败处理组织内容。保留必要安全约束，不把 issue 或 spec 阅读作为执行前提，不引入 `Kind:` 或文档结构 checker。
-- 现有生产脚本保持行为不变，现有七套回归继续运行。README 与 runbook 最后改为指向 skill 的入口，不再维护重复的 verb 契约表。
+- 现有生产脚本保持行为不变（唯一例外：用户已授权的 `ship-project.sh` 的 `git push` stdout 转 stderr 一行，见 tasks 阶段 5），现有七套回归继续运行。README 与 runbook 最后改为指向 skill 的入口，不再维护重复的 verb 契约表。
 
 ## Capabilities
 
@@ -30,4 +30,4 @@ Issue #177 要把 `swarmforge-operator` 重写为以 Operator verb 为核心的 
 
 需求来源为 #177 与本次会话已确认决定，review 基线为 `main @ 5f6816d`。#176 已合并、#158 已关闭，前置归档已满足。
 
-最终应证明六个 seam 的同一组 contract assertions 在 fake 与 real 上均通过、七套既有回归通过、旧脚本没有行为改动，并人工验收 skill 的六个 verb 已改为调用各自 seam。旧脚本的约束针对基线已有文件，不包括新增 wrapper/fake/test；注释与 usage 文案改动仍需逐项人工审核，不擅自收紧为一字节不可改。
+最终应证明六个 seam 的同一组 contract assertions 在 fake 与 real 上均通过、七套既有回归通过、旧脚本没有行为改动，并人工验收 skill 的六个 verb 已改为调用各自 seam。「旧脚本没有行为改动」含一条经用户授权的例外（`ship-project.sh` 的 push 输出重定向）。旧脚本的约束针对基线已有文件，不包括新增 wrapper/fake/test；注释与 usage 文案改动仍需逐项人工审核，不擅自收紧为一字节不可改。

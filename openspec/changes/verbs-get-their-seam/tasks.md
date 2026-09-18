@@ -58,8 +58,8 @@
 - [x] 9.2 README 与 runbook 的重复 verb 契约表改为 SKILL 指向；执行指令不依赖 issue/spec/ADR 阅读，不恢复 Kind 或文档 checker。
 - [x] 9.3 将 skill 执行文件与测试 fixture 放进不含 openspec/docs 的临时目录，运行六对 fake/real contract 测试，确认留档不是执行依赖。
 - [x] 9.4 跑原七套回归（open-dashboard、open-swarm、provision-forge、ship-project-delivery、ship-project、start-swarm、wake-talk）；核对旧生产文件 diff，任何注释/usage 文案例外逐项人工确认。
-- [ ] 9.5 汇总每个 verb 的 RED/GREEN、real 调用证据、fake/real 成功 contract 与旧回归结果；未接入项不得报完成。Review 后实现合入 main，再另行 verify/archive。
+- [x] 9.5 汇总每个 verb 的 RED/GREEN、real 调用证据、fake/real 成功 contract 与旧回归结果；未接入项不得报完成。Review 后实现合入 main，再另行 verify/archive。
 
 阶段 9 证据（2026-09-18）：仅复制 scripts 到不含 openspec/docs 的临时目录，六套共同 contract 分别为 provision 56、dashboard 62、ship 45、wake 58、talk 58、open-swarm 74 条，全绿。七套旧回归分别为 open-dashboard 91、open-swarm 39、provision 57、ship-delivery 81、ship 86、start 87、wake-talk 28 条，全绿；分批日志汇总在 `/tmp/sf177-final-evidence/regression-summary.md`。旧生产文件仅 ship 的获授权重定向一行，旧七套测试未改。Spec 独立审查无 blocker，报告 `/tmp/sf177-final-spec-resumed.md`。
 
-Standards 审查发现新增 wake/talk fixture 的分段 capture 输出会触发 SIGPIPE，已在 fixture 中合并为一次小输出，未改生产代码或吞掉错误。父复现旧版 1000 次中 1 次退出 141，修后 1000 次全绿；wake/talk 各重复 10 次均 58/0，并重新通过独立目录测试。证据 `/tmp/sf177-sigpipe-evidence/`。Standards 定点复核已确认阻断解除，独立复跑管道 100/100 通过，报告 `/tmp/sf177-final-standards-resumed.md`。两轴审查现无残留 blocker。9.5 保持未勾选：提交/合入尚未完成，不把工作区实现视为已发布。
+Standards 审查发现新增 wake/talk fixture 的分段 capture 输出会触发 SIGPIPE，已在 fixture 中合并为一次小输出，未改生产代码或吞掉错误。父复现旧版 1000 次中 1 次退出 141，修后 1000 次全绿；wake/talk 各重复 10 次均 58/0，并重新通过独立目录测试。证据 `/tmp/sf177-sigpipe-evidence/`。Standards 定点复核已确认阻断解除，独立复跑管道 100/100 通过，报告 `/tmp/sf177-final-standards-resumed.md`。两轴审查现无残留 blocker。9.5 已完成：实现经用户授权直接提交到本地 main，commit `c733ca95f466b1fd7f954a553c823b800936fb51`；已核对该 commit 为 main 的祖先。未 push，不能据此声称远端已发布。提交前同批完整重跑六套 contract 与七套旧回归，结果全部通过，记录 `/tmp/sf177-final-evidence/precommit/results.json`。后续 verify 结论见本 change 的 `verification.md`，archive 尚未执行。

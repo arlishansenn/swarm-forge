@@ -14,7 +14,7 @@ ADR-0005 确定 runbook 住在 docs，ADR-0007/0008 确定 lieutenant Forge 与�
 
 ## Decision
 
-每个 verb 用独立的 executable wrapper 提供 seam，通过 `SF_ADAPTER=fake|real` 选择固定 adapter。已有 `.sh` 保持原路径与行为；wrapper 不复制业务判断，也不在 real 失败时回退 fake。
+每个 verb 用独立的 executable wrapper 提供 seam，通过 `SF_ADAPTER=fake|real` 选择固定 adapter。已有 `.sh` 保持原路径与行为；wrapper 不复制业务判断，也不在 real 失败时回退 fake。实施时发生过一条经用户授权的例外：`ship-project.sh` 把 `git push` 的 stdout 转到 stderr，使 `STATUS=` 回到 stdout 首行；退出码与失败处理不变。
 
 同一组成功 contract assertions 从 seam 调用两个 adapter。fake 只给固定结果且标明未执行真实操作；real 使用隔离 fixture，另有证据证明旧脚本确实执行。fake 通过不等于 real 移植完成；real 接入完成后才切换默认 adapter 与 skill 的操作入口。
 

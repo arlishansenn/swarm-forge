@@ -18,7 +18,7 @@
 
 - 不移植 attach role，不把 start-swarm.sh 变回公开 verb；不修改 CONTEXT.md 或 AGENTS.md。
 - 不加 Kind、文档结构 checker、跨文档退出码对账器、统一 dispatcher 或第三套测试框架。
-- 不在本票修复 #178、决定 #179 的诊断用途、补齐所有历史 spec，或改现有生产脚本行为。
+- 不在本票修复 #178、决定 #179 的诊断用途、补齐所有历史 spec，或改现有生产脚本行为（唯一例外已经用户授权：`ship-project.sh` 的 `git push` stdout 转 stderr，让 STATUS 回到 stdout 首行；见 tasks 阶段 5）。
 
 ## Decisions
 
